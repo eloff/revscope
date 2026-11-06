@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="search terms icon">
+  <circle cx="10.5" cy="10.5" r="5.8" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.8"/>
+  <path d="m15 15 4 4" fill="none" stroke="#4f46e5" stroke-width="1.9" stroke-linecap="round"/>
+  <path d="M8.1 10h4.8M8.1 12.7h2.8" fill="none" stroke="#818cf8" stroke-width="1.6" stroke-linecap="round"/>
+</svg>

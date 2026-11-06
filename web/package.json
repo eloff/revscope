@@ -1,0 +1,22 @@
+{
+  "name": "revscope-web",
+  "private": true,
+  "license": "FSL-1.1-ALv2",
+  "scripts": {
+    "dev": "pnpm --filter @revscope/app dev",
+    "build": "pnpm --filter @revscope/app build",
+    "build:bundle": "pnpm --filter @revscope/app build:bundle",
+    "tsc": "pnpm --filter @revscope/app tsc",
+    "check": "biome check --write .",
+    "push": "pnpm --filter @revscope/app push",
+    "test": "pnpm --filter @revscope/app test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.5"
+  },
+  "pnpm": {
+    "overrides": {
+      "undici@>=7.0.0 <7.30.1": "^7.30.1"
+    }
+  }
+}

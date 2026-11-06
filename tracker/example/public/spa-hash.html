@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hash SPA demo</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script>
+    (function (w, n, u, c) {
+      c = c || {};
+      c.url = u;
+      u += n + ".js";
+      c.project = n;
+      n = c.name || "dispatch";
+      if (typeof w[n] === "function") return;
+      var q = [];
+      function f() {
+        q.push([].slice.call(arguments));
+      }
+      f.q = f.a = q;
+      f.c = c;
+      w[n] = f;
+      var s = document.createElement("script");
+      s.src = u;
+      s.defer = true;
+      document.head.appendChild(s);
+    })(window, "example", "http://localhost:4320/", {
+      hostname: "example.com",
+      mode: "hash",
+    });
+  </script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">Hash routing · mode: "hash"</p>
+    <h1>Mock SPA (hash)</h1>
+    <p class="muted">
+      Pathname stays <code>/spa-hash.html</code>; with <code>mode: "hash"</code>
+      the tracker appends the hash segment (before <code>?</code>) so pageviews
+      look like <code>/spa-hash.html#/about</code>.
+    </p>
+
+    <nav class="demo-nav" id="nav">
+      <a href="#/" data-hash="/">Home</a>
+      <a href="#/about" data-hash="/about">About</a>
+      <a href="#/pricing" data-hash="/pricing">Pricing</a>
+    </nav>
+
+    <section class="panel" id="content">
+      <p>Lorem ipsum home.</p>
+    </section>
+
+    <p class="footer-nav"><a href="/index.html">← Index</a></p>
+  </main>
+
+  <script>
+    var views = {
+      "/": "<p><strong>Home (#/).</strong> Integer vitae magna non lorem fermentum tincidunt.</p>",
+      "/about": "<p><strong>About (#/about).</strong> Vestibulum ante ipsum primis in faucibus orci luctus.</p>",
+      "/pricing": "<p><strong>Pricing (#/pricing).</strong> Curabitur pretium tincidunt lacus ut ultricies.</p>",
+    };
+
+    function currentRoute() {
+      var h = window.location.hash || "#/";
+      var route = h.split("?")[0].slice(1) || "/";
+      return route;
+    }
+
+    function render() {
+      var route = currentRoute();
+      var html = views[route] || views["/"];
+      document.getElementById("content").innerHTML = html;
+      var links = document.querySelectorAll("#nav a");
+      for (var i = 0; i < links.length; i++) {
+        var a = links[i];
+        a.className = a.getAttribute("data-hash") === route ? "active" : "";
+      }
+    }
+
+    document.getElementById("nav").addEventListener("click", function (e) {
+      var t = e.target;
+      if (t.tagName !== "A") {
+        return;
+      }
+      e.preventDefault();
+      window.location.hash = "#" + t.getAttribute("data-hash");
+    });
+
+    window.addEventListener("hashchange", render);
+
+    if (!window.location.hash) {
+      window.location.hash = "#/";
+    }
+    render();
+  </script>
+</body>
+</html>

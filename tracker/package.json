@@ -1,0 +1,27 @@
+{
+  "name": "tracker",
+  "private": true,
+  "license": "FSL-1.1-ALv2",
+  "version": "0.1.0",
+  "packageManager": "pnpm@8.12.1",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "biome check --write && eslint .",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.5",
+    "@eslint/js": "^10.0.1",
+    "esbuild": "^0.28.1",
+    "eslint": "^10.2.1",
+    "globals": "^17.5.0",
+    "terser": "^5.48.0",
+    "uglify-js": "^3.19.3",
+    "vitest": "^4.1.12"
+  },
+  "pnpm": {
+    "overrides": {
+      "minimatch@<11.0.1": "^11.0.1"
+    }
+  }
+}

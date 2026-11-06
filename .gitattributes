@@ -1,0 +1,8 @@
+# Build output of tracker/scripts/build.mjs, committed so the backend compiles
+# without Node. Diffs of minified and compressed bytes are noise.
+tracker/tracker-min.js* -diff linguist-generated
+
+# The build hashes tracker.js into content-fingerprint, so a CRLF checkout
+# (Windows autocrlf) would bump the version on every build.
+tracker/tracker.js text eol=lf
+tracker/content-fingerprint text eol=lf

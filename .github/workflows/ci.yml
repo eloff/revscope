@@ -1,0 +1,294 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # CONTRIBUTING.md's inbound license depends on each commit being signed off by its author.
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a Signed-off-by line from each commit's author
+        # The checkout is the PR's merge ref, so its parents bound exactly the PR's commits
+        # against the current base; the payload's base sha can lag behind main. Merge commits
+        # are skipped because "Update branch" makes unsigned ones in ordinary PRs.
+        run: |
+          # A failed rev-list must fail the step, not leave an empty list that passes.
+          shas="$(git rev-list --no-merges HEAD^1..HEAD^2)"
+          missing=""
+          for sha in $shas; do
+            email="$(git log -1 --format=%ae "$sha")"
+            if [ -z "$email" ] || ! git log -1 --format=%B "$sha" | grep '^Signed-off-by: ' | grep -qiF "<$email>"; then
+              missing="$missing $sha"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "These commits need a Signed-off-by line matching their author (git commit -s):$missing"
+            exit 1
+          fi
+
+  tracker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tracker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.12.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: tracker/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      # `pnpm check` applies fixes, so fail if it changed anything.
+      - run: pnpm check && git diff --exit-code
+      - run: pnpm audit
+      - run: pnpm test
+      # The built tracker is committed so the backend compiles without Node, so
+      # fail if it is stale. Untracked files count: a deleted content-fingerprint
+      # is reseeded without a version bump.
+      - run: pnpm build && status="$(git status --porcelain)" && test -z "$status"
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.12.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check && git diff --exit-code
+      - run: pnpm audit
+      - run: pnpm tsc
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm build:bundle
+      # Dependency optimization only runs under `astro dev`, so a failure that kills the server or
+      # breaks /demo passes every step above. Other pages and client bundles aren't loaded here.
+      - name: Dev server starts and serves a page
+        run: |
+          rm -rf app/node_modules/.vite
+          # Its own process group, since killing pnpm alone would leave astro serving.
+          setsid pnpm dev &
+          server=$!
+          trap 'kill -- "-$server" 2>/dev/null || true' EXIT
+          deadline=$((SECONDS + 120))
+          while ((SECONDS < deadline)); do
+            if ! kill -0 "$server" 2>/dev/null; then
+              echo "::error::pnpm dev exited before serving a page"
+              exit 1
+            fi
+            # Astro sends the 200 before rendering components, so one that throws still gets it.
+            if page=$(curl -fs --max-time 10 http://localhost:4322/demo) && [[ $page == *"</html>" ]]; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::pnpm dev didn't serve a complete /demo page in time"
+          exit 1
+
+  backend:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [hosted, self-hosted]
+    services:
+      postgres:
+        image: postgres:18.6@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
+        env:
+          POSTGRES_USER: revscope
+          POSTGRES_PASSWORD: revscope
+          POSTGRES_DB: revscope
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U revscope"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://revscope:revscope@localhost:5432/revscope
+      CARGO_FEATURES: ${{ matrix.build == 'self-hosted' && '--features self-hosted' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.12.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      # The self-hosted build embeds the bundled web app.
+      - name: Build web bundle
+        if: matrix.build == 'self-hosted'
+        working-directory: web
+        run: pnpm install --frozen-lockfile && pnpm build:bundle
+      # rustup reads rust-toolchain.toml.
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The CLI that cli_e2e.rs builds and runs has its own target directory.
+          workspaces: |
+            revscope
+            cli
+          key: ${{ matrix.build }}
+      - name: cargo fmt
+        if: matrix.build == 'hosted'
+        working-directory: revscope
+        run: cargo fmt --check
+      - uses: taiki-e/install-action@v2
+        if: matrix.build == 'hosted'
+        with:
+          tool: cargo-audit
+      - name: cargo audit
+        if: matrix.build == 'hosted'
+        working-directory: revscope
+        run: cargo audit
+      - name: cargo clippy
+        working-directory: revscope
+        run: cargo clippy --all-targets --locked $CARGO_FEATURES -- -D warnings
+      - name: cargo test
+        working-directory: revscope
+        run: cargo test $CARGO_FEATURES
+
+  # The shared contract and the CLI. revscope/tests/cli_e2e.rs runs the CLI against a real
+  # server in the backend job above.
+  cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rustup reads rust-toolchain.toml.
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: cargo fmt
+        run: |
+          cargo fmt --check --manifest-path cli/Cargo.toml
+          cargo fmt --check --manifest-path crates/revscope-api/Cargo.toml
+      - name: cargo audit
+        working-directory: cli
+        run: cargo audit
+      - name: cargo clippy
+        run: |
+          cargo clippy --all-targets --locked --manifest-path cli/Cargo.toml -- -D warnings
+          cargo clippy --all-targets --manifest-path crates/revscope-api/Cargo.toml -- -D warnings
+      - name: cargo test
+        run: |
+          cargo test --locked --manifest-path cli/Cargo.toml
+          cargo test --manifest-path crates/revscope-api/Cargo.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Test the installers
+        working-directory: cli/npm
+        run: npm test
+
+  # The Playwright suite against this commit's own build, with a freshly generated demo. Running
+  # the backend bundled with the web app is one process with no dev-server or Worker to manage.
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.6@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
+        env:
+          POSTGRES_USER: revscope
+          POSTGRES_PASSWORD: revscope
+          POSTGRES_DB: revscope
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U revscope"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://revscope:revscope@localhost:5432/revscope
+      # Required to start. It only protects stored integration credentials, and there are none.
+      INTEGRATION_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.12.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: |
+            web/pnpm-lock.yaml
+            e2e/pnpm-lock.yaml
+      - name: Build web bundle
+        working-directory: web
+        run: pnpm install --frozen-lockfile && pnpm build:bundle
+      # rustup reads rust-toolchain.toml.
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: revscope
+          key: e2e
+      # Optimized, because the demo database is large enough that queries crawl in a debug build.
+      - name: Build backend and demo generator
+        working-directory: revscope
+        run: cargo build --locked --profile release-generate --features self-hosted,generate --bin revscope --bin generate
+      - name: Generate demo data
+        working-directory: revscope
+        run: target/release-generate/generate 1 data
+      - name: Start backend
+        working-directory: revscope
+        run: |
+          nohup target/release-generate/revscope > backend.log 2>&1 &
+          curl --fail --silent --show-error --output /dev/null \
+            --retry 30 --retry-delay 1 --retry-all-errors http://localhost:4320/ui/demo/
+      - name: Install Playwright
+        working-directory: e2e
+        run: pnpm install --frozen-lockfile && pnpm exec playwright install --with-deps chromium
+      - name: Lint and typecheck
+        working-directory: e2e
+        run: pnpm check && git diff --exit-code -- . && pnpm tsc && pnpm audit
+      - name: Run tests
+        working-directory: e2e
+        env:
+          E2E_BASE_URL: http://localhost:4320/ui
+        run: pnpm test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-results
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+            revscope/backend.log
+          retention-days: 7

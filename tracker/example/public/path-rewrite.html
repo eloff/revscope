@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Path rewriter</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script>
+    // Collapse /shop/sku-* → /shop/:sku so dynamic product URLs group in reports.
+    (function (w, n, u, c) {
+      c = c || {};
+      c.url = u;
+      u += n + ".js";
+      c.project = n;
+      n = c.name || "dispatch";
+      if (typeof w[n] === "function") return;
+      var q = [];
+      function f() {
+        q.push([].slice.call(arguments));
+      }
+      f.q = f.a = q;
+      f.c = c;
+      w[n] = f;
+      var s = document.createElement("script");
+      s.src = u;
+      s.defer = true;
+      document.head.appendChild(s);
+    })(window, "example", "http://localhost:4320/", {
+      hostname: "example.com",
+      pathRewriter: function (ctx) {
+        var path = ctx.path || "";
+        if (/^\/shop\/sku-/.test(path)) {
+          return "/shop/:sku";
+        }
+        return path;
+      },
+    });
+  </script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">stub config · pathRewriter</p>
+    <h1>Path rewriter</h1>
+    <p class="muted">
+      This page is served at dynamic URLs like <code>/shop/sku-42</code>, but
+      <code>pathRewriter</code> reports them as <code>/shop/:sku</code>. Navigate
+      between SKUs — each pushState should pageview the rewritten path (same
+      path → no duplicate pageview).
+    </p>
+
+    <p class="muted">Browser path: <code id="browser-path"></code></p>
+    <p class="muted">Expected tracked path: <code>/shop/:sku</code></p>
+
+    <nav class="demo-nav" id="nav">
+      <a href="/shop/sku-42" data-route="/shop/sku-42">SKU 42</a>
+      <a href="/shop/sku-99" data-route="/shop/sku-99">SKU 99</a>
+      <a href="/shop/sku-7" data-route="/shop/sku-7">SKU 7</a>
+    </nav>
+
+    <section class="panel" id="content"></section>
+
+    <p class="footer-nav"><a href="/index.html">← Index</a></p>
+  </main>
+  <script>
+    function render(pathname) {
+      document.getElementById("browser-path").textContent = pathname;
+      var sku = (pathname.match(/sku-([^/]+)/) || [])[1] || "?";
+      document.getElementById("content").innerHTML =
+        "<p><strong>Product " + sku + "</strong>. Browser URL stays dynamic; " +
+        "analytics path is rewritten.</p>";
+      var links = document.querySelectorAll("#nav a");
+      for (var i = 0; i < links.length; i++) {
+        var a = links[i];
+        a.className = a.getAttribute("data-route") === pathname ? "active" : "";
+      }
+    }
+
+    function navigate(pathname) {
+      render(pathname);
+      if (window.history && window.history.pushState) {
+        window.history.pushState({ path: pathname }, "", pathname);
+      }
+    }
+
+    document.getElementById("nav").addEventListener("click", function (e) {
+      var t = e.target;
+      if (t.tagName !== "A") {
+        return;
+      }
+      e.preventDefault();
+      navigate(t.getAttribute("data-route"));
+    });
+
+    window.addEventListener("popstate", function () {
+      render(window.location.pathname);
+    });
+
+    var initial = window.location.pathname;
+    if (initial.indexOf("/shop/") !== 0) {
+      initial = "/shop/sku-42";
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState({ path: initial }, "", initial);
+      }
+    }
+    render(initial);
+  </script>
+</body>
+</html>

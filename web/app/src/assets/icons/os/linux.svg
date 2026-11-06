@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" role="img" aria-label="linux operating system icon">
+  <rect width="32" height="32" rx="6" fill="#ffffff"/>
+  <path d="M10.2 24.5c.9-2.5 1.8-5.4 1.8-8.2 0-4.8 1.6-8.3 4-8.3s4 3.5 4 8.3c0 2.8.9 5.7 1.8 8.2z" fill="#111827"/>
+  <path d="M10 22.2c-1.9 1-3.3 2.9-3.3 4.8 0 1.1 1.2 1.6 2.4.8l3.8-2.5zm12 0 3.3 3.1 3.8 2.5c1.2.8 2.4.3 2.4-.8 0-1.9-1.4-3.8-3.3-4.8z" fill="#f59e0b"/>
+  <ellipse cx="16" cy="19.8" rx="5.3" ry="6.6" fill="#facc15"/>
+  <circle cx="14.1" cy="13.7" r="1" fill="#ffffff"/><circle cx="17.9" cy="13.7" r="1" fill="#ffffff"/><circle cx="14.1" cy="13.7" r=".45" fill="#111827"/><circle cx="17.9" cy="13.7" r=".45" fill="#111827"/>
+  <path d="M13.9 16.2 16 18l2.1-1.8z" fill="#f97316"/><path d="M13.8 22.7c1.3.7 3.1.7 4.4 0" fill="none" stroke="#111827" stroke-width="1" stroke-linecap="round"/>
+</svg>

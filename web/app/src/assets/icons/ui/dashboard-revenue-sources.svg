@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="sources icon">
+  <circle cx="12" cy="12" r="7" fill="none" stroke="#eef2f5" stroke-width="4"/>
+  <g transform="rotate(-90 12 12)" fill="none" stroke-width="4">
+    <circle cx="12" cy="12" r="7" pathLength="100" stroke="#059669" stroke-dasharray="45 55" stroke-dashoffset="0"/>
+    <circle cx="12" cy="12" r="7" pathLength="100" stroke="#2563eb" stroke-dasharray="34 66" stroke-dashoffset="-45"/>
+    <circle cx="12" cy="12" r="7" pathLength="100" stroke="#f59e0b" stroke-dasharray="21 79" stroke-dashoffset="-79"/>
+  </g>
+</svg>

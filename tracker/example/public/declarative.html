@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Declarative events</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/demo-config.js"></script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">data-revscope-click / visible / beacon / metadata</p>
+    <h1>Declarative HTML events</h1>
+    <p class="muted">
+      Mark elements with <code>data-revscope-click</code>, <code>data-revscope-beacon</code>,
+      <code>data-revscope-visible</code>, or <code>data-revscope-metadata</code>.
+      Event attributes take an event name plus optional space-separated
+      <code>key=value</code> pairs. Named <code>&lt;a&gt;</code> tags without
+      <code>href</code> also fire <code>a-{id|name}</code> when scrolled into view.
+    </p>
+
+    <h2>Page metadata</h2>
+    <p class="muted">
+      <code>data-revscope-metadata</code> is key=value pairs only (no event name).
+      Scanned on each pageview like the JS <code>metadata</code> command — only
+      changed keys are sent.
+    </p>
+    <div class="panel" data-revscope-metadata="plan=growth experiment=pricing-v2">
+      This panel sets <code>plan</code> and <code>experiment</code> on the session.
+    </div>
+
+    <h2>Click triggers</h2>
+    <div class="panel">
+      <button type="button" class="btn primary" data-revscope-click="start-trial">
+        Start free trial
+      </button>
+      <a class="btn" href="#pricing" data-revscope-click="jump-to-pricing">
+        Jump to pricing (also click event)
+      </a>
+      <button type="button" class="btn" data-revscope-click="nested-parent plan=demo">
+        <span>Click nested child (bubbles to marked parent)</span>
+      </button>
+      <button type="button" class="btn" data-revscope-beacon="js-nav-checkout">
+        data-revscope-beacon (always sendBeacon)
+      </button>
+    </div>
+
+    <h2>Visible triggers</h2>
+    <p class="muted">Scroll down — each visible target fires once per page id.</p>
+    <div class="tall-spacer">Scroll ↓</div>
+
+    <section class="visible-target" id="pricing" data-revscope-visible="saw-pricing">
+      <strong>saw-pricing</strong> — <code>data-revscope-visible="saw-pricing"</code>
+    </section>
+
+    <div class="tall-spacer">Keep scrolling ↓</div>
+
+    <!-- Named anchor without href → implicit a-features (underscore normalized to dash) -->
+    <a id="features" name="features"></a>
+    <section class="visible-target">
+      <strong>a-features</strong> — named anchor without href (implicit
+      <code>a-features</code>)
+    </section>
+
+    <div class="tall-spacer">Almost there ↓</div>
+
+    <section class="visible-target" data-revscope-visible="saw-footer-cta" hidden id="hidden-cta">
+      This starts hidden — use the button below to reveal it, then it can fire.
+    </section>
+
+    <p>
+      <button type="button" class="btn" id="reveal">Reveal hidden visible target</button>
+    </p>
+
+    <p class="footer-nav"><a href="/index.html">← Index</a> · <a href="/events.html">JS API</a></p>
+  </main>
+  <script>
+    document.getElementById("reveal").addEventListener("click", function () {
+      document.getElementById("hidden-cta").removeAttribute("hidden");
+      // Scroll listener will pick it up; nudge with a tiny scroll.
+      window.scrollBy(0, 1);
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+# HTTPS for RevScope, with a certificate from Let's Encrypt. Caddy replaces any
+# X-Forwarded-For the visitor sends with their real address.
+{$REVSCOPE_DOMAIN} {
+	reverse_proxy revscope:4320
+}

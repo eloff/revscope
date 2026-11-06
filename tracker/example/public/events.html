@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Custom events</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/demo-config.js"></script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">dispatch commands</p>
+    <h1>JavaScript dispatch API</h1>
+    <p class="muted">
+      Each button calls <code>dispatch("event", name, options)</code>. Watch Network
+      for <code>ty=event</code> payloads (<code>ev</code>, optional
+      <code>meta</code>). Events without <code>callback</code> /
+      <code>beacon</code> are batched; use those options to flush immediately.
+    </p>
+
+    <div class="panel">
+      <div class="row">
+        <button type="button" class="btn" id="ev-plain">Plain event</button>
+        <button type="button" class="btn" id="ev-meta">With metadata</button>
+      </div>
+      <div class="row">
+        <button type="button" class="btn" id="ev-callback">With callback (flushes)</button>
+        <button type="button" class="btn primary" id="ev-beacon">Beacon + callback</button>
+      </div>
+      <div class="row">
+        <button type="button" class="btn" id="ev-normalize">Weird Name!!! 2024</button>
+        <button type="button" class="btn" id="ev-batch">Fire 5 batched events</button>
+      </div>
+    </div>
+
+    <p id="status" class="muted"></p>
+
+    <p class="footer-nav"><a href="/index.html">← Index</a> · <a href="/declarative.html">Declarative events</a></p>
+  </main>
+
+  <script>
+    function status(msg) {
+      document.getElementById("status").textContent = msg || "";
+    }
+
+    document.getElementById("ev-plain").addEventListener("click", function () {
+      dispatch("event", "demo-plain-click");
+      status("Queued demo-plain-click (batched).");
+    });
+
+    document.getElementById("ev-meta").addEventListener("click", function () {
+      dispatch(
+        "event",
+        "demo-meta-click",
+        { metadata: { tier: "free", seats: 3 } }
+      );
+      status("Queued demo-meta-click with metadata.");
+    });
+
+    document.getElementById("ev-callback").addEventListener("click", function () {
+      dispatch(
+        "event",
+        "demo-callback-click",
+        {
+          metadata: { flow: "checkout", step: 2 },
+          callback: function () {
+            status("Sent demo-callback-click; callback ran after request.");
+          },
+        }
+      );
+      status("Flushing demo-callback-click…");
+    });
+
+    document.getElementById("ev-beacon").addEventListener("click", function () {
+      dispatch(
+        "event",
+        "demo-beacon-click",
+        {
+          beacon: true,
+          metadata: { reason: "pre-navigation" },
+          callback: function () {
+            status("Beacon flush for demo-beacon-click completed.");
+          },
+        }
+      );
+    });
+
+    document.getElementById("ev-normalize").addEventListener("click", function () {
+      dispatch(
+        "event",
+        "Weird Name!!! 2024",
+        {
+          callback: function () {
+            status('Normalized to "Weird-Name-2024" (non-alnum → dashes).');
+          },
+        }
+      );
+    });
+
+    document.getElementById("ev-batch").addEventListener("click", function () {
+      for (var i = 1; i <= 5; i++) {
+        dispatch(
+          "event",
+          "demo-batch-" + i,
+          { metadata: { n: i } }
+        );
+      }
+      status("Queued 5 events — wait up to 30s for batch flush, or fire a callback event.");
+    });
+  </script>
+</body>
+</html>

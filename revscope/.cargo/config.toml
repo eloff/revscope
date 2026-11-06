@@ -1,0 +1,7 @@
+[alias]
+generate = "run --bin generate --features generate --profile release-generate"
+
+[build]
+rustflags = [
+    "--remap-path-prefix=${HOME}/=",
+]

@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "compatibility_date": "2026-07-23",
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "name": "revscope-app",
+  "workers_dev": false,
+  "main": "@astrojs/cloudflare/entrypoints/server",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  },
+  // More specific than the site worker's revscope.co/* catch-all.
+  "routes": [
+    { "pattern": "revscope.co/dashboard*", "zone_name": "revscope.co" },
+    { "pattern": "revscope.co/demo*", "zone_name": "revscope.co" },
+    { "pattern": "revscope.co/embed*", "zone_name": "revscope.co" },
+    { "pattern": "revscope.co/settings*", "zone_name": "revscope.co" },
+    { "pattern": "revscope.co/troubleshooting*", "zone_name": "revscope.co" },
+    { "pattern": "revscope.co/reset-password*", "zone_name": "revscope.co" },
+    { "pattern": "revscope.co/oauth/*", "zone_name": "revscope.co" },
+    { "pattern": "revscope.co/_app/*", "zone_name": "revscope.co" }
+  ]
+}

@@ -1,0 +1,9 @@
+---
+import AuthButton from "./AuthButton";
+import { link, loginButton, nav } from "./AuthNav.css";
+---
+
+<nav class={nav}>
+  <AuthButton client:only="solid-js" triggerClass={loginButton} />
+  <a href="/signup" class={link}>Sign up</a>
+</nav>

@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Static metadata</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script>
+    var staticMetadata = {
+      demo_site: "tracker-example",
+      flavor: "static-object",
+    };
+    (function (w, n, u, c) {
+      c = c || {};
+      c.url = u;
+      u += n + ".js";
+      c.project = n;
+      n = c.name || "dispatch";
+      if (typeof w[n] === "function") return;
+      var q = [];
+      function f() {
+        q.push([].slice.call(arguments));
+      }
+      f.q = f.a = q;
+      f.c = c;
+      w[n] = f;
+      var s = document.createElement("script");
+      s.src = u;
+      s.defer = true;
+      document.head.appendChild(s);
+    })(window, "example", "http://localhost:4320/", {
+      hostname: "example.com",
+      metadata: staticMetadata,
+    });
+  </script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">stub config · metadata object</p>
+    <h1>Static metadata</h1>
+    <p>
+      Pageviews merge this object with allowed query params into <code>meta</code>
+      on the initial request (and later when metadata differs from the first payload).
+      Event-only metadata is separate — include it in an <code>event</code>
+      command.
+    </p>
+
+    <p><button type="button" class="btn primary" id="btn">Event with its own metadata</button></p>
+
+    <pre id="cfg"></pre>
+
+    <p class="footer-nav">
+      <a href="/index.html">← Index</a> · <a href="/meta-fn.html">Metadata function demo</a>
+    </p>
+  </main>
+  <script>
+    document.getElementById("cfg").textContent = JSON.stringify(staticMetadata, null, 2);
+    document.getElementById("btn").addEventListener("click", function () {
+      dispatch(
+        "event",
+        "demo-with-static-page-meta",
+        {
+          metadata: { button: "primary" },
+          callback: function () {},
+        }
+      );
+    });
+  </script>
+</body>
+</html>

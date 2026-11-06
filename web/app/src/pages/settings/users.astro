@@ -1,0 +1,8 @@
+---
+import ManageUsers from "../../components/users/ManageUsers";
+import AppLayout from "../../layouts/AppLayout.astro";
+---
+
+<AppLayout title="Users - RevScope">
+	<ManageUsers client:only="solid-js" />
+</AppLayout>

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Step A — navigation</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/demo-config.js"></script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">Multi-page · step A</p>
+    <h1>Page A</h1>
+    <p>
+      Normal navigation (full load). Fire an event here, then go to page B —
+      both share the same visitor session cookie when consent allows persistence.
+    </p>
+
+    <p>
+      <button type="button" class="btn" id="beforeNav">Inline action</button>
+      <a class="btn" href="/nav/page-b.html" data-revscope-click="nav-to-b">Go to B (declarative click)</a>
+    </p>
+
+    <p><a class="btn primary" href="/nav/page-b.html">Go to page B</a></p>
+
+    <p class="footer-nav"><a href="/index.html">← Index</a></p>
+  </main>
+
+  <script>
+    document.getElementById("beforeNav").addEventListener("click", function () {
+      dispatch(
+        "event",
+        "step-a-interaction",
+        {
+          metadata: { source: "page-a" },
+          callback: function () {},
+        }
+      );
+    });
+  </script>
+</body>
+</html>

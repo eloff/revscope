@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Landing (referrer demo)</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/demo-config.js"></script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">First pageview · referrer + UTMs</p>
+    <h1>Landing</h1>
+    <p>
+      Arrive here from <a href="http://127.0.0.1:3447/">http://127.0.0.1:3447/</a>
+      so the browser sends a cross-origin <code>Referer</code>. The tracker’s
+      <code>r</code> field is the normalized referrer hostname. Campaign params
+      (<code>utm_*</code>, <code>gclid</code>, <code>ref</code>) land in
+      <code>meta</code> on the first hit.
+    </p>
+    <p class="muted">Current search string:</p>
+    <pre id="qs"></pre>
+
+    <div class="panel">
+      <p class="muted" style="margin:0">Inspect the first POST to <code>localhost:4320</code> for:</p>
+      <ul>
+        <li><code>ty=pageview</code>, <code>r</code>, <code>ua</code>, viewport / screen</li>
+        <li><code>meta</code> JSON with stripped UTM keys + click IDs</li>
+        <li>JSON response with <code>visitor_timestamp_id</code> / <code>page_id</code></li>
+      </ul>
+    </div>
+
+    <p><a class="btn primary" href="/nav/page-a.html">Continue to multi-page navigation</a></p>
+    <p class="footer-nav"><a href="/index.html">← Index</a></p>
+  </main>
+  <script>
+    document.getElementById("qs").textContent = window.location.search || "(empty — open via port 3447)";
+  </script>
+</body>
+</html>

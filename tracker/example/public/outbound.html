@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Outbound clicks</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/demo-config.js"></script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">revscope-outbound-click</p>
+    <h1>Outbound &amp; mailto tracking</h1>
+    <p class="muted">
+      Clicks on links that leave this hostname (or <code>mailto:</code>) fire
+      <code>revscope-outbound-click</code> with <code>meta.to</code> set to the
+      destination hostname (or <code>mailto:domain</code>). Delivered via
+      <code>sendBeacon</code> so it lands before navigation. Middle-click /
+      auxclick is covered too.
+    </p>
+
+    <div class="panel">
+      <p><a class="btn primary" href="https://example.com/docs" target="_blank" rel="noopener">
+        External https (new tab)
+      </a></p>
+      <p><a class="btn" href="https://www.google.com/search?q=revscope">
+        External https (same tab — may navigate away)
+      </a></p>
+      <p><a class="btn" href="mailto:hello@example.com">mailto:hello@example.com</a></p>
+      <p><a class="btn" href="/index.html">Same-origin link (should NOT fire outbound)</a></p>
+      <p><a class="btn" href="#local">Hash-only link (should NOT fire outbound)</a></p>
+    </div>
+
+    <p id="local" class="muted">
+      Watch Network for <code>ev=revscope-outbound-click</code> and
+      <code>meta={"to":"…"}</code>. Same-origin and hash links should stay quiet.
+    </p>
+
+    <p class="footer-nav"><a href="/index.html">← Index</a></p>
+  </main>
+</body>
+</html>

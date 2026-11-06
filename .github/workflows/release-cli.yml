@@ -1,0 +1,106 @@
+name: Release CLI
+
+# Pushing a tag cli-vX.Y.Z publishes that version: the binaries, then the npm wrapper.
+# The version must already be in cli/Cargo.toml and cli/npm/package.json, and CI checks
+# that those two agree.
+on:
+  push:
+    tags: ["cli-v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, runner: macos-15-intel }
+          - { target: aarch64-apple-darwin, runner: macos-latest }
+          - { target: x86_64-pc-windows-msvc, runner: windows-latest }
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag names the version being built
+        run: |
+          version="${GITHUB_REF_NAME#cli-v}"
+          grep -qx "version = \"$version\"" cli/Cargo.toml
+          grep -q "\"version\": \"$version\"" cli/npm/package.json
+      - run: rustup show active-toolchain
+      - run: rustup target add ${{ matrix.target }}
+      - name: Install the musl toolchain
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        working-directory: cli
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          mkdir dist
+          bin="cli/target/${{ matrix.target }}/release"
+          archive="revscope-${{ matrix.target }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            archive="$archive.zip"
+            powershell -Command "Compress-Archive -Path $bin/revscope.exe -DestinationPath dist/$archive"
+          else
+            archive="$archive.tar.gz"
+            tar -czf "dist/$archive" -C "$bin" revscope
+          fi
+          cd dist
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* cli/install.sh \
+            --title "revscope CLI ${GITHUB_REF_NAME#cli-v}" --generate-notes --latest
+
+  npm:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Publish the wrapper
+        working-directory: cli/npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::warning::NPM_TOKEN isn't set, so the npm wrapper wasn't published."
+            exit 0
+          fi
+          npm publish --access public

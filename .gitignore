@@ -1,0 +1,34 @@
+private/
+_private/
+# revscope.co's billing, checked out here from the private revscope-billing repo.
+/revscope/src/billing/
+.vscode/
+logos/
+data/
+target/
+# A path dependency resolves in its dependents' lockfiles.
+/crates/*/Cargo.lock
+node_modules/
+/scripts/*
+!/scripts/download-maxmind.sh
+!/scripts/update-ip-ranges.mjs
+*.env
+.env.*
+!.env.example
+.idea/
+CLAUDE.local.md
+*.mmdb
+profile.json*
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/

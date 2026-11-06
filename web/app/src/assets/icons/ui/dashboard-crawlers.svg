@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="crawlers icon">
+  <circle cx="12" cy="12" r="9" fill="#ecfeff"/>
+  <circle cx="12" cy="12" r="3.1" fill="#cffafe" stroke="#0891b2" stroke-width="1.6"/>
+  <path d="M8.2 8.2l2.1 2.1M15.8 8.2l-2.1 2.1M8.2 15.8l2.1-2.1M15.8 15.8l-2.1-2.1M6.6 12h2.6M14.8 12h2.6M12 6.6v2.6M12 14.8v2.6" fill="none" stroke="#0891b2" stroke-width="1.6" stroke-linecap="round"/>
+</svg>

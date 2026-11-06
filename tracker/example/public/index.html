@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RevScope tracker examples</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/demo-config.js"></script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">RevScope · tracker.js demo</p>
+    <h1>Example pages</h1>
+    <div class="callout">
+      Run <code>pnpm start</code> (or <code>node server.js</code>) from
+      <code>tracker/example</code>, and keep the revscope backend listening on
+      <code>localhost:4320</code>. Pages install the documented queue stub for
+      project <code>example</code> (loads <code>http://localhost:4320/example.js</code>)
+      with <code>hostname: "example.com"</code> (required on loopback). Watch
+      DevTools → Network for POSTs to <code>/example</code> (batched after the
+      first pageview).
+    </div>
+
+    <p class="muted">
+      Simulated external referrer: open
+      <a href="http://127.0.0.1:3447/"><strong>http://127.0.0.1:3447/</strong></a>
+      first, then click through to <code>landing.html</code>
+      (different port → cross-origin <code>document.referrer</code>).
+    </p>
+
+    <p class="section-label">Pageviews &amp; navigation</p>
+    <ul class="index-list">
+      <li>
+        <a href="/landing.html">Landing + referrer / UTMs</a>
+        <span class="desc">First-hit attribution; best entered via port 3447.</span>
+      </li>
+      <li>
+        <a href="/spa-demo">History API SPA</a>
+        <span class="desc">pushState / popstate pageviews + engagement flush.</span>
+      </li>
+      <li>
+        <a href="/spa-hash.html">Hash SPA</a>
+        <span class="desc"><code>mode: "hash"</code> / <code>data-mode="hash"</code>.</span>
+      </li>
+      <li>
+        <a href="/nav/page-a.html">Multi-page navigation</a>
+        <span class="desc">Full reloads across pages in one session.</span>
+      </li>
+      <li>
+        <a href="/shop/sku-42">Path rewriter</a>
+        <span class="desc"><code>config.pathRewriter</code> normalizes dynamic paths.</span>
+      </li>
+      <li>
+        <a href="/hostname.html">Custom hostname</a>
+        <span class="desc"><code>data-hostname</code> / stub <code>config.hostname</code>.</span>
+      </li>
+    </ul>
+
+    <p class="section-label">Filtering &amp; params</p>
+    <ul class="index-list">
+      <li>
+        <a href="/filters-demo">Ignored paths</a>
+        <span class="desc"><code>ignorePages</code> / <code>data-ignore-pages</code>.</span>
+      </li>
+      <li>
+        <a href="/params.html">UTM, click IDs &amp; include-params</a>
+        <span class="desc">Allowlist + built-in campaign / ad click IDs.</span>
+      </li>
+    </ul>
+
+    <p class="section-label">Events</p>
+    <ul class="index-list">
+      <li>
+        <a href="/events.html">JavaScript dispatch API</a>
+        <span class="desc">Call <code>dispatch</code> with event metadata, callback, or beacon options.</span>
+      </li>
+      <li>
+        <a href="/declarative.html">Declarative HTML events</a>
+        <span class="desc"><code>data-revscope-click</code> / <code>visible</code> / <code>beacon</code> / <code>metadata</code> + named anchors.</span>
+      </li>
+      <li>
+        <a href="/outbound.html">Outbound &amp; mailto clicks</a>
+        <span class="desc">Automatic <code>revscope-outbound-click</code> via sendBeacon.</span>
+      </li>
+      <li>
+        <a href="/queue.html">Pre-load dispatch queue</a>
+        <span class="desc">Queue commands before the script finishes loading.</span>
+      </li>
+    </ul>
+
+    <p class="section-label">Metadata, consent &amp; engagement</p>
+    <ul class="index-list">
+      <li>
+        <a href="/meta-static.html">Static metadata</a>
+        <span class="desc"><code>config.metadata</code> object on pageviews.</span>
+      </li>
+      <li>
+        <a href="/meta-fn.html">Metadata function</a>
+        <span class="desc"><code>config.metadata(eventContext)</code> callback.</span>
+      </li>
+      <li>
+        <a href="/consent.html">Consent and tracking choices</a>
+        <span class="desc"><code>set_consent</code> with granted, denied, or disabled.</span>
+      </li>
+      <li>
+        <a href="/engagement.html">Scroll &amp; engagement</a>
+        <span class="desc">Tall page for scroll depth; tab hide / leave for engagement.</span>
+      </li>
+    </ul>
+
+    <hr class="sep">
+    <p class="muted">
+      Tip: after the first pageview, subsequent hits are batched (up to 30s or 20
+      items). Use <code>beacon: true</code> or a <code>callback</code> to flush
+      immediately when testing events.
+    </p>
+  </main>
+</body>
+</html>

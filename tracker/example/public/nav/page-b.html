@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Step B — navigation</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/demo-config.js"></script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">Multi-page · step B</p>
+    <h1>Page B</h1>
+    <p class="muted">
+      After load, the script fires events tied to this page’s <code>pg</code>.
+      Compare Network payloads with page A — same <code>s</code> (session) when
+      the landing cookie was persisted.
+    </p>
+
+    <pre id="log" class="panel"></pre>
+
+    <p>
+      <button type="button" class="btn" id="more">Another event</button>
+      <button type="button" class="btn" id="beacon">Beacon event</button>
+    </p>
+
+    <p class="footer-nav">
+      <a href="/nav/page-a.html">← Back to page A</a> · <a href="/index.html">Index</a>
+    </p>
+  </main>
+
+  <script>
+    function log(line) {
+      var el = document.getElementById("log");
+      el.textContent += line + "\n";
+    }
+
+    dispatch(
+      "event",
+      "step-b-auto",
+      {
+        metadata: { phase: "landing-follow-up" },
+        callback: function () {
+          log("Sent step-b-auto (with callback flush).");
+        },
+      }
+    );
+
+    dispatch(
+      "event",
+      "step-b-auto-plain",
+      { metadata: { phase: "baseline" } }
+    );
+    log("Queued step-b-auto-plain (batched).");
+
+    document.getElementById("more").addEventListener("click", function () {
+      dispatch(
+        "event",
+        "step-b-manual",
+        {
+          callback: function () {
+            log("Sent step-b-manual.");
+          },
+        }
+      );
+    });
+
+    document.getElementById("beacon").addEventListener("click", function () {
+      dispatch(
+        "event",
+        "step-b-beacon",
+        {
+          beacon: true,
+          callback: function () {
+            log("Sent step-b-beacon via sendBeacon.");
+          },
+        }
+      );
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Only what the image build needs. Keeps out build output (revscope/target is
+# huge), local project databases, and .env files, which hold secrets.
+*
+!tracker
+!web
+!revscope
+!crates
+!scripts/download-maxmind.sh
+
+**/node_modules
+**/.env
+**/.env.*
+**/*.env
+**/.astro
+revscope/target
+crates/*/target
+revscope/data
+revscope/profile.json*
+web/site
+web/app/dist
+web/app/dist-ui
+revscope/src/billing

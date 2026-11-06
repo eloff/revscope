@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Engagement &amp; scroll</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/demo-config.js"></script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">engagement · scroll depth</p>
+    <h1>Scroll &amp; engagement</h1>
+    <p class="muted">
+      Scroll this tall page to raise max scroll depth (rounded to 5%). On
+      <code>pagehide</code> / visibility hidden (when pagehide is unavailable),
+      the tracker sends <code>ty=engagement</code> with <code>d</code> (active
+      seconds) and <code>sc</code> (scroll %). Idle time (&gt;2 min without scroll)
+      and time spent in a hidden tab are excluded from duration.
+    </p>
+
+    <div class="callout">
+      Try: scroll halfway → switch tabs for a few seconds → return → leave the
+      page (or navigate away). Inspect the engagement POST / beacon.
+    </div>
+
+    <p>
+      <button type="button" class="btn" id="ping">Fire event while engaged</button>
+      <a class="btn primary" href="/index.html">Leave page (triggers engagement)</a>
+    </p>
+
+    <div class="tall-spacer">25%</div>
+    <div class="tall-spacer">50%</div>
+    <div class="tall-spacer">75%</div>
+    <div class="tall-spacer">100% — bottom</div>
+
+    <p class="footer-nav"><a href="/index.html">← Index</a></p>
+  </main>
+  <script>
+    document.getElementById("ping").addEventListener("click", function () {
+      dispatch(
+        "event",
+        "engagement-page-ping",
+        { callback: function () {} }
+      );
+    });
+  </script>
+</body>
+</html>

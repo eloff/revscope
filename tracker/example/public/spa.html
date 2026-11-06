@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>History SPA demo</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/demo-config.js"></script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">History API · pushState</p>
+    <h1>Mock SPA</h1>
+    <p class="muted">
+      Click nav items; the URL path updates without a full reload. The tracker
+      patches <code>history.pushState</code> and listens for <code>popstate</code>,
+      flushing engagement for the previous page then sending a new pageview.
+    </p>
+
+    <nav class="demo-nav" id="nav">
+      <a href="/spa-demo" data-route="/spa-demo">Home</a>
+      <a href="/spa-demo/about" data-route="/spa-demo/about">About</a>
+      <a href="/spa-demo/pricing" data-route="/spa-demo/pricing">Pricing</a>
+    </nav>
+
+    <section class="panel" id="content">
+      <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Home view.</p>
+    </section>
+
+    <p class="muted">
+      Also try the browser back/forward buttons after a few navigations.
+    </p>
+
+    <p class="footer-nav"><a href="/index.html">← Index</a></p>
+  </main>
+
+  <script>
+    var views = {
+      "/spa-demo": "<p><strong>Home.</strong> Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>",
+      "/spa-demo/about": "<p><strong>About.</strong> Quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.</p>" +
+        '<p><button type="button" class="btn" data-revscope-click="spa-about-cta">Declarative click on SPA page</button></p>',
+      "/spa-demo/pricing": "<p><strong>Pricing.</strong> Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore.</p>" +
+        '<div class="visible-target" data-revscope-visible="spa-saw-pricing">Visible target re-armed after SPA navigation — scroll if needed.</div>',
+    };
+
+    function render(pathname) {
+      var html = views[pathname] || views["/spa-demo"];
+      document.getElementById("content").innerHTML = html;
+      var links = document.querySelectorAll("#nav a");
+      for (var i = 0; i < links.length; i++) {
+        var a = links[i];
+        a.className = a.getAttribute("data-route") === pathname ? "active" : "";
+      }
+    }
+
+    function navigate(pathname) {
+      // Render first so data-revscope-click / data-revscope-visible targets exist when the
+      // tracker re-scans on the pushState-driven pageview.
+      render(pathname);
+      if (window.history && window.history.pushState) {
+        window.history.pushState({ path: pathname }, "", pathname);
+      }
+    }
+
+    document.getElementById("nav").addEventListener("click", function (e) {
+      var t = e.target;
+      if (t.tagName !== "A") {
+        return;
+      }
+      e.preventDefault();
+      navigate(t.getAttribute("data-route"));
+    });
+
+    window.addEventListener("popstate", function () {
+      render(window.location.pathname);
+    });
+
+    render(window.location.pathname.indexOf("/spa-demo") === 0 ? window.location.pathname : "/spa-demo");
+  </script>
+</body>
+</html>

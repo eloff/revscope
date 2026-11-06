@@ -1,0 +1,103 @@
+[package]
+name = "revscope"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+default-run = "revscope"
+
+[profile.release]
+debug = "line-tables-only"
+strip = false
+
+[profile.release-generate]
+inherits = "release"
+debug = false
+strip = true
+
+[features]
+generate = ["dep:rand"]
+# A build for running your own instance: embeds the product UI from `web/app/dist-ui`
+# (`pnpm build:bundle` in web/) under /ui. Only the first user signs up, without a plan, creating
+# the one shared account and its first project, named at signup; everyone else is invited.
+self-hosted = ["dep:flate2"]
+# revscope.co's own plans, checkout and billing webhooks, compiled from src/billing: a private
+# repository (eloff/revscope-billing) checked out there. Without it, every hosted signup is a
+# complimentary account.
+billing = []
+
+[[bin]]
+name = "generate"
+path = "src/bin/generate.rs"
+required-features = ["generate"]
+
+[dependencies]
+revscope-api = { path = "../crates/revscope-api" }
+libc = "0.2"
+rand = { version = "0.8", optional = true }
+dotenv = "0.15"
+env_logger = "0.11"
+include_dir = "0.7"
+log = "0.4"
+bytes = "1"
+fxhash = "0.2"
+parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_urlencoded = "0.7"
+compact_str = { version = "0.9", features = ["serde"] }
+smallvec = "1"
+socket2 = { version = "0.5", features = ["all"] }
+tokio = { version="1", features=["full"] }
+tokio-postgres = "0.7"
+rusqlite = { version = "0.40", features = ["bundled", "hooks", "limits"] }
+woothee = "0.13"
+xxhash-rust = { version="0.8", features=["xxh3"] }
+dashmap = "6.1"
+sha2 = "0.10"
+base64 = "0.22"
+md5 = "0.8"
+chacha20 = "0.9"
+getrandom = "0.2"
+regex = "1"
+maxminddb = "0.28"
+async-stripe = "1.0.0-rc.6"
+async-stripe-core = { version = "1.0.0-rc.6", features = ["charge", "refund", "dispute", "payment_intent", "deserialize", "serialize"] }
+async-stripe-billing = { version = "1.0.0-rc.6", features = ["subscription", "invoice", "invoice_payment", "deserialize", "serialize"] }
+async-stripe-checkout = { version = "1.0.0-rc.6", features = ["checkout_session", "deserialize", "serialize"] }
+async-stripe-product = { version = "1.0.0-rc.6", features = ["coupon", "deserialize", "serialize"] }
+async-stripe-types = { version = "1.0.0-rc.6", features = ["deserialize", "serialize"] }
+async-stripe-shared = { version = "1.0.0-rc.6", features = ["deserialize", "serialize"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
+psl = "2"
+sentry = { version = "0.48", default-features = false, features = ["backtrace", "contexts", "debug-images", "log", "panic", "reqwest", "rustls"] }
+jsonwebtoken = { version = "10.4", features = ["aws_lc_rs"] }
+aws-lc-rs = "1.18"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+url = "2.5"
+dodopayments = "1.107"
+hmac = "0.12"
+tokio-rustls = "0.26"
+rustls = "0.23"
+instant-acme = { version = "0.8", features = ["rcgen"] }
+x509-parser = "0.18"
+jiff = { version = "0.2.35", default-features = false, features = ["std", "alloc", "tzdb-bundle-always", "tzdb-concatenated", "perf-inline"] }
+rmcp = { version = "3.2.0", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
+http = "1.5.0"
+http-body-util = "0.1.5"
+futures = "0.3.34"
+
+[build-dependencies]
+# Gzips the embedded UI bundle for the self-hosted feature.
+flate2 = { version = "1", optional = true }
+
+[dev-dependencies]
+dotenv = "0.15"
+env_logger = "0.11"
+http-body = "1"
+rcgen = "0.14"
+rusqlite = { version = "0.40", features = ["bundled", "hooks", "limits"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_urlencoded = "0.7"
+tokio = { version = "1", features = ["full", "test-util"] }
+

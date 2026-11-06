@@ -1,0 +1,19 @@
+{
+  "name": "revscope",
+  "version": "0.2.0",
+  "description": "Command line client for RevScope: sign up, install the tracker, connect integrations, and query analytics.",
+  "license": "FSL-1.1-ALv2",
+  "homepage": "https://revscope.co/docs/cli",
+  "bin": {
+    "revscope": "bin/revscope.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Consent</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/demo-config.js"></script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">dispatch · set_consent</p>
+    <h1>Consent and tracking choices</h1>
+    <p class="muted">
+      Cookies: <code>rcexample</code> (<code>1</code>/<code>0</code>/<code>2</code>) and
+      <code>rsexample</code> (session id when persistence is allowed).
+      Granting consent lets the server persist the session; revoking clears the
+      landing cookie and uses cookieless measurement; disabling stops all
+      measurement. Subsequent pageviews/events include <code>c=true|false</code>
+      when tracking is enabled and consent is known.
+      Call <code>dispatch("consent_status", callback)</code> to learn whether this visitor's
+      region requires a consent prompt
+      (<code>"granted"</code> | <code>"denied"</code> | <code>"disabled"</code> |
+      <code>"required"</code> | <code>"not_required"</code>).
+    </p>
+
+    <div class="panel">
+      <p class="muted" style="margin:0">Current cookies:</p>
+      <pre id="cookies"></pre>
+      <div class="row">
+        <button type="button" class="btn primary" id="grant">Grant consent</button>
+        <button type="button" class="btn danger" id="revoke">Revoke consent</button>
+        <button type="button" class="btn danger" id="disable">Disable tracking</button>
+        <button type="button" class="btn" id="refresh">Refresh cookie view</button>
+      </div>
+    </div>
+
+    <p>
+      <button type="button" class="btn" id="ping">Fire event after consent change</button>
+      <button type="button" class="btn" id="status-btn">Check consent_status</button>
+    </p>
+    <p id="status" class="muted"></p>
+
+    <p class="footer-nav"><a href="/index.html">← Index</a></p>
+  </main>
+  <script>
+    function readCookies() {
+      document.getElementById("cookies").textContent =
+        document.cookie || "(no cookies for this origin)";
+    }
+
+    function status(msg) {
+      document.getElementById("status").textContent = msg || "";
+    }
+
+    document.getElementById("grant").addEventListener("click", function () {
+      dispatch("set_consent", "granted");
+      readCookies();
+      status("Consent granted (rcexample=1). Reload or navigate to see c=true on payloads.");
+    });
+
+    document.getElementById("revoke").addEventListener("click", function () {
+      dispatch("set_consent", "denied");
+      readCookies();
+      status("Consent denied (rcexample=0, rsexample cleared, cookieless measurement continues).");
+    });
+
+    document.getElementById("disable").addEventListener("click", function () {
+      dispatch("set_consent", "disabled");
+      readCookies();
+      status("Tracking disabled (rcexample=2, no further analytics requests).");
+    });
+
+    document.getElementById("refresh").addEventListener("click", readCookies);
+
+    document.getElementById("ping").addEventListener("click", function () {
+      dispatch(
+        "event",
+        "consent-demo-ping",
+        {
+          callback: function () {
+            status("Sent consent-demo-ping — check payload for c= field.");
+          },
+        }
+      );
+    });
+
+    document.getElementById("status-btn").addEventListener("click", function () {
+      dispatch(
+        "consent_status",
+        function (consentStatus) {
+          status("consent_status → " + consentStatus);
+        }
+      );
+    });
+
+    readCookies();
+  </script>
+</body>
+</html>

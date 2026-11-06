@@ -1,0 +1,70 @@
+---
+import Layout from "./Layout.astro";
+
+interface Props {
+  title: string;
+  /** Distinguishes height messages when more than one embed is on the parent page. */
+  embed: string;
+  /** The embed expands over the host page (see lib/embedExpansion.ts) rather than scrolling in place. */
+  expandable?: boolean;
+}
+
+const { title, embed, expandable = false } = Astro.props;
+---
+
+<Layout title={title}>
+	<base slot="head" target="_top" />
+	<meta slot="head" name="robots" content="noindex" />
+	<slot />
+	<script define:vars={{ embed, expandable }}>
+		const embedId = embed;
+		// Stop the collapsed frame scrolling before the page hydrates, so the wheel
+		// scrolls the host page from the start.
+		if (expandable && window.parent !== window) {
+			document.documentElement.style.overflow = "hidden";
+		}
+		// Content below a `data-embed-fold` element is cut off, so a long page
+		// doesn't push the host page's own content far down; the embed can expand
+		// over the host page to show the rest. The margin lets the top of what
+		// follows peek out as a hint that there is more.
+		const FOLD_MARGIN = 48;
+		const observer = new ResizeObserver(() => report());
+		let observedFold = null;
+		const foldHeight = () => {
+			const fold = document.querySelector("[data-embed-fold]");
+			if (fold !== observedFold) {
+				if (observedFold) {
+					observer.unobserve(observedFold);
+				}
+				if (fold) {
+					observer.observe(fold);
+				}
+				observedFold = fold;
+			}
+			return fold ? fold.getBoundingClientRect().bottom + window.scrollY + FOLD_MARGIN : null;
+		};
+		const report = () => {
+			const fullHeight = Math.max(
+				document.documentElement.scrollHeight,
+				document.body ? document.body.scrollHeight : 0,
+			);
+			const height = Math.min(fullHeight, foldHeight() ?? fullHeight);
+			parent.postMessage(
+				{ type: "revscope-embed-height", embed: embedId, height },
+				"*",
+			);
+		};
+		observer.observe(document.documentElement);
+		if (document.body) {
+			observer.observe(document.body);
+		}
+		report();
+	</script>
+</Layout>
+
+<style is:global>
+	html,
+	body {
+		background: #ffffff;
+	}
+</style>

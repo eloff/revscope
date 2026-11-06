@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pre-load queue</title>
+  <link rel="stylesheet" href="/styles.css">
+  <!--
+    Intentionally queue commands BEFORE the deferred tracker loads, using the
+    documented install stub rather than the shared demo-config helper.
+  -->
+  <script>
+    (function (w, n, u, c) {
+      c = c || {};
+      c.url = u;
+      u += n + ".js";
+      c.project = n;
+      n = c.name || "dispatch";
+      if (typeof w[n] === "function") return;
+      var q = [];
+      function f() {
+        q.push([].slice.call(arguments));
+      }
+      f.q = f.a = q;
+      f.c = c;
+      w[n] = f;
+      var s = document.createElement("script");
+      s.src = u;
+      s.defer = true;
+      document.head.appendChild(s);
+    })(window, "example", "http://localhost:4320/", { hostname: "example.com" });
+
+    // These run before the deferred tracker executes and should replay on load.
+    dispatch(
+      "event",
+      "queued-before-load",
+      { metadata: { when: "before-script" } }
+    );
+    dispatch("set_consent", "granted");
+  </script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">dispatch queue stub</p>
+    <h1>Pre-load queue</h1>
+    <p class="muted">
+      This page installs the documented <code>dispatch</code> stub, queues
+      <code>event</code> + <code>set_consent</code> commands, then loads
+      the tracker. On init the queue is replayed. Check Network for
+      <code>queued-before-load</code> and <code>c=true</code> on later hits.
+    </p>
+
+    <div class="panel">
+      <p id="status">Waiting for deferred tracker…</p>
+      <button type="button" class="btn" id="after">Fire event after load</button>
+    </div>
+
+    <p class="footer-nav"><a href="/index.html">← Index</a></p>
+  </main>
+  <script>
+    function ready() {
+      var el = document.getElementById("status");
+      if (typeof dispatch.projectName === "string") {
+        el.textContent = "Tracker loaded; pre-load queue should have been replayed.";
+      } else {
+        el.textContent = "Waiting for deferred tracker…";
+      }
+    }
+    // Deferred example.js may still be loading when this inline script runs.
+    window.addEventListener("load", ready);
+    ready();
+
+    document.getElementById("after").addEventListener("click", function () {
+      dispatch(
+        "event",
+        "queued-after-load",
+        {
+          callback: function () {
+            document.getElementById("status").textContent =
+              "Sent queued-after-load.";
+          },
+        }
+      );
+    });
+  </script>
+</body>
+</html>

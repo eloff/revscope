@@ -1,0 +1,8 @@
+---
+import RunwayCalculator from "../../components/dashboard/RunwayCalculator";
+import EmbedLayout from "../../layouts/EmbedLayout.astro";
+---
+
+<EmbedLayout title="Startup runway calculator" embed="runway">
+	<RunwayCalculator client:only="solid-js" standalone />
+</EmbedLayout>

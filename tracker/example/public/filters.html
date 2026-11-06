@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ignored paths</title>
+  <link rel="stylesheet" href="/styles.css">
+  <!-- ignorePages is the stub's optional 4th-arg config (or data-ignore-pages). -->
+  <script>
+    (function (w, n, u, c) {
+      c = c || {};
+      c.url = u;
+      u += n + ".js";
+      c.project = n;
+      n = c.name || "dispatch";
+      if (typeof w[n] === "function") return;
+      var q = [];
+      function f() {
+        q.push([].slice.call(arguments));
+      }
+      f.q = f.a = q;
+      f.c = c;
+      w[n] = f;
+      var s = document.createElement("script");
+      s.src = u;
+      s.defer = true;
+      document.head.appendChild(s);
+    })(window, "example", "http://localhost:4320/", {
+      hostname: "example.com",
+      ignorePages: "/ignored-demo,/secret-*",
+    });
+  </script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">ignore-pages</p>
+    <h1>Ignored routes</h1>
+    <p class="muted">
+      <code>ignorePages</code> excludes <code>/ignored-demo</code> and anything
+      matching <code>/secret-*</code> from pageviews (console: “Ignoring …”).
+      Tracked routes below still record normally.
+    </p>
+
+    <nav class="demo-nav" id="nav">
+      <a href="/filters-demo" data-route="/filters-demo">Tracked overview</a>
+      <a href="/filters-demo/detail" data-route="/filters-demo/detail">Tracked detail</a>
+      <a href="/ignored-demo" data-route="/ignored-demo">Ignored exact path</a>
+      <a href="/secret-notes" data-route="/secret-notes">Ignored glob</a>
+    </nav>
+
+    <section class="panel" id="content">
+      <p>Overview — lorem ipsum dolor sit amet.</p>
+    </section>
+
+    <p class="footer-nav"><a href="/index.html">← Index</a></p>
+  </main>
+
+  <script>
+    var views = {
+      "/filters-demo": "<p><strong>Tracked.</strong> Maecenas sed diam eget risus varius blandit.</p>",
+      "/filters-demo/detail": "<p><strong>Tracked detail.</strong> Etiam porta sem malesuada magna mollis euismod.</p>",
+      "/ignored-demo": "<p>This content still renders, but the path should be ignored for analytics.</p>",
+      "/secret-notes": "<p>Matches <code>/secret-*</code>; should also be ignored.</p>",
+    };
+
+    function render(pathname) {
+      var html = views[pathname] || views["/filters-demo"];
+      document.getElementById("content").innerHTML = html;
+      var links = document.querySelectorAll("#nav a");
+      for (var i = 0; i < links.length; i++) {
+        var a = links[i];
+        a.className = a.getAttribute("data-route") === pathname ? "active" : "";
+      }
+    }
+
+    function navigate(pathname) {
+      render(pathname);
+      if (window.history && window.history.pushState) {
+        window.history.pushState({ path: pathname }, "", pathname);
+      }
+    }
+
+    document.getElementById("nav").addEventListener("click", function (e) {
+      var t = e.target;
+      if (t.tagName !== "A") {
+        return;
+      }
+      e.preventDefault();
+      navigate(t.getAttribute("data-route"));
+    });
+
+    window.addEventListener("popstate", function () {
+      render(window.location.pathname);
+    });
+
+    var initial = window.location.pathname;
+    if (initial.indexOf("/filters-demo") === 0) {
+      render(initial);
+    } else if (initial === "/ignored-demo" || /^\/secret-/.test(initial)) {
+      render(initial);
+    } else {
+      render("/filters-demo");
+    }
+  </script>
+</body>
+</html>

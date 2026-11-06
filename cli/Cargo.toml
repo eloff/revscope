@@ -1,0 +1,27 @@
+[package]
+name = "revscope-cli"
+version = "0.2.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+description = "Command line client for RevScope: sign up, install the tracker, connect integrations, and query analytics."
+publish = false
+
+[[bin]]
+name = "revscope"
+path = "src/main.rs"
+
+[dependencies]
+revscope-api = { path = "../crates/revscope-api" }
+base64 = "0.22"
+getrandom = "0.3"
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "blocking"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+url = "2.5"
+webpki-root-certs = "1"
+
+[profile.release]
+strip = true
+lto = "thin"

@@ -1,0 +1,23 @@
+---
+import AuthButton from "@revscope/web-shared/AuthButton";
+import { appPath } from "@revscope/web-shared/links";
+import revscopeLogo from "../assets/revscope-logo.webp";
+import { actions, header, inner, loginTrigger, logoImage, logoLink } from "./AppHeader.css";
+---
+
+<header class={header}>
+	<div class={inner}>
+		<a href={appPath("/dashboard")} class={logoLink} aria-label="RevScope dashboard">
+			<img
+				class={logoImage}
+				src={revscopeLogo.src}
+				width={revscopeLogo.width}
+				height={revscopeLogo.height}
+				alt=""
+			/>
+		</a>
+		<div class={actions}>
+			<AuthButton client:only="solid-js" triggerClass={loginTrigger} />
+		</div>
+	</div>
+</header>

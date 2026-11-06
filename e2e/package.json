@@ -1,0 +1,20 @@
+{
+  "name": "revscope-e2e",
+  "private": true,
+  "license": "FSL-1.1-ALv2",
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@8.12.1",
+  "scripts": {
+    "check": "biome check --write",
+    "tsc": "tsc --noEmit",
+    "test": "playwright test",
+    "test:prod": "E2E_BASE_URL=https://revscope.co playwright test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.5",
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}

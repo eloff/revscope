@@ -1,0 +1,8 @@
+---
+import DemoOverview, { DEMO_EMBED_ID } from "../../components/dashboard/DemoOverview";
+import EmbedLayout from "../../layouts/EmbedLayout.astro";
+---
+
+<EmbedLayout title="RevScope demo" embed={DEMO_EMBED_ID} expandable>
+	<DemoOverview client:load />
+</EmbedLayout>

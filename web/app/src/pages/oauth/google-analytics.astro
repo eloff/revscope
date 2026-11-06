@@ -1,0 +1,24 @@
+---
+import GoogleAnalyticsOAuthCallback from "../../components/GoogleAnalyticsOAuthCallback";
+import AppLayout from "../../layouts/AppLayout.astro";
+---
+
+<AppLayout
+	title="Connect Google Analytics - RevScope"
+	description="Finish connecting Google Analytics to RevScope."
+>
+	<meta slot="head" name="robots" content="noindex" />
+
+	<main class="callback-page">
+		<GoogleAnalyticsOAuthCallback client:only="solid-js" />
+	</main>
+</AppLayout>
+
+<style>
+	.callback-page {
+		max-width: 640px;
+		margin: 0 auto;
+		padding: 48px 24px 64px;
+		text-align: center;
+	}
+</style>

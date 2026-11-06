@@ -1,0 +1,7 @@
+{
+  "name": "tracker-example",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  }
+}

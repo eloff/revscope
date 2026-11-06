@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Metadata function</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script>
+    (function (w, n, u, c) {
+      c = c || {};
+      c.url = u;
+      u += n + ".js";
+      c.project = n;
+      n = c.name || "dispatch";
+      if (typeof w[n] === "function") return;
+      var q = [];
+      function f() {
+        q.push([].slice.call(arguments));
+      }
+      f.q = f.a = q;
+      f.c = c;
+      w[n] = f;
+      var s = document.createElement("script");
+      s.src = u;
+      s.defer = true;
+      document.head.appendChild(s);
+    })(window, "example", "http://localhost:4320/", {
+      hostname: "example.com",
+      metadata: function (eventContext) {
+        var segment = "other";
+        var p = eventContext.path || "";
+        if (p.indexOf("meta-fn") !== -1) {
+          segment = "meta-fn-page";
+        }
+        return {
+          demo_site: "tracker-example",
+          flavor: "function",
+          segment: segment,
+          ctx_type: eventContext.type,
+        };
+      },
+    });
+  </script>
+</head>
+<body>
+  <main class="wrap">
+    <p class="badge">stub config · metadata function</p>
+    <h1>Dynamic metadata</h1>
+    <p class="muted">
+      The function receives <code>eventContext</code> with <code>type</code>
+      (e.g. <code>pageview</code>) and <code>path</code>. It runs for pageviews
+      only; custom events still take optional per-event <code>metadata</code>.
+    </p>
+
+    <p><button type="button" class="btn" id="btn">Event without extra metadata</button></p>
+
+    <p class="footer-nav">
+      <a href="/index.html">← Index</a> · <a href="/meta-static.html">Static metadata demo</a>
+    </p>
+  </main>
+  <script>
+    document.getElementById("btn").addEventListener("click", function () {
+      dispatch(
+        "event",
+        "demo-fn-meta-only",
+        { callback: function () {} }
+      );
+    });
+  </script>
+</body>
+</html>

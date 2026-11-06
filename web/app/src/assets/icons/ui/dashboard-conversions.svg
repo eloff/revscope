@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="new customers icon">
+  <circle cx="9" cy="9" r="3.5" fill="#fef3c7" stroke="#d97706" stroke-width="1.6"/>
+  <path d="M4.5 18.2c.8-2.6 2.4-4 4.5-4s3.7 1.4 4.5 4" fill="none" stroke="#d97706" stroke-width="1.7" stroke-linecap="round"/>
+  <path d="M16.7 8.2v4.6M14.4 10.5H19" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round"/>
+</svg>
