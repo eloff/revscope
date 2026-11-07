@@ -176,6 +176,10 @@ export function AudiencePanel(props: TabPanelProps) {
     audience().table.loading() &&
     audience().table.data() !== undefined &&
     audience().table.loadedKey() !== audience().currentKey();
+  // Also true when a re-sort failed or is refreshing a stale cache entry in the background.
+  const citiesStale = () =>
+    audience().table.data() !== undefined &&
+    audience().table.loadedKey() !== audience().currentKey();
   return (
     <Show when={!showsNoData(audience().table, hasAudienceData)} fallback={<NoDataView />}>
       <Audience
@@ -184,6 +188,7 @@ export function AudiencePanel(props: TabPanelProps) {
         loading={audience().table.loading()}
         treemapLoading={audience().treemap.loading()}
         citiesLoading={citiesLoading()}
+        citiesStale={citiesStale()}
         citiesOffset={audience().offset()}
         error={audience().table.error()}
         scrollTarget={props.nav.countryScrollTarget()}

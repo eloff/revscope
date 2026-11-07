@@ -108,6 +108,23 @@ describe("Audience", () => {
     const [us, de] = within(countryTable()).getAllByRole("row").slice(1);
     expect(us?.querySelector('[class*="gridBest"]')).not.toBeNull();
     expect(de?.querySelector('[class*="gridBest"]')).not.toBeNull();
+    expect(screen.getByText("Revenue share")).toBeInTheDocument();
+  });
+
+  it("stars nothing and keys the map to visitors when nothing converted", () => {
+    const unconverted = {
+      ...data,
+      countries: {
+        current: [
+          { ...country("US", "United States", 500, 0, 0), ...metrics(500, 0, 0) },
+          { ...country("DE", "Germany", 100, 0, 0), ...metrics(100, 0, 0) },
+        ],
+      },
+    } as AudienceResponse;
+    renderAudience({ data: unconverted, treemapData: unconverted });
+    expect(countryTable().querySelector('[class*="gridBest"]')).toBeNull();
+    const legend = screen.getByText("Less").closest("div")?.parentElement as HTMLElement;
+    expect(legend.firstElementChild?.textContent).toBe("Visitors");
   });
 
   it("sorts countries, remembering the choice", async () => {
@@ -189,6 +206,30 @@ describe("Audience", () => {
       ?.parentElement as HTMLElement;
     await userEvent.click(within(citiesTable).getByRole("button", { name: "Next" }));
     expect(onCitiesPageChange).toHaveBeenCalledWith(200);
+  });
+
+  it("stars the best city only on a revenue-descending sort", async () => {
+    renderAudience();
+    await userEvent.click(screen.getByRole("tab", { name: "Cities" }));
+    const berlin = (await screen.findByText("Berlin, Germany")).closest("tr") as HTMLElement;
+    expect(berlin.querySelector('[class*="gridBest"]')).not.toBeNull();
+    setAudienceBreakdownSorts({
+      ...defaultSorts,
+      cities: { column: "visitors", direction: "desc" },
+    });
+    expect(berlin.querySelector('[class*="gridBest"]')).toBeNull();
+  });
+
+  it("stars no city while the page on show is left over from another sort", async () => {
+    renderAudience({ citiesStale: true });
+    await userEvent.click(screen.getByRole("tab", { name: "Cities" }));
+    const berlin = (await screen.findByText("Berlin, Germany")).closest("tr") as HTMLElement;
+    expect(berlin.querySelector('[class*="gridBest"]')).toBeNull();
+  });
+
+  it("keeps the revenue legend while the countries load", () => {
+    renderAudience({ data: undefined, treemapData: undefined, loading: true });
+    expect(screen.getByText("Revenue share")).toBeInTheDocument();
   });
 
   it("shows the tab error on the map", () => {

@@ -563,7 +563,9 @@ export function findAudienceBreakdownHighlights(
   const highlights: AudienceBreakdownHighlights = {};
   for (const metric of metrics) {
     const best = [...rows].sort((a, b) => compareAudienceHighlightRows(a, b, metric))[0];
-    if (best) {
+    // A $0 revenue or a rate with no conversions behind it is nothing to star.
+    const hasConversions = metric !== "conversion" || (best?.convertingVisitors ?? 0) > 0;
+    if (best && hasConversions && audienceHighlightValue(best, metric) > 0) {
       highlights[metric] = best.key;
     }
   }

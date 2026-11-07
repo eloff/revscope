@@ -59,6 +59,8 @@ interface AudienceGeoBreakdownProps {
   onCountryFilter?: (countryCode: string, countryName: string) => void;
   citiesOffset?: number;
   citiesLoading?: boolean;
+  /** The cities on show are not the page and sort asked for. */
+  citiesStale?: boolean;
   onCitiesPageChange?: (offset: number) => void;
   onCitiesSortChange?: () => void;
 }
@@ -96,7 +98,15 @@ export default function AudienceGeoBreakdown(props: AudienceGeoBreakdownProps) {
     props.treemapData ? buildCityBreakdownRows(props.treemapData.cities) : [],
   );
   const cityHighlights = createMemo(() => {
-    if ((props.citiesOffset ?? 0) > 0) {
+    // The server pages cities, so only the first page of a revenue-descending sort holds the best.
+    // A page left over from another sort, while it refetches or after it failed, can't hold it.
+    const sort = audienceBreakdownSorts().cities;
+    if (
+      props.citiesStale ||
+      (props.citiesOffset ?? 0) > 0 ||
+      sort.column !== "revenue" ||
+      sort.direction !== "desc"
+    ) {
       return {};
     }
     return findAudienceBreakdownHighlights(cityRows(), ["revenue"]);

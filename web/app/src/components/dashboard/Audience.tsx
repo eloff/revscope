@@ -50,6 +50,8 @@ export type AudienceProps = {
   citiesOffset?: number;
   /** True while a cities page/sort fetch is in flight and the table should show loading. */
   citiesLoading?: boolean;
+  /** The cities on show are not the page and sort asked for. */
+  citiesStale?: boolean;
   onCitiesPageChange?: (offset: number) => void;
   onCitiesSortChange?: () => void;
 };
@@ -66,6 +68,11 @@ export default function Audience(props: AudienceProps) {
     props.data ? buildCountryMetrics(props.data.countries) : new Map(),
   );
   const buckets = createMemo(() => bucketByRevenue(countryMetrics()));
+  // bucketByRevenue breaks revenue ties by visitors, so with no revenue the map ranks visitors.
+  const ranksVisitors = createMemo(() => {
+    const countries = [...countryMetrics().values()];
+    return countries.length > 0 && countries.every((country) => country.revenue <= 0);
+  });
   const countryRows = createMemo(() =>
     props.data ? buildCountryBreakdownRows(props.data.countries) : [],
   );
@@ -116,7 +123,7 @@ export default function Audience(props: AudienceProps) {
       </CursorHoverCard>
 
       <div class={audienceLegend}>
-        <span class={audienceLegendLabel}>Revenue share</span>
+        <span class={audienceLegendLabel}>{ranksVisitors() ? "Visitors" : "Revenue share"}</span>
         <div class={audienceLegendScale}>
           <span class={audienceLegendCaption}>Less</span>
           <For each={REVENUE_BUCKET_COLORS}>
@@ -141,6 +148,7 @@ export default function Audience(props: AudienceProps) {
           onCountryFilter={props.onCountryFilter}
           citiesOffset={props.citiesOffset}
           citiesLoading={props.citiesLoading}
+          citiesStale={props.citiesStale}
           onCitiesPageChange={props.onCitiesPageChange}
           onCitiesSortChange={props.onCitiesSortChange}
         />

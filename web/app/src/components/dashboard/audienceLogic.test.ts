@@ -52,7 +52,7 @@ function breakdown(key: string, visitors: number, revenue: number, lowerBound?: 
     key,
     name: key,
     visitors,
-    convertingVisitors: 0,
+    convertingVisitors: lowerBound ? 1 : 0,
     revenue,
     revenuePerVisitor: 0,
     conversionLowerBound: lowerBound,
@@ -177,6 +177,20 @@ describe("sorting and highlights", () => {
   it("finds the best revenue and conversion rows", () => {
     expect(findAudienceBreakdownHighlights(rows)).toEqual({ revenue: "a", conversion: "b" });
     expect(findAudienceBreakdownHighlights([])).toEqual({});
+  });
+
+  it("stars nothing on zero revenue or zero conversions", () => {
+    const unconverted = [
+      { ...rows[0], revenue: 0, convertingVisitors: 0, conversionLowerBound: 0 },
+      { ...rows[1], revenue: 0, convertingVisitors: 0, conversionLowerBound: 0 },
+    ];
+    expect(findAudienceBreakdownHighlights(unconverted)).toEqual({});
+  });
+
+  it("stars no rate whose bound rounds above zero without conversions", () => {
+    // The server's Wilson bound for 0 of 3 visitors comes out as 5.55e-17, not 0.
+    const unconverted = [{ ...rows[0], convertingVisitors: 0, conversionLowerBound: 5.55e-17 }];
+    expect(findAudienceBreakdownHighlights(unconverted, ["conversion"])).toEqual({});
   });
 
   it("adds highlight lines only to highlighted rows", () => {
