@@ -14,6 +14,7 @@ import { fetchSignInProviders } from "./idTokenSignIn";
 import LoginDialog, { openLoginDialog } from "./LoginDialog";
 
 const REMEMBERED_EMAIL_KEY = "revscope.auth.rememberedEmail";
+const LAST_LOGIN_COOKIE = "revscope_last_login_method";
 
 async function renderDialog(props: { redirectTo?: string } = {}) {
   render(() => <LoginDialog {...props} />);
@@ -39,7 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  clearCookie("revscope_last_login");
+  clearCookie(LAST_LOGIN_COOKIE);
 });
 
 describe("LoginDialog", () => {
@@ -273,19 +274,12 @@ describe("LoginDialog", () => {
     expect(
       await screen.findByText("No RevScope account uses this Google account yet. Sign up first."),
     ).toBeInTheDocument();
-    expect(document.cookie).not.toContain("revscope_last_login");
     expect(assign).not.toHaveBeenCalled();
   });
 
   describe("last used login method", () => {
     const frame = () => screen.getByText("Last used").parentElement;
-
-    async function reopen(user: ReturnType<typeof userEvent.setup>) {
-      await user.click(screen.getByRole("button", { name: "Close" }));
-      await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-      openLoginDialog();
-      await screen.findByRole("dialog");
-    }
+    const rememberMethod = (method: string) => setCookie(`${LAST_LOGIN_COOKIE}=${method}; Path=/`);
 
     it("shows no frame before any login", async () => {
       const { user } = await renderDialog();
@@ -293,33 +287,28 @@ describe("LoginDialog", () => {
       expect(screen.queryByText("Last used")).toBeNull();
     });
 
-    it("remembers a password login and frames the email form next time", async () => {
-      server.use(http.post(`${API}/v2/public/auth/login`, () => HttpResponse.json(testSession())));
+    it("frames the email form when email was last used", async () => {
+      rememberMethod("email");
       const { user } = await renderDialog();
-      const dialog = await openDialog(user);
-      expect(screen.queryByText("Last used")).toBeNull();
-      await user.type(screen.getByLabelText("Email"), "ada@example.com");
-      await user.type(screen.getByLabelText("Password"), "correctHorse9!");
-      await user.click(within(dialog).getByRole("button", { name: "Log in" }));
-      await vi.waitFor(() => expect(assign).toHaveBeenCalled());
-
-      await reopen(user);
+      await openDialog(user);
       expect(frame()).toContainElement(screen.getByLabelText("Password"));
     });
 
-    it("doesn't remember a failed login", async () => {
-      mockApi("post", "/v2/public/auth/login", { error: "Wrong password." }, 401);
+    it("reads the cookie each time it opens", async () => {
       const { user } = await renderDialog();
-      const dialog = await openDialog(user);
-      await user.type(screen.getByLabelText("Email"), "ada@example.com");
-      await user.type(screen.getByLabelText("Password"), "correctHorse9!");
-      await user.click(within(dialog).getByRole("button", { name: "Log in" }));
-      await screen.findByText("Wrong password.");
-      expect(document.cookie).not.toContain("revscope_last_login");
+      await openDialog(user);
+      expect(screen.queryByText("Last used")).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Close" }));
+      await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+      rememberMethod("email");
+      openLoginDialog();
+      await screen.findByRole("dialog");
+      expect(frame()).toContainElement(screen.getByLabelText("Password"));
     });
 
     it("drops the email form's frame in forgot-password mode", async () => {
-      setCookie("revscope_last_login=email; Path=/");
+      rememberMethod("email");
       const { user } = await renderDialog();
       const dialog = await openDialog(user);
       expect(screen.getByText("Last used")).toBeInTheDocument();
@@ -327,44 +316,30 @@ describe("LoginDialog", () => {
       expect(screen.queryByText("Last used")).toBeNull();
     });
 
-    it("frames Google's button after a Google login, not the email form", async () => {
+    it("frames Google's button, not the email form, when Google was last used", async () => {
+      rememberMethod("google");
       mockApi("get", "/v2/public/auth/providers", { google: "google-client", apple: null });
-      mockApi("post", "/v2/public/auth/id-token", testSession());
       const google = fakeGoogle();
       const { user } = await renderDialog();
       await openDialog(user);
       await vi.waitFor(() => expect(google.renderButton).toHaveBeenCalled());
-      expect(screen.queryByText("Last used")).toBeNull();
-      google.signIn("google-token");
-      await vi.waitFor(() => expect(assign).toHaveBeenCalled());
-      expect(document.cookie).toContain("revscope_last_login=google");
-
-      await reopen(user);
-      await vi.waitFor(() => expect(google.renderButton).toHaveBeenCalledTimes(2));
       expect(frame()).toContainElement(google.renderButton.mock.lastCall?.[0] as HTMLElement);
       expect(frame()).not.toContainElement(screen.getByLabelText("Email"));
     });
 
-    it("frames Apple's button after an Apple login, not the email form", async () => {
+    it("frames Apple's button, not the email form, when Apple was last used", async () => {
+      rememberMethod("apple");
       mockApi("get", "/v2/public/auth/providers", { google: null, apple: "co.revscope.web" });
-      mockApi("post", "/v2/public/auth/id-token", testSession());
       fakeApple({ authorization: { id_token: "apple-token" } });
       const { user } = await renderDialog();
       await openDialog(user);
       const button = await screen.findByRole("button", { name: "Continue with Apple" });
-      await vi.waitFor(() => expect(button).toBeEnabled());
-      expect(screen.queryByText("Last used")).toBeNull();
-      await user.click(button);
-      await vi.waitFor(() => expect(assign).toHaveBeenCalled());
-
-      await reopen(user);
-      const reopened = await screen.findByRole("button", { name: "Continue with Apple" });
-      expect(frame()).toContainElement(reopened);
+      expect(frame()).toContainElement(button);
       expect(frame()).not.toContainElement(screen.getByLabelText("Email"));
     });
 
     it("shows no frame when the last used provider is off", async () => {
-      setCookie("revscope_last_login=apple; Path=/");
+      rememberMethod("apple");
       mockApi("get", "/v2/public/auth/providers", { google: null, apple: null });
       const { user } = await renderDialog();
       await openDialog(user);

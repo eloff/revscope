@@ -17,7 +17,6 @@
     "./loginDialogStyles": "./src/LoginDialog.css.ts",
     "./projectSelection": "./src/projectSelection.ts",
     "./idTokenSignIn": "./src/idTokenSignIn.ts",
-    "./lastLoginMethod": "./src/lastLoginMethod.ts",
     "./SocialSignIn": "./src/SocialSignIn.tsx",
     "./browserTimezone": "./src/browserTimezone.ts",
     "./projectName": "./src/projectName.ts",

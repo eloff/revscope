@@ -32,14 +32,9 @@ pub(super) fn id_token_sign_in(request: &ApiRequest) -> RouteResult {
                     .signup_ip
                     .refund(&ip_key(ip));
             }
-            outcome.map(|signed_in| signed_in.success)
+            outcome.map(|signed_in| (signed_in.success, signed_in.provider))
         }
         Err(_) => Err(AuthError::InvalidRequest("invalid sign-in payload")),
     };
-    Ok(session_auth_response(
-        request.context(),
-        outcome,
-        request.parsed.host,
-        false,
-    ))
+    Ok(session_auth_response(request, outcome, false))
 }

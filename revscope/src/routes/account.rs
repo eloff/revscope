@@ -1,7 +1,5 @@
 //! Signing up, in and out, password resets, and who the session belongs to.
 
-use std::sync::Arc;
-
 use revscope_api::auth::{MeProject, MeProjectSettings, MeResponse};
 use serde_json::json;
 
@@ -12,12 +10,13 @@ use crate::auth::{
 use crate::authorize::Account;
 use crate::http::Response;
 use crate::rate_limit::{AuthRateLimits, RateLimiter, ip_key};
-use crate::server_context::ServerContext;
 use crate::util::block_on;
 
 use super::request::{ApiRequest, RouteResult};
 use super::responses::{map_auth_error, too_many_requests};
-use super::session::{expired_session_cookie, session_cookie};
+use super::session::{
+    PASSWORD_LOGIN_METHOD, expired_session_cookie, last_login_method_cookie, session_cookie,
+};
 
 /// The login dialog asks this so it can hide its signup link once a
 /// self-hosted instance already has its first user.
@@ -49,9 +48,8 @@ pub(super) fn signup(request: &ApiRequest) -> RouteResult {
             .refund(&ip_key(ip));
     }
     Ok(session_auth_response(
-        request.context(),
-        outcome,
-        request.parsed.host,
+        request,
+        outcome.map(|success| (success, PASSWORD_LOGIN_METHOD)),
         issue_token,
     ))
 }
@@ -71,9 +69,8 @@ pub(super) fn login(request: &ApiRequest) -> RouteResult {
         Err(_) => Err(AuthError::InvalidRequest("invalid login payload")),
     };
     Ok(session_auth_response(
-        request.context(),
-        outcome,
-        request.parsed.host,
+        request,
+        outcome.map(|success| (success, PASSWORD_LOGIN_METHOD)),
         issue_token,
     ))
 }
@@ -159,15 +156,16 @@ fn ok_or_auth_error(outcome: Result<(), AuthError>, context: &str) -> RouteResul
 /// `HttpOnly` cookie and out of the body, unless the caller asked for an API
 /// token, which it then holds in place of a cookie.
 pub(super) fn session_auth_response(
-    server_context: Arc<ServerContext>,
-    outcome: Result<AuthSuccess, AuthError>,
-    host: Option<&str>,
+    request: &ApiRequest,
+    outcome: Result<(AuthSuccess, &'static str), AuthError>,
     issue_token: bool,
 ) -> Response {
-    let success = match outcome {
+    let (success, login_method) = match outcome {
         Ok(success) => success,
         Err(error) => return map_auth_error(error, "signup/login"),
     };
+    let server_context = request.context();
+    let host = request.parsed.host;
     let session = success.session;
     let answer = block_on(async {
         let api_token = if issue_token {
@@ -191,7 +189,11 @@ pub(super) fn session_auth_response(
                 Response::json_with_headers(
                     "200 OK",
                     body,
-                    &[session_cookie(session.session_id.as_str(), host)],
+                    // Session last: the e2e helpers' `header("set-cookie")` answers the last one.
+                    &[
+                        last_login_method_cookie(login_method, host, request.parsed.origin),
+                        session_cookie(session.session_id.as_str(), host),
+                    ],
                 )
             }
         }

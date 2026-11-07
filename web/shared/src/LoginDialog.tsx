@@ -38,7 +38,7 @@ import {
   textButton,
   title,
 } from "./LoginDialog.css";
-import { readLastLoginMethod, rememberLoginMethod } from "./lastLoginMethod";
+import { readLastLoginMethod } from "./lastLoginMethod";
 import { appPath, SELF_HOSTED, signupPath } from "./links";
 import SocialSignIn from "./SocialSignIn";
 
@@ -251,7 +251,6 @@ export default function LoginDialog(props: LoginDialogProps) {
         return;
       }
       saveAuthSession(session);
-      rememberLoginMethod("email");
       writeRememberedEmail(rememberMe() ? trimmedEmail : null);
       window.location.assign(props.redirectTo ?? appPath("/dashboard"));
     } catch {

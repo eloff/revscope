@@ -37,6 +37,8 @@ pub(crate) struct IdTokenRequest {
 
 pub(crate) struct SignedIn {
     pub(crate) success: AuthSuccess,
+    /// The provider's id, `google` or `apple`.
+    pub(crate) provider: &'static str,
     /// Whether this made a new account rather than finding one.
     pub(crate) signed_up: bool,
 }
@@ -65,7 +67,7 @@ pub(crate) async fn sign_in(
         .map_err(map_query_error)?;
     if let Some(row) = linked {
         drop(conn);
-        return logged_in(server_context, &row.get::<_, String>(0)).await;
+        return logged_in(server_context, provider.id, &row.get::<_, String>(0)).await;
     }
 
     let email = identity
@@ -111,16 +113,19 @@ pub(crate) async fn sign_in(
     };
     Ok(SignedIn {
         success: create_account(server_context, account, user).await?,
+        provider: provider.id,
         signed_up: true,
     })
 }
 
 async fn logged_in(
     server_context: Arc<ServerContext>,
+    provider: &'static str,
     user_id: &str,
 ) -> Result<SignedIn, AuthError> {
     Ok(SignedIn {
         success: issue_session(server_context, user_id).await?,
+        provider,
         signed_up: false,
     })
 }

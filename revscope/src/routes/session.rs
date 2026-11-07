@@ -3,11 +3,16 @@
 use revscope_api::auth::{API_TOKEN_PREFIX, SESSION_COOKIE as AUTH_SESSION_COOKIE_NAME};
 
 use crate::auth::{SessionCookie, session_token};
-use crate::http::{Response, host_supports_secure_cookies};
+use crate::http::{Response, host_supports_secure_cookies, ui_cookie_domain};
 use crate::query_token::{self, ProjectAuth};
 use crate::tokens::SESSION_MAX_AGE_SECONDS;
 
 use super::responses::unauthorized_invalid_session;
+
+pub(super) const PASSWORD_LOGIN_METHOD: &str = "email";
+// `web/shared/src/lastLoginMethod.ts` reads this name.
+const LAST_LOGIN_METHOD_COOKIE: &str = "revscope_last_login_method";
+const ONE_YEAR_SECONDS: u64 = 365 * 24 * 60 * 60;
 
 /// The session's cache key, or `None` when the token is not one we could have
 /// issued. Nothing is cached here: only [`crate::auth::session_user`] adds
@@ -81,6 +86,26 @@ pub(super) fn expired_session_cookie(host: Option<&str>) -> (&'static str, Strin
     )
 }
 
+/// Tells the login dialog which method to mark as last used, so unlike the
+/// session it's readable from script and outlives logout. Set by the API rather
+/// than the page because Safari caps cookies written from script at 7 days.
+pub(super) fn last_login_method_cookie(
+    method: &str,
+    host: Option<&str>,
+    origin: Option<&str>,
+) -> (&'static str, String) {
+    let domain = ui_cookie_domain(host, origin)
+        .map(|domain| format!("; Domain={domain}"))
+        .unwrap_or_default();
+    (
+        "Set-Cookie",
+        format!(
+            "{LAST_LOGIN_METHOD_COOKIE}={method}; Path=/; Max-Age={ONE_YEAR_SECONDS}; SameSite=Lax{domain}{}",
+            secure_cookie_attribute(host)
+        ),
+    )
+}
+
 fn secure_cookie_attribute(host: Option<&str>) -> &'static str {
     if host_supports_secure_cookies(host) {
         "; Secure"
@@ -139,6 +164,33 @@ mod tests {
         let (_, cleared) = expired_session_cookie(Some("localhost:4320"));
         assert!(cleared.contains("Max-Age=0"), "{cleared}");
         assert!(!cleared.contains("Secure"), "{cleared}");
+    }
+
+    #[test]
+    fn last_login_method_cookie_lasts_a_year_and_reaches_the_ui() {
+        let (name, value) = last_login_method_cookie(
+            "google",
+            Some("api.revscope.co"),
+            Some("https://revscope.co"),
+        );
+        assert_eq!(name, "Set-Cookie");
+        assert_eq!(
+            value,
+            "revscope_last_login_method=google; Path=/; Max-Age=31536000; SameSite=Lax; Domain=revscope.co; Secure"
+        );
+    }
+
+    #[test]
+    fn last_login_method_cookie_stays_on_a_host_the_ui_shares() {
+        let (_, value) = last_login_method_cookie(
+            "email",
+            Some("localhost:4320"),
+            Some("http://localhost:4322"),
+        );
+        assert_eq!(
+            value,
+            "revscope_last_login_method=email; Path=/; Max-Age=31536000; SameSite=Lax"
+        );
     }
 
     #[test]

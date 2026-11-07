@@ -64,6 +64,13 @@ fn signup_fields(website: &str) -> Value {
     })
 }
 
+fn last_login_method(response: &common::HttpResponse) -> Option<&str> {
+    response.set_cookies.iter().find_map(|cookie| {
+        let (pair, _) = cookie.split_once(';')?;
+        pair.strip_prefix("revscope_last_login_method=")
+    })
+}
+
 fn session_cookie(response: &common::HttpResponse) -> String {
     let cookie = response.header("set-cookie").expect("session cookie");
     cookie.split(';').next().expect("cookie pair").to_owned()
@@ -107,6 +114,7 @@ async fn google_signs_up_then_logs_in_to_the_same_user() -> io::Result<()> {
         .await?;
     assert_eq!(response.status_code(), 404, "{}", response.body_str());
     assert!(response.body_str().contains("Sign up first"));
+    assert_eq!(last_login_method(&response), None);
 
     let response = server
         .post_json(
@@ -117,6 +125,7 @@ async fn google_signs_up_then_logs_in_to_the_same_user() -> io::Result<()> {
         )
         .await?;
     assert_eq!(response.status_code(), 200, "{}", response.body_str());
+    assert_eq!(last_login_method(&response), Some("google"));
     let body: Value = response.json();
     assert_eq!(body["name"], json!("Grace Hopper"));
     assert_eq!(body["email"], json!(email));
@@ -143,6 +152,7 @@ async fn google_signs_up_then_logs_in_to_the_same_user() -> io::Result<()> {
         .await?;
     assert_eq!(response.status_code(), 200, "{}", response.body_str());
     assert_eq!(response.json::<Value>()["user_id"], json!(user_id));
+    assert_eq!(last_login_method(&response), Some("google"));
     let cookie = session_cookie(&response);
     let me = server
         .get_query(ME_PATH, &[("Cookie", cookie.as_str())])
@@ -298,6 +308,7 @@ async fn apple_signup_takes_the_name_from_the_browser() -> io::Result<()> {
         .await?;
     assert_eq!(response.status_code(), 200, "{}", response.body_str());
     assert_eq!(response.json::<Value>()["name"], json!("Katherine Johnson"));
+    assert_eq!(last_login_method(&response), Some("apple"));
 
     delete_account(&server, &website).await;
     Ok(())

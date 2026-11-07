@@ -994,6 +994,31 @@ pub(crate) fn host_supports_secure_cookies(host: Option<&str>) -> bool {
         .is_some_and(is_loopback_host)
 }
 
+/// The `Domain` for a cookie the API sets for its web UI to read: the parent the
+/// API's host and the request's origin share, as `revscope.co` for `api.revscope.co`
+/// and `revscope.co`. `None` when they're the same host, which needs no `Domain`,
+/// or when the API is addressed by IP or shares no parent, where the UI can't read
+/// the cookie either way. A shared public suffix such as `co.uk` comes out too, and
+/// the browser refuses the cookie, which only costs that cookie.
+pub(crate) fn ui_cookie_domain<'a>(host: Option<&'a str>, origin: Option<&str>) -> Option<&'a str> {
+    let hostname = host_header_hostname(host?)?;
+    let (_, origin_host) = split_origin(origin?)?;
+    if hostname.eq_ignore_ascii_case(origin_host) || hostname.parse::<IpAddr>().is_ok() {
+        return None;
+    }
+    let shared: Vec<&str> = hostname
+        .rsplit('.')
+        .zip(origin_host.rsplit('.'))
+        .take_while(|(ours, theirs)| ours.eq_ignore_ascii_case(theirs))
+        .map(|(ours, _)| ours)
+        .collect();
+    if shared.len() < 2 {
+        return None;
+    }
+    let shared_len = shared.iter().map(|label| label.len()).sum::<usize>() + shared.len() - 1;
+    Some(&hostname[hostname.len() - shared_len..])
+}
+
 /// Hostname from a `Host` header value such as `localhost:4320` or `[::1]:4320`.
 fn host_header_hostname(host: &str) -> Option<&str> {
     let host = host.trim();
@@ -1835,6 +1860,47 @@ mod tests {
         assert!(!host_supports_secure_cookies(Some("localhost:4320")));
         assert!(!host_supports_secure_cookies(Some("127.0.0.1:4320")));
         assert!(!host_supports_secure_cookies(Some("[::1]:4320")));
+    }
+
+    #[test]
+    fn ui_cookie_domain_is_the_parent_of_the_api_host_and_the_origin() {
+        let domain = |host, origin| ui_cookie_domain(Some(host), Some(origin));
+        let revscope = Some("revscope.co");
+        assert_eq!(domain("api.revscope.co", "https://revscope.co"), revscope);
+        assert_eq!(
+            domain("API.revscope.co:443", "https://revscope.co"),
+            revscope
+        );
+        assert_eq!(
+            domain("api.revscope.co", "https://www.revscope.co"),
+            revscope
+        );
+        assert_eq!(domain("revscope.co", "https://www.revscope.co"), revscope);
+        assert_eq!(
+            domain("revscope-api.example.com", "https://revscope.example.com"),
+            Some("example.com")
+        );
+        assert_eq!(
+            domain("api.a.example.com", "https://ui.a.example.com"),
+            Some("a.example.com")
+        );
+    }
+
+    #[test]
+    fn ui_cookie_domain_is_none_without_a_shared_parent() {
+        let domain = |host, origin| ui_cookie_domain(Some(host), Some(origin));
+        assert_eq!(domain("api.revscope.co", "https://notrevscope.co"), None);
+        assert_eq!(
+            domain("api.revscope.co", "https://revscope.co.evil.com"),
+            None
+        );
+        assert_eq!(domain("api.revscope.co", "null"), None);
+        assert_eq!(domain("api.example.com", "https://api.example.com"), None);
+        assert_eq!(domain("localhost:4320", "http://localhost:4322"), None);
+        assert_eq!(domain("11.0.0.1:4320", "http://10.0.0.1"), None);
+        assert_eq!(domain("[::1]:4320", "http://localhost:4322"), None);
+        assert_eq!(ui_cookie_domain(Some("api.revscope.co"), None), None);
+        assert_eq!(ui_cookie_domain(None, Some("https://revscope.co")), None);
     }
 
     #[test]

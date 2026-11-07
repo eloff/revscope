@@ -23,7 +23,6 @@ import {
 import { browserTimezone } from "@revscope/web-shared/browserTimezone";
 import { type IdTokenSignIn, signInWithIdToken } from "@revscope/web-shared/idTokenSignIn";
 import { openLoginDialog } from "@revscope/web-shared/LoginDialog";
-import { rememberLoginMethod } from "@revscope/web-shared/lastLoginMethod";
 import { appPath } from "@revscope/web-shared/links";
 import ProjectNameFields, { createProjectNameState } from "@revscope/web-shared/ProjectNameFields";
 import { normalizeWebsite, validateProjectName } from "@revscope/web-shared/projectName";
@@ -116,7 +115,6 @@ export default function SignupForm() {
         return;
       }
       saveAuthSession(session);
-      rememberLoginMethod("email");
       window.location.assign(appPath("/dashboard"));
     } catch {
       setErrorMessage("Unable to reach the server.");

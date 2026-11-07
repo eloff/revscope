@@ -2,7 +2,6 @@ import { getApiBaseUrl } from "./apiBaseUrl";
 import { publicApiPath } from "./apiPaths";
 import { readJson } from "./apiRequest";
 import { type AuthSession, parseAuthSession, saveAuthSession } from "./authState";
-import { rememberLoginMethod } from "./lastLoginMethod";
 
 export type SignInProvider = "google" | "apple";
 
@@ -105,6 +104,5 @@ export async function signInWithIdToken(
     throw new Error(fallback);
   }
   saveAuthSession(session);
-  rememberLoginMethod(signIn.provider);
   return session;
 }

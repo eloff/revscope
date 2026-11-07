@@ -1,44 +1,28 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { clearCookie, setCookie } from "../test/cookies";
-import { stubLocation } from "../test/location";
-import { readLastLoginMethod, rememberLoginMethod } from "./lastLoginMethod";
+import { readLastLoginMethod } from "./lastLoginMethod";
 
 afterEach(() => {
-  clearCookie("revscope_last_login");
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
+  clearCookie("revscope_last_login_method");
 });
 
-describe("lastLoginMethod", () => {
-  it("is empty until a method is remembered, then answers the latest", () => {
+describe("readLastLoginMethod", () => {
+  it("is empty without the cookie, and answers each method the API can set", () => {
     expect(readLastLoginMethod()).toBeUndefined();
-    rememberLoginMethod("google");
-    expect(readLastLoginMethod()).toBe("google");
-    rememberLoginMethod("email");
-    expect(readLastLoginMethod()).toBe("email");
+    for (const method of ["google", "apple", "email"]) {
+      setCookie(`revscope_last_login_method=${method}; Path=/`);
+      expect(readLastLoginMethod()).toBe(method);
+    }
   });
 
-  it("keeps the cookie a year across the whole host, Secure only over https", () => {
-    const set = vi.spyOn(document, "cookie", "set");
-    stubLocation("/");
-    rememberLoginMethod("apple");
-    expect(set).toHaveBeenLastCalledWith(
-      "revscope_last_login=apple; Max-Age=31536000; Path=/; SameSite=Lax",
-    );
-
-    vi.stubGlobal("location", { protocol: "https:" });
-    rememberLoginMethod("apple");
-    expect(set).toHaveBeenLastCalledWith(
-      "revscope_last_login=apple; Max-Age=31536000; Path=/; SameSite=Lax; Secure",
-    );
-  });
-
-  it("ignores values it didn't write and cookies with a similar name", () => {
-    setCookie("revscope_last_login=facebook; Path=/");
+  it("ignores values it doesn't know and cookies with a similar name", () => {
+    setCookie("revscope_last_login_method=facebook; Path=/");
     expect(readLastLoginMethod()).toBeUndefined();
-    clearCookie("revscope_last_login");
-    setCookie("other_revscope_last_login=google; Path=/");
+    setCookie("revscope_last_login_method=constructor; Path=/");
     expect(readLastLoginMethod()).toBeUndefined();
-    clearCookie("other_revscope_last_login");
+    clearCookie("revscope_last_login_method");
+    setCookie("other_revscope_last_login_method=google; Path=/");
+    expect(readLastLoginMethod()).toBeUndefined();
+    clearCookie("other_revscope_last_login_method");
   });
 });

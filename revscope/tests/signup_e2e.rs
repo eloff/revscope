@@ -308,6 +308,76 @@ async fn login_omits_secure_cookie_flag_on_localhost() -> io::Result<()> {
 }
 
 #[tokio::test]
+async fn only_a_successful_password_login_or_signup_sets_the_last_login_method() -> io::Result<()> {
+    let server = TestServer::spawn("last-login-method").await?;
+    let signup = NewSignup::new("lastloginmethod");
+    let last_method_cookie = |response: &HttpResponse| {
+        response
+            .set_cookies
+            .iter()
+            .find(|cookie| cookie.starts_with("revscope_last_login_method="))
+            .cloned()
+    };
+
+    let created = server.post_json(SIGNUP_PATH, &signup.body(), &[]).await?;
+    assert_eq!(created.status_code(), 200, "{}", created.body_str());
+    let cookie = last_method_cookie(&created).expect("set on signup");
+    assert!(
+        cookie.starts_with("revscope_last_login_method=email;"),
+        "{cookie}"
+    );
+    assert!(cookie.contains("Max-Age=31536000"), "{cookie}");
+
+    let wrong_password = server
+        .post_json(
+            LOGIN_PATH,
+            &json!({ "username": signup.email, "password": "not the password" }).to_string(),
+            &[],
+        )
+        .await?;
+    assert_eq!(
+        wrong_password.status_code(),
+        401,
+        "{}",
+        wrong_password.body_str()
+    );
+    assert_eq!(last_method_cookie(&wrong_password), None);
+
+    let login = server
+        .post_json(
+            LOGIN_PATH,
+            &json!({ "username": signup.email, "password": PASSWORD }).to_string(),
+            &[],
+        )
+        .await?;
+    assert_eq!(login.status_code(), 200, "{}", login.body_str());
+    assert!(last_method_cookie(&login).is_some());
+
+    // As production's UI calls production's API, so the UI can read the cookie.
+    let across_subdomains = server
+        .post_json(
+            LOGIN_PATH,
+            &json!({ "username": signup.email, "password": PASSWORD }).to_string(),
+            &[
+                ("Host", "api.revscope.co"),
+                ("Origin", "https://revscope.co"),
+            ],
+        )
+        .await?;
+    assert_eq!(
+        across_subdomains.status_code(),
+        200,
+        "{}",
+        across_subdomains.body_str()
+    );
+    let cookie = last_method_cookie(&across_subdomains).expect("set across subdomains");
+    assert!(cookie.contains("; Domain=revscope.co"), "{cookie}");
+
+    delete_accounts(&server, &[&signup.account_name]).await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn signup_normalizes_the_email_and_login_accepts_any_case() -> io::Result<()> {
     let server = TestServer::spawn("signup-email-case").await?;
     let mut signup = NewSignup::new("emailcase");
