@@ -105,6 +105,8 @@ Match the style of the surrounding code. A few project-specific rules:
 - Schema changes go in a **new** migration file in `migrations/` (per-project
   SQLite) or `migrations-main/` (Postgres). Never edit an existing migration,
   since it may already have been applied to production databases.
+  Each Postgres migration runs in a transaction with its record, so it can't manage
+  its own transaction or use statements that need to run outside one.
 
 **Web app (`web/`)**
 

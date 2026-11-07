@@ -1,5 +1,5 @@
 use include_dir::{Dir, include_dir};
-use log::info;
+use log::{info, warn};
 use std::error::Error as StdError;
 use std::fmt;
 use std::sync::OnceLock;
@@ -12,6 +12,12 @@ static MAIN_MIGRATIONS_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/migratio
 
 static AVAILABLE_PROJECT_MIGRATIONS: OnceLock<Vec<Migration>> = OnceLock::new();
 static AVAILABLE_MAIN_MIGRATIONS: OnceLock<Vec<Migration>> = OnceLock::new();
+
+/// Identifies the main migrations in Postgres's per-database advisory lock space.
+const MAIN_MIGRATIONS_LOCK_KEY: i64 = 0x7265_7673_636f_7065;
+
+/// Later main migrations must leave transaction control to the runner.
+const LAST_MIGRATION_WITH_ITS_OWN_TRANSACTION: u32 = 10;
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct Migration {
@@ -128,6 +134,51 @@ pub fn apply_missing_project_migrations(conn: &rusqlite::Connection) -> Result<(
 pub async fn apply_missing_main_postgres_migrations(
     client: &PostgresClient,
 ) -> Result<(), DbError> {
+    let available = main_migrations()
+        .map_err(|error| DbError::MainPostgresMigrationsNotReady(error.to_string()))?;
+    apply_main_migration_list(client, available).await
+}
+
+/// Runs one process's migrations at a time, so instances starting together during
+/// a deploy can't apply the same one twice. A session lock, because it has to span
+/// each migration's own transaction. Postgres releases it once it notices the
+/// connection has died, so the wait has no limit of its own and gets logged.
+async fn apply_main_migration_list(
+    client: &PostgresClient,
+    available: &[Migration],
+) -> Result<(), DbError> {
+    let acquired: bool = client
+        .query_one(
+            "SELECT pg_try_advisory_lock($1)",
+            &[&MAIN_MIGRATIONS_LOCK_KEY],
+        )
+        .await
+        .map_err(DbError::main_postgres_migrations)?
+        .get(0);
+    if !acquired {
+        info!("Waiting for another process to finish applying main database migrations");
+        client
+            .execute("SELECT pg_advisory_lock($1)", &[&MAIN_MIGRATIONS_LOCK_KEY])
+            .await
+            .map_err(DbError::main_postgres_migrations)?;
+    }
+    let result = apply_pending_main_migrations(client, available).await;
+    if let Err(error) = client
+        .execute(
+            "SELECT pg_advisory_unlock($1)",
+            &[&MAIN_MIGRATIONS_LOCK_KEY],
+        )
+        .await
+    {
+        warn!("unable to release the main migrations lock: {error}");
+    }
+    result
+}
+
+async fn apply_pending_main_migrations(
+    client: &PostgresClient,
+    available: &[Migration],
+) -> Result<(), DbError> {
     info!("Ensuring migrations tracking table exists");
     client
         .batch_execute(
@@ -139,8 +190,6 @@ pub async fn apply_missing_main_postgres_migrations(
         .await
         .map_err(DbError::main_postgres_migrations)?;
 
-    let available = main_migrations()
-        .map_err(|error| DbError::MainPostgresMigrationsNotReady(error.to_string()))?;
     let Some(start_index) = first_pending_migration_index(
         available,
         query_last_applied_main_postgres_migration(client).await?,
@@ -158,21 +207,93 @@ pub async fn apply_missing_main_postgres_migrations(
             "Applying main migration {} ({})",
             migration.number, migration.name
         );
-        client
-            .batch_execute(migration.sql)
-            .await
-            .map_err(DbError::main_postgres_migrations)?;
-        client
-            .execute(
-                "INSERT INTO migrations (migration_number) VALUES ($1)",
-                &[&(migration.number as i32)],
-            )
-            .await
-            .map_err(DbError::main_postgres_migrations)?;
+        apply_main_migration(client, migration).await?;
     }
     info!("Finished applying main database migrations");
 
     Ok(())
+}
+
+/// Records a migration and applies it in one transaction, so a crash can't leave it
+/// applied but unrecorded, which would re-run it on the next start.
+///
+/// Recording first is what covers 00008 to 00010, which have their own `BEGIN` and
+/// `COMMIT` and may already be applied, so can't be edited. Their `BEGIN` only draws
+/// a warning, and their `COMMIT` commits the record too.
+async fn apply_main_migration(
+    client: &PostgresClient,
+    migration: &Migration,
+) -> Result<(), DbError> {
+    client
+        .batch_execute("BEGIN")
+        .await
+        .map_err(DbError::main_postgres_migrations)?;
+    let number = migration.number as i32;
+    if let Err(error) = client
+        .execute(
+            "INSERT INTO migrations (migration_number) VALUES ($1)",
+            &[&number],
+        )
+        .await
+    {
+        if let Err(rollback_error) = client.batch_execute("ROLLBACK").await {
+            warn!("unable to roll back main migration: {rollback_error}");
+        }
+        return Err(DbError::main_postgres_migrations(error));
+    }
+    let outcome = run_recorded_migration(client, migration).await;
+    if outcome.is_ok() {
+        return client
+            .batch_execute("COMMIT")
+            .await
+            .map_err(DbError::main_postgres_migrations);
+    }
+    if let Err(rollback_error) = client.batch_execute("ROLLBACK").await {
+        warn!("unable to roll back main migration: {rollback_error}");
+    }
+    // A migration that committed before failing committed its record too. Removing
+    // it keeps the next start from skipping a migration that didn't finish, unless
+    // the connection is gone too, which only a test against Postgres can rule out.
+    if let Err(error) = client
+        .execute(
+            "DELETE FROM migrations WHERE migration_number = $1",
+            &[&number],
+        )
+        .await
+    {
+        warn!("unable to clear the record of a failed main migration: {error}");
+    }
+    outcome
+}
+
+async fn run_recorded_migration(
+    client: &PostgresClient,
+    migration: &Migration,
+) -> Result<(), DbError> {
+    let transaction_id = current_transaction_id(client).await?;
+    client
+        .batch_execute(migration.sql)
+        .await
+        .map_err(DbError::main_postgres_migrations)?;
+    if migration.number > LAST_MIGRATION_WITH_ITS_OWN_TRANSACTION
+        && current_transaction_id(client).await? != transaction_id
+    {
+        return Err(DbError::MainPostgresMigrationsNotReady(format!(
+            "{} ended the transaction it runs in; migrations must leave that to the runner, \
+             and anything it committed needs undoing by hand",
+            migration.name
+        )));
+    }
+    Ok(())
+}
+
+/// The open transaction's id, or `None` if it hasn't been assigned one by a write.
+async fn current_transaction_id(client: &PostgresClient) -> Result<Option<String>, DbError> {
+    client
+        .query_one("SELECT pg_current_xact_id_if_assigned()::text", &[])
+        .await
+        .map(|row| row.get(0))
+        .map_err(DbError::main_postgres_migrations)
 }
 
 async fn query_last_applied_main_postgres_migration(
@@ -409,6 +530,249 @@ fn parse_migration_number(filename: &str) -> Result<u32, MigrationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A connection whose unqualified tables and types live in a schema of its own,
+    /// which stands in for a new database.
+    async fn scratch_connection(schema: &str) -> PostgresClient {
+        crate::test_env::load_e2e_env();
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .expect("connect to postgres");
+        tokio::spawn(connection);
+        client
+            .batch_execute(&format!(
+                "CREATE SCHEMA IF NOT EXISTS {schema}; SET search_path TO {schema}"
+            ))
+            .await
+            .expect("create scratch schema");
+        client
+    }
+
+    async fn drop_schema(client: &PostgresClient, schema: &str) {
+        client
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .expect("drop scratch schema");
+    }
+
+    /// A schema name no other run of this test is using.
+    fn scratch_schema(label: &str) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after the unix epoch")
+            .as_nanos();
+        format!("migration_test_{label}_{nanos:x}")
+    }
+
+    fn migration(number: u32, sql: &'static str) -> Migration {
+        Migration {
+            number,
+            name: "test.sql",
+            sql,
+        }
+    }
+
+    async fn table_exists(client: &PostgresClient, name: &str) -> bool {
+        client
+            .query_one("SELECT to_regclass($1)::text IS NOT NULL", &[&name])
+            .await
+            .expect("look up table")
+            .get(0)
+    }
+
+    async fn recorded(client: &PostgresClient) -> Vec<i32> {
+        client
+            .query(
+                "SELECT migration_number FROM migrations ORDER BY migration_number",
+                &[],
+            )
+            .await
+            .expect("list recorded migrations")
+            .iter()
+            .map(|row| row.get(0))
+            .collect()
+    }
+
+    /// Runs `sql` as a migration that kills its own connection, as a crash would,
+    /// and returns a new connection to look at what's left.
+    async fn crash_during(schema: &str, sql: &'static str) -> PostgresClient {
+        let client = scratch_connection(schema).await;
+        assert!(
+            apply_main_migration_list(&client, &[migration(1, sql)])
+                .await
+                .is_err()
+        );
+        scratch_connection(schema).await
+    }
+
+    #[tokio::test]
+    async fn a_crash_during_a_migration_leaves_nothing_behind() {
+        let schema = scratch_schema("crash");
+        let client = crash_during(
+            &schema,
+            "CREATE TABLE half_done (id INTEGER);
+             SELECT pg_terminate_backend(pg_backend_pid());",
+        )
+        .await;
+
+        assert!(!table_exists(&client, "half_done").await);
+        assert!(recorded(&client).await.is_empty());
+        drop_schema(&client, &schema).await;
+    }
+
+    #[tokio::test]
+    async fn a_crash_after_a_migrations_own_commit_leaves_it_recorded() {
+        let schema = scratch_schema("own_commit");
+        let client = crash_during(
+            &schema,
+            "BEGIN;
+             CREATE TABLE committed_by_itself (id INTEGER);
+             COMMIT;
+             SELECT pg_terminate_backend(pg_backend_pid());",
+        )
+        .await;
+
+        assert!(table_exists(&client, "committed_by_itself").await);
+        assert_eq!(recorded(&client).await, [1]);
+        drop_schema(&client, &schema).await;
+    }
+
+    #[tokio::test]
+    async fn a_new_migration_that_ends_the_transaction_keeps_being_refused() {
+        for (label, sql) in [
+            (
+                "commit",
+                "CREATE TABLE IF NOT EXISTS ended (id INTEGER); COMMIT",
+            ),
+            (
+                "end",
+                "START TRANSACTION; CREATE TABLE IF NOT EXISTS ended (id INTEGER); END",
+            ),
+            ("rollback", "CREATE TABLE ended (id INTEGER); ROLLBACK"),
+            (
+                "rollback_reopen",
+                "ROLLBACK; BEGIN; CREATE TABLE ended (id INTEGER)",
+            ),
+            (
+                "commit_reopen",
+                "COMMIT; BEGIN; CREATE TABLE IF NOT EXISTS ended (id INTEGER)",
+            ),
+            (
+                "commit_chain",
+                "COMMIT AND CHAIN; CREATE TABLE IF NOT EXISTS ended (id INTEGER)",
+            ),
+        ] {
+            let schema = scratch_schema(label);
+            let client = scratch_connection(&schema).await;
+            let number = LAST_MIGRATION_WITH_ITS_OWN_TRANSACTION + 1;
+            for start in ["first", "second"] {
+                let error = apply_main_migration_list(&client, &[migration(number, sql)])
+                    .await
+                    .expect_err(label);
+                assert!(
+                    error.to_string().contains("ended the transaction"),
+                    "{label}: {start} start: {error}"
+                );
+                assert!(recorded(&client).await.is_empty(), "{label}: {start} start");
+            }
+            drop_schema(&client, &schema).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failure_after_a_migrations_own_commit_is_not_recorded() {
+        let schema = scratch_schema("commit_fail");
+        let client = scratch_connection(&schema).await;
+        let number = LAST_MIGRATION_WITH_ITS_OWN_TRANSACTION + 1;
+        let list = [migration(number, "COMMIT; SELECT 1 / 0")];
+        for _start in ["first", "second"] {
+            assert!(apply_main_migration_list(&client, &list).await.is_err());
+            assert!(recorded(&client).await.is_empty());
+        }
+        drop_schema(&client, &schema).await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_start_keeps_a_record_it_did_not_write() {
+        let schema = scratch_schema("other_record");
+        let client = scratch_connection(&schema).await;
+        apply_main_migration_list(&client, &[migration(1, "SELECT 1")])
+            .await
+            .expect("apply first");
+
+        // Already recorded, as by a process that doesn't take the lock.
+        assert!(
+            apply_main_migration(&client, &migration(1, "SELECT 1"))
+                .await
+                .is_err()
+        );
+
+        assert_eq!(recorded(&client).await, [1]);
+        drop_schema(&client, &schema).await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_migration_keeps_earlier_ones_and_is_retried() {
+        let schema = scratch_schema("retry");
+        let client = scratch_connection(&schema).await;
+
+        let failing = [
+            migration(1, "CREATE TABLE first_table (id INTEGER)"),
+            migration(2, "CREATE TABLE second_table (id INTEGER); SELECT 1 / 0"),
+        ];
+        assert!(apply_main_migration_list(&client, &failing).await.is_err());
+        assert_eq!(recorded(&client).await, [1]);
+        assert!(!table_exists(&client, "second_table").await);
+
+        let fixed = [
+            migration(1, "CREATE TABLE first_table (id INTEGER)"),
+            migration(2, "CREATE TABLE second_table (id INTEGER)"),
+        ];
+        apply_main_migration_list(&client, &fixed)
+            .await
+            .expect("retry after the fix");
+        assert_eq!(recorded(&client).await, [1, 2]);
+        drop_schema(&client, &schema).await;
+    }
+
+    #[tokio::test]
+    async fn processes_starting_together_each_apply_a_migration_once() {
+        let schema = scratch_schema("concurrent");
+        let first = scratch_connection(&schema).await;
+        let second = scratch_connection(&schema).await;
+        let list = [migration(
+            1,
+            "SELECT pg_sleep(0.1); CREATE TABLE only_once (id INTEGER)",
+        )];
+
+        let (first_result, second_result) = tokio::join!(
+            apply_main_migration_list(&first, &list),
+            apply_main_migration_list(&second, &list),
+        );
+
+        first_result.expect("first process");
+        second_result.expect("second process");
+        assert_eq!(recorded(&first).await, [1]);
+        drop_schema(&first, &schema).await;
+    }
+
+    #[tokio::test]
+    async fn every_main_migration_applies_to_a_new_database() {
+        let schema = scratch_schema("all");
+        let client = scratch_connection(&schema).await;
+        let available = main_migrations().expect("main migrations");
+
+        apply_main_migration_list(&client, available)
+            .await
+            .expect("apply every migration");
+        apply_main_migration_list(&client, available)
+            .await
+            .expect("nothing left to apply");
+
+        assert_eq!(recorded(&client).await.len(), available.len());
+        drop_schema(&client, &schema).await;
+    }
 
     #[test]
     fn discovers_embedded_project_and_main_migrations() {

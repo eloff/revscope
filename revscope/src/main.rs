@@ -68,8 +68,8 @@ async fn async_main() -> io::Result<()> {
     revscope::initialize_ip_ranges().map_err(std::io::Error::other)?;
     let server_context = revscope::db::default_server_context().clone();
 
-    // Apply main database migrations before binding the listener. Nothing serves traffic or
-    // touches the database yet, so we can migrate without any synchronization.
+    // Apply main database migrations before binding the listener, so this process serves
+    // nothing until its schema is ready. An existing server may still be running on the old one.
     revscope::db::apply_main_migrations(server_context.clone())
         .await
         .map_err(io::Error::other)?;
