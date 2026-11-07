@@ -43,7 +43,6 @@ export type CrawlerRow = {
   source: CrawlerSource;
   verified: boolean;
   useragent: string;
-  ip?: string;
   operator?: string;
   category?: string;
   views: number;
@@ -53,7 +52,6 @@ export type CrawlerOperatorRow = {
   source: CrawlerSource;
   verified: boolean;
   operator?: string;
-  ip?: string;
   category?: string;
   views: number;
 };

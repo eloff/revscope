@@ -174,7 +174,7 @@ describe("FunnelDropoffTreemap", () => {
 describe("CrawlersTreemap", () => {
   const leaves = buildOperatorLeaves([
     { useragent_id: 1, source: 0, verified: true, operator: "openai", views: 30 },
-    { useragent_id: 2, source: 0, verified: false, ip: "1.1.1.1", views: 10 },
+    { useragent_id: 2, source: 0, verified: false, views: 10 },
   ] as never);
 
   it("draws one tile per operator in its color", () => {

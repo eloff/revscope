@@ -24,7 +24,7 @@ use super::session::{
     session_cookie_for_payload,
 };
 use super::timestamp::assign_pageview_timestamp;
-use super::user_agent::{BrowserFamily, parse_user_agent_context};
+use super::user_agent::parse_user_agent_context;
 use super::wire::{JsonField, TrackRequest};
 use crate::db::{ClientPageId, ProjectConnection};
 use crate::geoip;
@@ -58,17 +58,17 @@ pub(super) fn enqueue_pageview(
 ) -> Result<(), PersistError> {
     let record = parse_pageview_record(wire)?;
     let ua_context = parse_user_agent_context(parsed.user_agent, wire);
-    if ua_context.browser_family == BrowserFamily::Unknown
-        && let Some(useragent) = ua_context.useragent.as_deref()
-    {
-        record_crawler_view(
-            batch,
-            client_age_ms,
-            useragent,
-            &record.hostname,
-            &record.path,
-            client_ip,
-        );
+    if ua_context.is_bot {
+        if let Some(useragent) = ua_context.useragent.as_deref() {
+            record_crawler_view(
+                batch,
+                client_age_ms,
+                useragent,
+                &record.hostname,
+                &record.path,
+                client_ip,
+            );
+        }
         return Ok(());
     }
 

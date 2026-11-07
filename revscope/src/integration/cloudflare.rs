@@ -212,7 +212,7 @@ fn write_groups(
 ) -> SyncResult<SyncCounts> {
     let mut counts = SyncCounts::default();
     for ((hour, useragent, hostname, path), estimated_count) in groups {
-        let useragent_id = upsert_useragent(conn, &useragent, None)?;
+        let useragent_id = upsert_useragent(conn, &useragent)?;
         let path_id = upsert_crawler_path(conn, &path, &hostname)?;
         match upsert_cloudflare_crawler_view(conn, hour, useragent_id, path_id, estimated_count)? {
             CloudflareUpsert::Inserted => counts.records_inserted += 1,

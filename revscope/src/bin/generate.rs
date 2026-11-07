@@ -1990,11 +1990,11 @@ fn populate_crawler_views(
 ) -> Result<(), Box<dyn Error>> {
     let mut crawler_ids = Vec::with_capacity(CRAWLER_USER_AGENTS.len());
     for useragent in CRAWLER_USER_AGENTS {
-        crawler_ids.push(upsert_useragent(conn, useragent, None)?);
+        crawler_ids.push(upsert_useragent(conn, useragent)?);
     }
     let mut headless_ids = Vec::with_capacity(HEADLESS_USER_AGENTS.len());
     for useragent in HEADLESS_USER_AGENTS {
-        headless_ids.push(upsert_useragent(conn, useragent, None)?);
+        headless_ids.push(upsert_useragent(conn, useragent)?);
     }
 
     let start_hour = (start_ts / HOUR_SECONDS) * HOUR_SECONDS;

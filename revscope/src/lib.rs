@@ -62,6 +62,7 @@ mod payment_activity;
 mod payment_journey;
 mod payments;
 mod plan_retention;
+mod project_db_sweep;
 mod projects;
 mod query;
 mod query_params;
@@ -119,6 +120,7 @@ pub use ingest::{
 pub use integration::start_integration_sync_task;
 pub use ip_ranges::initialize as initialize_ip_ranges;
 pub use main_db_cleanup::{run_main_db_cleanup, start_main_db_cleanup_task};
+pub use project_db_sweep::start_project_db_sweep_task;
 pub use referrer::{
     ReferrerType, SourceGroup, classify_referrer_type, referrer_is_google, referrer_is_search,
     source_group_for_landing,

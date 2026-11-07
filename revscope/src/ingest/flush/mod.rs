@@ -253,8 +253,7 @@ fn flush_batch_body(conn: &ProjectConnection, data: &BatchData) -> Result<(), Fl
     let mut path_ids: FxHashMap<(CompactString, CompactString), i64> = FxHashMap::default();
     let mut referrer_ids: FxHashMap<CompactString, i64> = FxHashMap::default();
     let mut event_name_ids: FxHashMap<CompactString, i64> = FxHashMap::default();
-    let mut useragent_ids: FxHashMap<(CompactString, Option<CompactString>), i64> =
-        FxHashMap::default();
+    let mut useragent_ids: FxHashMap<CompactString, i64> = FxHashMap::default();
     let mut crawler_path_ids: FxHashMap<(CompactString, CompactString), i64> = FxHashMap::default();
     // visitor_timestamp_id -> last pageview timestamp_id within this flush,
     // seeded from the database the first time a visitor is seen.
@@ -342,12 +341,7 @@ fn flush_batch_body(conn: &ProjectConnection, data: &BatchData) -> Result<(), Fl
     }
 
     for (key, estimated_count) in &data.crawler_views {
-        let useragent_id = resolve_cached_useragent_id(
-            conn,
-            &mut useragent_ids,
-            &key.useragent,
-            key.ip.as_deref(),
-        )?;
+        let useragent_id = resolve_cached_useragent_id(conn, &mut useragent_ids, &key.useragent)?;
         let path_key = (key.path.clone(), key.hostname.clone());
         let path_id = match crawler_path_ids.get(&path_key) {
             Some(&path_id) => path_id,

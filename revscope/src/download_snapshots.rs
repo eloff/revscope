@@ -376,7 +376,7 @@ fn remove_orphaned_snapshot_dirs(root: &Path) {
     }
 }
 
-fn process_alive(pid: u32) -> bool {
+pub(crate) fn process_alive(pid: u32) -> bool {
     if pid == std::process::id() {
         return true;
     }

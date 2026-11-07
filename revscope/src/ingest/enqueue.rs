@@ -403,16 +403,10 @@ pub(super) fn record_crawler_view(
 ) {
     let hour = crawler_view_hour(client_age_ms);
     let verified = crate::crawlers::verify_operator(useragent, client_ip);
-    let ip = if verified {
-        None
-    } else {
-        client_ip.map(|ip| CompactString::new(ip.to_string()))
-    };
     let data: &mut BatchData = &mut *batch;
     let key = CrawlerViewKey {
         hour,
         useragent: CompactString::new(useragent),
-        ip,
         hostname: CompactString::new(hostname),
         path: CompactString::new(path),
         verified,

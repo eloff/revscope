@@ -233,7 +233,7 @@ async fn continuing_session_still_reports_storage_allowed() -> io::Result<()> {
 }
 
 #[tokio::test]
-async fn unrecognized_browser_is_recorded_as_crawler_view() -> io::Result<()> {
+async fn known_bot_is_recorded_as_crawler_view() -> io::Result<()> {
     let mut server = TestServer::spawn("bot-landing").await?;
     let hit = TrackHit::pageview(DEMO_PROJECT_NAME, "/", &page_id(1));
     let response = server
@@ -279,10 +279,6 @@ async fn unrecognized_browser_is_recorded_as_crawler_view() -> io::Result<()> {
         query_string(&conn, "SELECT category FROM useragents"),
         "ai_crawler"
     );
-    assert_eq!(
-        query_string(&conn, "SELECT ip FROM useragents"),
-        "127.0.0.1"
-    );
     // Divert must not insert human `paths`; crawler hits use `crawler_paths`.
     assert_eq!(count_rows(&conn, "paths"), 0);
     assert_eq!(count_rows(&conn, "crawler_paths"), 1);
@@ -292,7 +288,7 @@ async fn unrecognized_browser_is_recorded_as_crawler_view() -> io::Result<()> {
 }
 
 #[tokio::test]
-async fn unrecognized_browser_without_known_token_has_null_operator() -> io::Result<()> {
+async fn bot_without_known_token_has_null_operator() -> io::Result<()> {
     let mut server = TestServer::spawn("unknown-bot").await?;
     let hit = TrackHit::pageview(DEMO_PROJECT_NAME, "/", &page_id(1));
     server
@@ -373,77 +369,88 @@ async fn googlebot_is_verified_when_ip_matches_published_ranges() -> io::Result<
         ),
         1
     );
-    assert!(
-        query_optional_string(
-            &conn,
-            "SELECT u.ip FROM crawler_views_by_hour cv
-             JOIN useragents u ON u.id = cv.useragent_id
-             WHERE u.operator = 'google' AND cv.verified = 1"
-        )
-        .is_none()
+    Ok(())
+}
+
+#[tokio::test]
+async fn crawler_hits_from_different_ips_share_a_row_and_store_no_ip() -> io::Result<()> {
+    let mut server = TestServer::spawn("unverified-crawler-ip").await?;
+    let ua = (
+        "User-Agent",
+        "Mozilla/5.0 (compatible; GPTBot/1.4; +https://openai.com/gptbot)",
+    );
+    for ip in ["203.0.113.10", "2001:db8::1", "203.0.113.10"] {
+        let hit = TrackHit::crawler(DEMO_PROJECT_NAME, "/");
+        server
+            .post_ingest(&hit.to_form(), &[ua, ("CF-Connecting-IP", ip)])
+            .await?;
+    }
+    server.flush().await;
+
+    let conn = server.project_db(DEMO_PROJECT_ID);
+    assert_eq!(count_rows(&conn, "useragents"), 1);
+    assert_eq!(count_rows(&conn, "crawler_views_by_hour"), 1);
+    assert_eq!(
+        query_i64(&conn, "SELECT estimated_count FROM crawler_views_by_hour"),
+        3
     );
     assert_eq!(
-        query_string(
+        query_i64(
             &conn,
-            "SELECT u.ip FROM crawler_views_by_hour cv
-             JOIN useragents u ON u.id = cv.useragent_id
-             WHERE u.operator = 'openai' AND cv.verified = 0"
+            "SELECT COUNT(*) FROM useragents WHERE ip IS NOT NULL"
         ),
-        "66.249.66.1"
+        0
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn unverified_crawler_useragents_are_unique_per_ip() -> io::Result<()> {
-    let mut server = TestServer::spawn("unverified-crawler-ip").await?;
-    let ua = [(
-        "User-Agent",
-        "Mozilla/5.0 (compatible; GPTBot/1.4; +https://openai.com/gptbot)",
-    )];
-    let first = TrackHit::crawler(DEMO_PROJECT_NAME, "/");
+async fn app_web_view_on_an_ipad_is_a_pageview() -> io::Result<()> {
+    let mut server = TestServer::spawn("ipad-web-view").await?;
+    let hit = TrackHit::pageview(DEMO_PROJECT_NAME, "/", &page_id(1));
     server
         .post_ingest(
-            &first.to_form(),
-            &[ua[0], ("CF-Connecting-IP", "203.0.113.10")],
-        )
-        .await?;
-    let second = TrackHit::crawler(DEMO_PROJECT_NAME, "/");
-    server
-        .post_ingest(
-            &second.to_form(),
-            &[ua[0], ("CF-Connecting-IP", "2001:db8::1")],
-        )
-        .await?;
-    let again = TrackHit::crawler(DEMO_PROJECT_NAME, "/");
-    server
-        .post_ingest(
-            &again.to_form(),
-            &[ua[0], ("CF-Connecting-IP", "203.0.113.10")],
+            &hit.to_form(),
+            &[(
+                "User-Agent",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+            )],
         )
         .await?;
     server.flush().await;
 
     let conn = server.project_db(DEMO_PROJECT_ID);
-    assert_eq!(count_rows(&conn, "useragents"), 2);
-    assert_eq!(count_rows(&conn, "crawler_views_by_hour"), 2);
+    assert_eq!(count_rows(&conn, "landings"), 1);
+    assert_eq!(count_rows(&conn, "crawler_views_by_hour"), 0);
+    assert_eq!(count_rows(&conn, "useragents"), 0);
     assert_eq!(
-        query_i64(
-            &conn,
-            "SELECT cv.estimated_count FROM crawler_views_by_hour cv
-             JOIN useragents u ON u.id = cv.useragent_id
-             WHERE u.ip = '203.0.113.10'"
-        ),
-        2
+        query_string(&conn, "SELECT browser_family FROM landings"),
+        "other"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn bot_posing_as_safari_is_a_crawler_view() -> io::Result<()> {
+    let mut server = TestServer::spawn("applebot").await?;
+    let hit = TrackHit::pageview(DEMO_PROJECT_NAME, "/", &page_id(1));
+    server
+        .post_ingest(
+            &hit.to_form(),
+            &[(
+                "User-Agent",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15 (Applebot/0.1; +http://www.apple.com/go/applebot)",
+            )],
+        )
+        .await?;
+    server.flush().await;
+
+    let conn = server.project_db(DEMO_PROJECT_ID);
+    assert_eq!(count_rows(&conn, "landings"), 0);
+    assert_eq!(count_rows(&conn, "crawler_views_by_hour"), 1);
     assert_eq!(
-        query_string(
-            &conn,
-            "SELECT u.ip FROM crawler_views_by_hour cv
-             JOIN useragents u ON u.id = cv.useragent_id
-             WHERE u.ip = '2001:db8::1'"
-        ),
-        "2001:db8::1"
+        query_string(&conn, "SELECT operator FROM useragents"),
+        "apple"
     );
     Ok(())
 }

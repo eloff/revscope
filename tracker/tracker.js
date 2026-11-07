@@ -5,7 +5,7 @@
     // These are variables so the script packs a little smaller
     var TRUE = true;
     var FALSE = false;
-    var version = "1.25";
+    var version = "1.26";
     var httpsProtocol = "https:";
     var cookieMaxAge = 90 * 24 * 60 * 60;
 
@@ -163,7 +163,8 @@
       navigator.webdriver ||
       Math.random() == Math.random() ||
       createId().slice(-16) == createId().slice(-16);
-    var botIndicators = ["callPhantom", "phantom", "_polypane", "_nightmare"];
+    // Not window.phantom: the Phantom crypto wallet sets that on real browsers.
+    var botIndicators = ["callPhantom", "_phantom", "_polypane", "_nightmare"];
     for (var bi = 0; bi < botIndicators.length; bi++) {
       var bot = botIndicators[bi];
       if (botDetected || window[bot] || window["_" + bot]) {

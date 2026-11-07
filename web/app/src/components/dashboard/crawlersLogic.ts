@@ -105,16 +105,8 @@ export function operatorTrustTitle(row: { source: CrawlerSource; verified: boole
   return "IP matched operator's published ranges";
 }
 
-export function operatorLabelForRow(row: {
-  verified: boolean;
-  operator?: string;
-  ip?: string;
-}): string {
+export function operatorLabelForRow(row: { verified: boolean; operator?: string }): string {
   if (!row.verified) {
-    const ip = row.ip?.trim();
-    if (ip) {
-      return ip;
-    }
     return UNKNOWN_OPERATOR_LABEL;
   }
   const slug = row.operator;
@@ -178,13 +170,9 @@ export function filterRowsByCategories<T extends { category?: string }>(
 
 /**
  * Treemap grouping for a row: verified rows by operator, all unverified rows
- * in one bucket (the grid still shows their individual IPs).
+ * in one bucket.
  */
-export function treemapOperatorLabelForRow(row: {
-  verified: boolean;
-  operator?: string;
-  ip?: string;
-}): string {
+export function treemapOperatorLabelForRow(row: { verified: boolean; operator?: string }): string {
   return row.verified ? operatorLabelForRow(row) : UNVERIFIED_OPERATOR_LABEL;
 }
 

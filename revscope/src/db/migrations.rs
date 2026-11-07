@@ -657,7 +657,12 @@ mod tests {
             [],
         )
         .expect("view");
-        apply_missing_project_migrations(&conn).expect("apply 00010+");
+        let through_ip: Vec<Migration> = available
+            .iter()
+            .filter(|migration| migration.number <= 10)
+            .cloned()
+            .collect();
+        apply_missing_migrations_with_list(&conn, "test", &through_ip).expect("apply 00010");
         assert!(
             table_columns(&conn, "useragents")
                 .iter()
@@ -698,6 +703,159 @@ mod tests {
             )
             .expect("fk");
         assert_eq!(fk, "useragents");
+    }
+
+    #[test]
+    fn erasing_useragent_ips_merges_rows_and_clears_them_from_disk_at_the_sweep() {
+        let directory = crate::test_utils::TestDataDir::new("erase-useragent-ips");
+        let path = directory.path().join("1.db");
+        let conn = rusqlite::Connection::open(&path).expect("open");
+        let available = project_migrations().expect("project migrations");
+        let before: Vec<Migration> = available
+            .iter()
+            .filter(|migration| migration.number < 14)
+            .cloned()
+            .collect();
+        apply_missing_migrations_with_list(&conn, "test", &before).expect("apply up to 00013");
+        conn.execute_batch(
+            "INSERT INTO crawler_paths (id, path, hostname) VALUES (1, '/', 'example.com');
+             INSERT INTO useragents (id, useragent, operator, category, ip) VALUES
+                (1, 'mystery', NULL, NULL, '203.0.113.77'),
+                (2, 'mystery', NULL, NULL, '198.51.100.88'),
+                (3, 'mystery', 'openai', 'ai_crawler', NULL),
+                (4, 'other', NULL, NULL, '192.0.2.99');
+             INSERT INTO crawler_views_by_hour
+                (hour, source, useragent_id, path_id, estimated_count, verified) VALUES
+                (3600, 0, 1, 1, 3, 0),
+                (3600, 0, 2, 1, 4, 0),
+                (3600, 1, 3, 1, 5, 1),
+                (7200, 0, 2, 1, 6, 0),
+                (3600, 0, 4, 1, 7, 0);",
+        )
+        .expect("seed");
+
+        // `conn` stays open through the sweep like a cached connection would, so
+        // only the sweep's own checkpoint can clear the WAL.
+        crate::project_db_sweep::sweep_project_databases(directory.path(), || false);
+
+        let stored_ips: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM useragents WHERE ip IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count ips");
+        assert_eq!(stored_ips, 0);
+        let merged: (i64, Option<String>) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(operator) FROM useragents WHERE useragent = 'mystery'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("merged");
+        assert_eq!(merged, (1, Some("openai".to_string())));
+        let mut statement = conn
+            .prepare(
+                "SELECT ua.useragent, cv.hour, cv.source, cv.verified, cv.estimated_count
+                 FROM crawler_views_by_hour cv JOIN useragents ua ON ua.id = cv.useragent_id
+                 ORDER BY 1, 2, 3",
+            )
+            .expect("prepare");
+        let views: Vec<(String, i64, i64, i64, i64)> = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+        assert_eq!(
+            views,
+            [
+                ("mystery".to_string(), 3600, 0, 0, 7),
+                ("mystery".to_string(), 3600, 1, 1, 5),
+                ("mystery".to_string(), 7200, 0, 0, 6),
+                ("other".to_string(), 3600, 0, 0, 7),
+            ]
+        );
+
+        assert_addresses_not_on_disk(&path, &["203.0.113.77", "198.51.100.88", "192.0.2.99"]);
+
+        // The previous binary still drains after the migration, and must keep
+        // working, but what it writes has to go at the next sweep.
+        conn.execute(
+            "INSERT INTO useragents (useragent, operator, category, ip)
+             VALUES ('mystery', NULL, NULL, '203.0.113.200')
+             ON CONFLICT(useragent, COALESCE(ip, '')) DO UPDATE SET
+                operator = COALESCE(useragents.operator, excluded.operator)",
+            [],
+        )
+        .expect("old binary's upsert");
+        let late_row = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO crawler_views_by_hour
+                (hour, source, useragent_id, path_id, estimated_count, verified)
+             VALUES (3600, 0, ?1, 1, 2, 0)",
+            [late_row],
+        )
+        .expect("old binary's view");
+        drop(statement);
+
+        crate::project_db_sweep::sweep_project_databases(directory.path(), || false);
+
+        let mystery: (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT ua.id), SUM(cv.estimated_count)
+                 FROM crawler_views_by_hour cv JOIN useragents ua ON ua.id = cv.useragent_id
+                 WHERE ua.useragent = 'mystery' AND cv.hour = 3600 AND cv.source = 0",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("merged late view");
+        assert_eq!(mystery, (1, 9));
+        assert_addresses_not_on_disk(&path, &["203.0.113.200"]);
+    }
+
+    fn assert_addresses_not_on_disk(database: &std::path::Path, addresses: &[&str]) {
+        for file in [database.to_path_buf(), database.with_extension("db-wal")] {
+            let bytes = std::fs::read(&file).unwrap_or_default();
+            for address in addresses {
+                assert!(
+                    !bytes
+                        .windows(address.len())
+                        .any(|window| window == address.as_bytes()),
+                    "{address} is still in {}",
+                    file.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sweep_stops_when_asked() {
+        let directory = crate::test_utils::TestDataDir::new("sweep-stops");
+        let conn = rusqlite::Connection::open(directory.path().join("1.db")).expect("open");
+        let available = project_migrations().expect("project migrations");
+        let before: Vec<Migration> = available
+            .iter()
+            .filter(|migration| migration.number < 14)
+            .cloned()
+            .collect();
+        apply_missing_migrations_with_list(&conn, "test", &before).expect("apply up to 00013");
+
+        crate::project_db_sweep::sweep_project_databases(directory.path(), || true);
+
+        let last: i64 = conn
+            .query_row("SELECT MAX(migration_number) FROM migrations", [], |row| {
+                row.get(0)
+            })
+            .expect("last migration");
+        assert_eq!(last, 13);
     }
 
     #[test]

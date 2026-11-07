@@ -128,8 +128,6 @@ pub(super) struct MetadataUpdateRow {
 pub(super) struct CrawlerViewKey {
     pub(super) hour: i64,
     pub(super) useragent: CompactString,
-    /// Client IP for unverified crawlers; `None` when verified or unknown.
-    pub(super) ip: Option<CompactString>,
     pub(super) hostname: CompactString,
     pub(super) path: CompactString,
     pub(super) verified: bool,

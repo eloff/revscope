@@ -34,8 +34,6 @@ pub(crate) struct CrawlerRow {
     pub(crate) verified: bool,
     pub(crate) useragent: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) ip: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) operator: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) category: Option<String>,
@@ -48,8 +46,6 @@ pub(crate) struct CrawlerOperatorRow {
     pub(crate) verified: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) operator: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) ip: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) category: Option<String>,
     pub(crate) views: i64,
@@ -137,7 +133,7 @@ pub(crate) fn build_crawlers_response(
 ) -> Result<CrawlersResponse, AuthError> {
     let mut scanned = Vec::new();
     conn.with_query(
-        "SELECT cv.useragent_id, cv.source, cv.verified, ua.useragent, ua.ip, ua.operator,
+        "SELECT cv.useragent_id, cv.source, cv.verified, ua.useragent, ua.operator,
                 ua.category, SUM(cv.estimated_count) AS views
          FROM crawler_views_by_hour cv
          JOIN useragents ua ON ua.id = cv.useragent_id
@@ -154,10 +150,9 @@ pub(crate) fn build_crawlers_response(
                     source: row.get(1)?,
                     verified: verified != 0,
                     useragent: row.get(3)?,
-                    ip: row.get(4)?,
-                    operator: row.get(5)?,
-                    category: row.get(6)?,
-                    views: row.get(7)?,
+                    operator: row.get(4)?,
+                    category: row.get(5)?,
+                    views: row.get(6)?,
                 });
             }
             Ok(())
@@ -166,8 +161,8 @@ pub(crate) fn build_crawlers_response(
     .map_err(map_row_error)?;
 
     let mut category_totals = CrawlerCategoryTotals::default();
-    // Keyed by (source, verified, operator, ip, category).
-    type OperatorKey = (i64, bool, Option<String>, Option<String>, Option<String>);
+    // Keyed by (source, verified, operator, category).
+    type OperatorKey = (i64, bool, Option<String>, Option<String>);
     let mut operator_views: FxHashMap<OperatorKey, i64> = FxHashMap::default();
     for row in &scanned {
         add_category_total(&mut category_totals, category_for_row(row), row.views);
@@ -176,7 +171,6 @@ pub(crate) fn build_crawlers_response(
                 row.source,
                 row.verified,
                 row.operator.clone(),
-                row.ip.clone(),
                 row.category.clone(),
             ))
             .or_insert(0) += row.views;
@@ -184,11 +178,10 @@ pub(crate) fn build_crawlers_response(
     let operators = operator_views
         .into_iter()
         .map(
-            |((source, verified, operator, ip, category), views)| CrawlerOperatorRow {
+            |((source, verified, operator, category), views)| CrawlerOperatorRow {
                 source,
                 verified,
                 operator,
-                ip,
                 category,
                 views,
             },
@@ -240,9 +233,6 @@ fn add_category_total(totals: &mut CrawlerCategoryTotals, category: &str, views:
 
 fn operator_label_for_row(row: &CrawlerRow) -> String {
     if !row.verified {
-        if let Some(ip) = row.ip.as_deref().filter(|ip| !ip.is_empty()) {
-            return ip.to_string();
-        }
         return "Unknown".to_string();
     }
     match row.operator.as_deref() {
@@ -346,24 +336,14 @@ mod tests {
         operator: Option<&str>,
         category: Option<&str>,
     ) -> i64 {
-        insert_useragent_ip(conn, useragent, operator, category, None)
-    }
-
-    fn insert_useragent_ip(
-        conn: &ProjectConnection,
-        useragent: &str,
-        operator: Option<&str>,
-        category: Option<&str>,
-        ip: Option<&str>,
-    ) -> i64 {
         conn.execute(
-            "INSERT INTO useragents (useragent, operator, category, ip) VALUES (?1, ?2, ?3, ?4)",
-            params![useragent, operator, category, ip],
+            "INSERT INTO useragents (useragent, operator, category) VALUES (?1, ?2, ?3)",
+            params![useragent, operator, category],
         )
         .expect("insert useragent");
         conn.query_row(
-            "SELECT id FROM useragents WHERE useragent = ?1 AND (ip IS ?2)",
-            params![useragent, ip],
+            "SELECT id FROM useragents WHERE useragent = ?1",
+            params![useragent],
             |row| row.get::<_, i64>(0),
         )
         .expect("useragent id")
@@ -495,7 +475,6 @@ mod tests {
         assert_eq!(response.rows[0].views, 15);
         assert_eq!(response.rows[0].operator.as_deref(), Some("openai"));
         assert_eq!(response.rows[0].category.as_deref(), Some("ai_crawler"));
-        assert_eq!(response.rows[0].ip, None);
         assert!(response.rows[0].verified);
 
         let tracker = response
@@ -666,47 +645,17 @@ mod tests {
     }
 
     #[test]
-    fn unverified_operator_label_uses_ip_when_present() {
+    fn unverified_rows_never_show_the_operator_they_claim() {
         let conn = open_migrated_db();
-        let with_ip = insert_useragent_ip(
-            &conn,
-            "gptbot/1.0",
-            Some("openai"),
-            Some("ai_crawler"),
-            Some("203.0.113.10"),
-        );
-        let no_ip = insert_useragent(&conn, "mystery-bot", None, None);
+        let claims_openai =
+            insert_useragent(&conn, "gptbot/1.0", Some("openai"), Some("ai_crawler"));
         let path = insert_crawler_path(&conn);
-        insert_view(&conn, 3_600, 0, with_ip, path, 5, false);
-        insert_view(&conn, 3_600, 0, no_ip, path, 2, false);
+        insert_view(&conn, 3_600, 0, claims_openai, path, 5, false);
 
         let response = build_crawlers_response(&conn, &query(3_600, 10_800)).expect("response");
-        let ip_row = response
-            .rows
-            .iter()
-            .find(|row| row.useragent_id == with_ip)
-            .expect("ip row");
-        let unknown_row = response
-            .rows
-            .iter()
-            .find(|row| row.useragent_id == no_ip)
-            .expect("unknown row");
-        assert_eq!(ip_row.ip.as_deref(), Some("203.0.113.10"));
-        assert_eq!(operator_label_for_row(ip_row), "203.0.113.10");
-        assert_eq!(unknown_row.ip, None);
-        assert_eq!(operator_label_for_row(unknown_row), "Unknown");
-        let ip_operator = response
-            .operators
-            .iter()
-            .find(|row| row.ip.as_deref() == Some("203.0.113.10"))
-            .expect("ip operator");
-        assert_eq!(ip_operator.views, 5);
-        assert!(!ip_operator.verified);
-        let unknown_operator = response
-            .operators
-            .iter()
-            .find(|row| !row.verified && row.ip.is_none())
-            .expect("unknown operator");
-        assert_eq!(unknown_operator.views, 2);
+        assert_eq!(operator_label_for_row(&response.rows[0]), "Unknown");
+        let serialized = serde_json::to_value(&response).expect("serialize");
+        assert!(serialized["rows"][0].get("ip").is_none());
+        assert!(serialized["operators"][0].get("ip").is_none());
     }
 }

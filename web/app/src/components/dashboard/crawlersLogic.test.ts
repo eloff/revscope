@@ -41,7 +41,6 @@ describe("crawler rows", () => {
     [{ verified: true, operator: "openai" }, "OpenAI"],
     [{ verified: true, operator: "anthropic" }, "Anthropic"],
     [{ verified: true }, "Unknown"],
-    [{ verified: false, ip: " 1.2.3.4 " }, "1.2.3.4"],
     [{ verified: false, operator: "openai" }, "Unknown"],
   ])("labels %j as %s", (input, expected) => {
     expect(operatorLabelForRow(input)).toBe(expected);
@@ -77,8 +76,8 @@ describe("buildOperatorLeaves", () => {
     const leaves = buildOperatorLeaves([
       row({ operator: "openai", views: 5 }),
       row({ operator: "openai", views: 3 }),
-      row({ verified: false, ip: "1.1.1.1", views: 1 }),
-      row({ verified: false, ip: "2.2.2.2", views: 1 }),
+      row({ verified: false, views: 1 }),
+      row({ verified: false, views: 1 }),
     ]);
     expect(leaves.map((leaf) => [leaf.label, leaf.views, leaf.share])).toEqual([
       ["OpenAI", 8, 0.8],

@@ -43,16 +43,14 @@ pub(super) fn resolve_cached_referrer_id(
 
 pub(super) fn resolve_cached_useragent_id(
     conn: &ProjectConnection,
-    cache: &mut FxHashMap<(CompactString, Option<CompactString>), i64>,
+    cache: &mut FxHashMap<CompactString, i64>,
     useragent: &str,
-    ip: Option<&str>,
 ) -> Result<i64, PersistError> {
-    let cache_key = (CompactString::new(useragent), ip.map(CompactString::new));
-    if let Some(&useragent_id) = cache.get(&cache_key) {
+    if let Some(&useragent_id) = cache.get(useragent) {
         return Ok(useragent_id);
     }
-    let useragent_id = upsert_useragent(conn, useragent, ip)?;
-    cache.insert(cache_key, useragent_id);
+    let useragent_id = upsert_useragent(conn, useragent)?;
+    cache.insert(CompactString::new(useragent), useragent_id);
     Ok(useragent_id)
 }
 

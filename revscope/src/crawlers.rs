@@ -134,30 +134,32 @@ pub fn cloudflare_patterns() -> impl Iterator<Item = &'static str> {
 
 /// Insert or reuse a `useragents` row, filling `operator`/`category` from
 /// [`classify`] when the stored values are still null.
-///
-/// `ip` is stored for unverified crawlers so the same UA from different hosts
-/// stays distinct. Pass `None` for verified crawlers (and Cloudflare).
 pub fn upsert_useragent(
     conn: &rusqlite::Connection,
     useragent: &str,
-    ip: Option<&str>,
 ) -> Result<i64, rusqlite::Error> {
     let (operator, category) = match classify(useragent) {
         Some((operator, category)) => (Some(operator), Some(category)),
         None => (None, None),
     };
-    let ip = ip.filter(|value| !value.is_empty());
+    // Written to work with or without the `ip` column and its index, so the
+    // migration that drops them doesn't break this release while it drains.
     conn.execute(
-        "INSERT INTO useragents (useragent, operator, category, ip)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(useragent, COALESCE(ip, '')) DO UPDATE SET
-            operator = COALESCE(useragents.operator, excluded.operator),
-            category = COALESCE(useragents.category, excluded.category)",
-        params![useragent, operator, category, ip],
+        "INSERT INTO useragents (useragent, operator, category)
+         SELECT ?1, ?2, ?3
+         WHERE NOT EXISTS (SELECT 1 FROM useragents WHERE useragent = ?1)",
+        params![useragent, operator, category],
+    )?;
+    conn.execute(
+        "UPDATE useragents SET
+            operator = COALESCE(operator, ?2),
+            category = COALESCE(category, ?3)
+         WHERE useragent = ?1",
+        params![useragent, operator, category],
     )?;
     conn.query_row(
-        "SELECT id FROM useragents WHERE useragent = ?1 AND (ip IS ?2)",
-        params![useragent, ip],
+        "SELECT MIN(id) FROM useragents WHERE useragent = ?1 HAVING COUNT(*) > 0",
+        params![useragent],
         |row| row.get::<_, i64>(0),
     )
     .optional()?
@@ -320,54 +322,41 @@ mod tests {
                 useragent TEXT NOT NULL,
                 operator TEXT,
                 category TEXT,
-                ip TEXT,
                 CHECK (useragent == lower(useragent))
-            );
-            CREATE UNIQUE INDEX idx_useragents_useragent_ip
-                ON useragents (useragent, COALESCE(ip, ''));",
+            );",
         )
         .unwrap();
     }
 
     #[test]
-    fn upsert_useragent_keeps_verified_rows_without_ip() {
+    fn upsert_useragent_reuses_the_row_and_fills_a_missing_operator() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         create_useragents_table(&conn);
-        let first = upsert_useragent(&conn, "gptbot/1.4", None).unwrap();
-        let again = upsert_useragent(&conn, "gptbot/1.4", None).unwrap();
-        assert_eq!(first, again);
-        let ip: Option<String> = conn
-            .query_row("SELECT ip FROM useragents WHERE id = ?1", [first], |row| {
+        conn.execute(
+            "INSERT INTO useragents (id, useragent) VALUES (7, 'gptbot/1.4')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(upsert_useragent(&conn, "gptbot/1.4").unwrap(), 7);
+
+        let operator: String = conn
+            .query_row("SELECT operator FROM useragents WHERE id = 7", [], |row| {
                 row.get(0)
             })
-            .unwrap();
-        assert_eq!(ip, None);
-        let operator: String = conn
-            .query_row(
-                "SELECT operator FROM useragents WHERE id = ?1",
-                [first],
-                |row| row.get(0),
-            )
             .unwrap();
         assert_eq!(operator, "openai");
     }
 
     #[test]
-    fn upsert_useragent_splits_unverified_rows_by_ip() {
+    fn upsert_useragent_inserts_one_row_per_useragent() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         create_useragents_table(&conn);
-        let v4 = upsert_useragent(&conn, "mystery-bot", Some("203.0.113.10")).unwrap();
-        let again = upsert_useragent(&conn, "mystery-bot", Some("203.0.113.10")).unwrap();
-        let v6 = upsert_useragent(&conn, "mystery-bot", Some("2001:db8::1")).unwrap();
-        let no_ip = upsert_useragent(&conn, "mystery-bot", None).unwrap();
-        assert_eq!(v4, again);
-        assert_ne!(v4, v6);
-        assert_ne!(v4, no_ip);
-        assert_ne!(v6, no_ip);
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM useragents", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(count, 3);
+        let first = upsert_useragent(&conn, "mystery").unwrap();
+        let again = upsert_useragent(&conn, "mystery").unwrap();
+        let other = upsert_useragent(&conn, "other").unwrap();
+        assert_eq!(first, again);
+        assert_ne!(first, other);
     }
 
     #[test]

@@ -100,6 +100,7 @@ async fn async_main() -> io::Result<()> {
 
     // Once we've bound the listeners, we signal any other process listening on the same ports to exit gracefully
     // This allows us to do a zero downtime upgrade by just running the new binary on the server.
+    let mut previous_pids = Vec::new();
     let mut handover_addrs = vec![listen_addr.as_str()];
     if let Some(addr) = tls_listen_addr.as_deref() {
         handover_addrs.push(addr);
@@ -109,6 +110,7 @@ async fn async_main() -> io::Result<()> {
         if !terminated_pids.is_empty() {
             info!("terminated processes listening on {addr}: {terminated_pids:?}");
         }
+        previous_pids.extend(terminated_pids);
     }
 
     revscope::db::start_db_cache_expiry_task();
@@ -116,6 +118,7 @@ async fn async_main() -> io::Result<()> {
     revscope::start_ga_import_task(server_context.clone());
     revscope::start_main_db_cleanup_task(server_context.clone());
     revscope::start_download_snapshot_cleanup_task(server_context.clone());
+    revscope::start_project_db_sweep_task(server_context.clone(), previous_pids);
 
     let listener_shutdown = Arc::new(Notify::new());
     info!("revscope listening on {listen_addr}");

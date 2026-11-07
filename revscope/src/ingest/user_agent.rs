@@ -2,10 +2,17 @@ use serde::Serialize;
 use woothee::parser::Parser as UserAgentParser;
 
 use super::wire::TrackRequest;
+use crate::crawlers::classify as classify_crawler;
 
 /// Longest `User-Agent` we keep. Real browsers stay well under this; the cap
 /// bounds what a bot can push into `useragents.useragent`.
 const MAX_USER_AGENT_LEN: usize = 512;
+
+/// Text that browsers don't send. Bots often append these to a real browser's
+/// UA, so they count even when the parser recognizes the browser. The `/` ends
+/// a product name, which keeps a CUBOT_X50 phone or a SpiderSolitaire app's web
+/// view from matching.
+const BOT_MARKERS: &[&str] = &["bot/", "crawler/", "spider/", "+http"];
 
 /// Variants are spelled so that the serde `snake_case` name is exactly the value
 /// [`BrowserFamily::as_str`] stores in `landings.browser_family`.
@@ -27,8 +34,8 @@ pub(super) enum BrowserFamily {
     Baidu = 12,
     Yandex = 13,
     Kai = 14,
-    /// A browser Woothee recognizes (`browser_type == "browser"`) that has no
-    /// dedicated family: Webview, Vivaldi, Sleipnir, Google Search App.
+    /// Any browser without a dedicated family, including ones Woothee doesn't
+    /// recognize: Webview, Vivaldi, Sleipnir, an iPad app's web view.
     Other = 15,
 }
 
@@ -111,10 +118,10 @@ pub(super) struct UserAgentContext {
     pub(super) os: OperatingSystem,
     pub(super) os_version: Option<f64>,
     pub(super) device: DeviceClass,
-    /// Lower-cased user agent, kept only when the browser family is unknown.
-    /// Those hits are written to `crawler_views_by_hour` instead of `landings`.
-    /// Browsers Woothee recognizes but we do not name are [`BrowserFamily::Other`]
-    /// and are recorded as pageviews.
+    /// Bot hits go to `crawler_views_by_hour` instead of `landings`.
+    #[serde(skip)]
+    pub(super) is_bot: bool,
+    /// Lower-cased user agent, kept only for bots.
     pub(super) useragent: Option<String>,
 }
 
@@ -148,8 +155,7 @@ pub(super) fn parse_user_agent_context(
         && let Some(parsed) = parser.parse(ua)
     {
         browser_family = map_browser_family(parsed.name, payload);
-        // Woothee already classified this as a browser (Webview, Vivaldi, …).
-        // Record it as a pageview instead of an unknown-browser crawler view.
+        // A browser Woothee knows but we have no family for: Webview, Vivaldi, …
         if browser_family == BrowserFamily::Unknown && parsed.browser_type == "browser" {
             browser_family = BrowserFamily::Other;
         }
@@ -171,19 +177,45 @@ pub(super) fn parse_user_agent_context(
         payload,
         user_agent_category.as_deref(),
     );
-    // An unrecognized browser is most likely a bot, so keep its user agent
-    // to make those sessions identifiable.
-    let useragent = (browser_family == BrowserFamily::Unknown)
-        .then_some(normalized)
-        .flatten();
+    let is_bot = has_bot_evidence(
+        normalized.as_deref(),
+        user_agent_category.as_deref(),
+        browser_family != BrowserFamily::Unknown,
+    );
+    // Calling a person a bot loses their session, events and revenue, while the
+    // reverse adds one mostly empty session. So a browser we can't name is still
+    // a pageview unless something says otherwise.
+    if !is_bot && browser_family == BrowserFamily::Unknown {
+        browser_family = BrowserFamily::Other;
+    }
+    let useragent = is_bot.then_some(normalized).flatten();
 
     UserAgentContext {
         browser_family,
         os,
         os_version,
         device,
+        is_bot,
         useragent,
     }
+}
+
+/// `user_agent` must be lower-cased. Every browser sends a user agent, and all
+/// but a few old ones Woothee recognizes start with `Mozilla/`.
+fn has_bot_evidence(
+    user_agent: Option<&str>,
+    ua_category: Option<&str>,
+    recognized_browser: bool,
+) -> bool {
+    let Some(ua) = user_agent else {
+        return true;
+    };
+    classify_crawler(ua).is_some()
+        || ua_category == Some("crawler")
+        || BOT_MARKERS.iter().any(|marker| ua.contains(marker))
+        // Otherwise only bots say "compatible;" today.
+        || (ua.contains("compatible;") && !ua.contains("msie") && !ua.contains("konqueror"))
+        || (!recognized_browser && !ua.starts_with("mozilla/"))
 }
 
 /// `user_agent` must be lower-cased, the checks here match on substrings.
@@ -323,7 +355,7 @@ mod tests {
         );
 
         let without_ua = parse_user_agent_context(None, &payload);
-        assert_eq!(without_ua.browser_family, BrowserFamily::Unknown);
+        assert!(without_ua.is_bot);
         assert_eq!(without_ua.useragent, None);
     }
 
@@ -358,6 +390,57 @@ mod tests {
         );
         assert_eq!(googlebot.browser_family, BrowserFamily::Unknown);
         assert!(googlebot.useragent.is_some());
+    }
+
+    #[test]
+    fn browsers_without_bot_evidence_are_people() {
+        for ua in [
+            // iPad and macOS app web views: no browser name at all.
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) MyApp/2.1",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) [FBAN/FBIOS;FBAV/450.0;FBDV/iPad13,4]",
+            "Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Ladybird/1.0",
+            "Mozilla/5.0 (Linux; Android 11; CUBOT_X50 Build/RP1A) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; Trident/6.0)",
+            "Mozilla/5.0 (compatible; Konqueror/4.5; Linux) KHTML/4.5.4 (like Gecko)",
+            "Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 SpiderSolitaire/2.0",
+            "Opera/9.80 (Windows NT 6.1) Presto/2.12.388 Version/12.18",
+        ] {
+            let parsed = parse_user_agent_context(Some(ua), &sample_payload());
+            assert!(!parsed.is_bot, "{ua}");
+            assert_ne!(parsed.browser_family, BrowserFamily::Unknown, "{ua}");
+            assert_eq!(parsed.useragent, None, "{ua}");
+        }
+    }
+
+    #[test]
+    fn evidence_of_a_bot_wins_over_a_recognized_browser() {
+        for ua in [
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.1.1 Safari/605.1.15 (Applebot/0.1; +http://www.apple.com/go/applebot)",
+            "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Amazonbot/0.1; +https://developer.amazon.com/support/amazonbot) Chrome/119.0.6045.214 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36; compatible; OAI-SearchBot/1.3; +https://openai.com/searchbot",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/126.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 (Stripebot/1.0; +https://docs.stripe.com/stripebot-crawler)",
+            "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+            "Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)",
+            "Mozilla/5.0 (compatible; dataprovider.com)",
+            "curl/8.5.0",
+            "pc",
+            "lightpanda/1.0",
+            "yisouspider",
+            "Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)",
+            "Mozilla/5.0 (X11; Linux x86_64) Chrome/126.0.0.0 Safari/537.36 SomeCrawler/1.0",
+        ] {
+            let parsed = parse_user_agent_context(Some(ua), &sample_payload());
+            assert!(parsed.is_bot, "{ua}");
+            assert_eq!(
+                parsed.useragent.as_deref(),
+                Some(ua.to_ascii_lowercase().as_str()),
+                "{ua}"
+            );
+        }
     }
 
     /// The recorded JSON for a dropped row has to show the same device strings we

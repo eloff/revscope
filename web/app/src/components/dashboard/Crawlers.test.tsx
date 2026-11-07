@@ -34,7 +34,6 @@ const unknownBot: CrawlerRow = {
   source: 0,
   verified: false,
   useragent: "curl/8",
-  ip: "9.9.9.9",
   category: "headless",
   views: 100,
 };
@@ -52,7 +51,7 @@ const data: CrawlersResponse = {
   },
   operators: [
     { source: 0, verified: true, operator: "openai", category: "ai_crawler", views: 900 },
-    { source: 0, verified: false, ip: "9.9.9.9", category: "headless", views: 100 },
+    { source: 0, verified: false, category: "headless", views: 100 },
   ],
   offset: 0,
   limit: 100,
@@ -101,7 +100,7 @@ describe("Crawlers", () => {
     renderCrawlers();
     expect(categoryButton("AI crawler")).toHaveTextContent("900");
     expect(screen.getByText("OpenAI")).toBeInTheDocument();
-    expect(screen.getByText("9.9.9.9")).toBeInTheDocument();
+    expect(screen.getByText("Unknown")).toBeInTheDocument();
     expect(screen.getByText("Showing 1-2 crawlers")).toBeInTheDocument();
     expect(screen.getByText(/Displaying crawler views between/)).toBeInTheDocument();
   });

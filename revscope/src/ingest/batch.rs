@@ -42,7 +42,7 @@ pub(crate) struct BatchData {
     /// Events waiting for their pageview. Not counted in `total_events`, and kept
     /// across a flush that falls within their grace window.
     pub(super) orphan_events: Vec<OrphanEvent>,
-    /// Hourly crawler hits keyed by (hour, useragent, ip, hostname, path).
+    /// Hourly crawler hits keyed by (hour, useragent, hostname, path).
     #[serde(skip)]
     pub(super) crawler_views: FxHashMap<CrawlerViewKey, i64>,
     /// client page id (12-byte blob) -> queued pageview. Supplements

@@ -1050,6 +1050,25 @@ describe("tracker public API", () => {
     expect(env.requests[0].body).not.toContain("ty=pageview");
   });
 
+  it("sends a crawler hit for a PhantomJS global", () => {
+    const env = load({
+      beforeLoad(windowObj) {
+        windowObj._phantom = {};
+      },
+    });
+    expect(env.requests[0].body).toContain("ty=crawler");
+  });
+
+  it("tracks a pageview for a browser with the Phantom wallet's global", () => {
+    const env = load({
+      beforeLoad(windowObj) {
+        windowObj.phantom = { solana: {} };
+      },
+    });
+    expect(env.requests[0].body).toContain("ty=pageview");
+    expect(env.requests[0].body).not.toContain("ty=crawler");
+  });
+
   it("sends a crawler hit when crypto.getRandomValues repeats", () => {
     const env = load({
       beforeLoad(windowObj) {
