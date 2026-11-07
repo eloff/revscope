@@ -36,6 +36,33 @@ describe("readJson", () => {
   });
 });
 
+describe("readJson on a 404", () => {
+  afterEach(async () => {
+    await signOut();
+  });
+
+  it("re-reads the account when a project is gone, so its list drops it", async () => {
+    const session = signIn();
+    const remaining = { ...session, projects: {} };
+    const me = mockApi("get", "/v2/session/me", remaining);
+    const { result } = renderHook(useAuthState);
+    await expect(
+      readJson(response('{"error":"project not found","code":"not_found"}', 404), "fallback"),
+    ).rejects.toThrow("project not found");
+    await vi.waitFor(() => expect(result.authUser()).toEqual(remaining));
+    expect(me).toHaveLength(1);
+  });
+
+  it("leaves the account alone for any other 404", async () => {
+    const session = signIn();
+    const { result } = renderHook(useAuthState);
+    await expect(
+      readJson(response('{"error":"conversation not found"}', 404), "fallback"),
+    ).rejects.toThrow("conversation not found");
+    expect(result.authUser()).toEqual(session);
+  });
+});
+
 describe("readJson on a 401", () => {
   afterEach(async () => {
     await signOut();
@@ -52,7 +79,7 @@ describe("readJson on a 401", () => {
     expect(me).toHaveLength(1);
   });
 
-  it("stays signed in when /me accepts the session, as for a project it can't access", async () => {
+  it("stays signed in when /me accepts the session", async () => {
     const session = signIn();
     const me = mockApi("get", "/v2/session/me", session);
     const { result } = renderHook(useAuthState);

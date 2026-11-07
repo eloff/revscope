@@ -111,6 +111,32 @@ describe("conversations", () => {
   });
 });
 
+describe("a project gone since the tab loaded", () => {
+  afterEach(async () => {
+    await signOut();
+  });
+
+  const gone = { error: "project not found", code: "not_found" };
+
+  it("re-reads the account when deleting a conversation", async () => {
+    signIn(session);
+    const me = mockApi("get", "/v2/session/me", session);
+    mockApi("delete", `${CHAT}/conversations`, gone, 404);
+    await expect(deleteConversation(session, "42", 3)).rejects.toThrow("project not found");
+    await vi.waitFor(() => expect(me).toHaveLength(1));
+  });
+
+  it("re-reads the account when asking a question", async () => {
+    signIn(session);
+    const me = mockApi("get", "/v2/session/me", session);
+    mockApi("post", CHAT, gone, 404);
+    await expect(streamChat(session, "42", 3, "q", handlers())).rejects.toThrow(
+      "project not found",
+    );
+    await vi.waitFor(() => expect(me).toHaveLength(1));
+  });
+});
+
 describe("streamChat", () => {
   it("posts the question and dispatches each event in order", async () => {
     const calls = mockApi("post", CHAT, () =>

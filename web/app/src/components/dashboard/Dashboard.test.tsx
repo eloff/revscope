@@ -80,6 +80,22 @@ describe("Dashboard", () => {
     expect(demo[0]?.credentials).toBe("omit");
   });
 
+  it("moves to a project the account can use when its project is gone", async () => {
+    signIn(testSession({ projects: { a_com: testProject("7"), b_com: testProject("8") } }));
+    setSelectedProjectId("7");
+    mockApi(
+      "get",
+      "/v2/read/projects/7/overview",
+      { error: "project not found", code: "not_found" },
+      404,
+    );
+    mockApi("get", "/v2/session/me", testSession({ projects: { b_com: testProject("8") } }));
+    const remaining = mockProject("8");
+    render(() => <Dashboard />);
+    await vi.waitFor(() => expect(remaining).toHaveLength(1));
+    expect(selectedProjectId()).toBe("8");
+  });
+
   it("opens the selected project with the session", async () => {
     signIn(testSession({ projects: { a_com: testProject("7"), b_com: testProject("8") } }));
     setSelectedProjectId("8");

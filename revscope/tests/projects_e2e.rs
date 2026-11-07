@@ -206,17 +206,9 @@ async fn projects_are_only_changed_by_their_own_signed_in_account() -> io::Resul
     assert_eq!(anonymous.status_code(), 401, "{}", anonymous.body_str());
 
     let foreign = delete(&server, &extra_id, &extra_name, &other.cookie).await?;
-    assert!(
-        matches!(foreign.status_code(), 401 | 403 | 404),
-        "{}",
-        foreign.body_str()
-    );
+    assert!(foreign.status_code() == 404, "{}", foreign.body_str());
     let demo = delete(&server, DEMO_PROJECT_ID, "demo", &other.cookie).await?;
-    assert!(
-        matches!(demo.status_code(), 401 | 403 | 404),
-        "{}",
-        demo.body_str()
-    );
+    assert!(demo.status_code() == 404, "{}", demo.body_str());
     assert_eq!(me_projects(&server, &owner.cookie).await?.len(), 2);
 
     for (status, body) in [
@@ -240,6 +232,59 @@ async fn projects_are_only_changed_by_their_own_signed_in_account() -> io::Resul
 
     delete_account(&server, &owner.account_name).await;
     delete_account(&server, &other.account_name).await;
+    Ok(())
+}
+
+/// Deleting doesn't revoke a download token, and an admin holder is still live.
+/// A member scoped to the project loses their access to it too, so their token
+/// answers 401, as when an admin narrows their scope.
+#[tokio::test]
+async fn a_download_token_for_a_deleted_project_answers_not_found() -> io::Result<()> {
+    let server = TestServer::spawn_on_disk("projects-delete-download").await?;
+    let account = signup(&server, "projdownload", "growth").await?;
+    let cookie = [("Cookie", account.cookie.as_str())];
+    let website = format!("https://shop.{}", account.account_name);
+    let created = server
+        .post_json(
+            CREATE_PATH,
+            &json!({ "website": website }).to_string(),
+            &cookie,
+        )
+        .await?;
+    assert_eq!(created.status_code(), 200, "{}", created.body_str());
+    let created: Value = created.json();
+    let new_id = created["id"].as_str().expect("id").to_string();
+    let new_name = created["name"].as_str().expect("name").to_string();
+    let hit = TrackHit::pageview(&new_name, "/", &page_id(1));
+    let ingest = server
+        .post_ingest_for(&new_name, &hit.to_form(), &[])
+        .await?;
+    assert_eq!(ingest.status_code(), 200, "{}", ingest.body_str());
+    server.flush().await;
+
+    let download = server
+        .post_json(
+            &format!("{}/download-token", project_path(&new_id)),
+            "{}",
+            &cookie,
+        )
+        .await?;
+    assert_eq!(download.status_code(), 200, "{}", download.body_str());
+    let download_path = format!(
+        "/v2/download/projects/{new_id}?token={}",
+        download.json::<Value>()["token"].as_str().expect("token")
+    );
+    let live = server.get_query(&download_path, &[]).await?;
+    assert_eq!(live.status_code(), 200);
+
+    let deleted = delete(&server, &new_id, &new_name, &account.cookie).await?;
+    assert_eq!(deleted.status_code(), 200, "{}", deleted.body_str());
+
+    let gone = server.get_query(&download_path, &[]).await?;
+    assert_eq!(gone.status_code(), 404, "{}", gone.body_str());
+    assert_eq!(gone.json::<Value>()["error"], json!("project not found"));
+
+    delete_account(&server, &account.account_name).await;
     Ok(())
 }
 

@@ -96,11 +96,11 @@ pub(crate) fn authorize_project(
                 parse_project_id(project_id).map_err(|error| AuthError::Db(error.to_string()))?;
             let granted = project_key_for_token(server_context.clone(), *secret)?;
             if granted != requested {
-                return Err(AuthError::InvalidCredentials);
+                return Err(AuthError::NoProjectAccess);
             }
             crate::projects::fetch_project_blocking(server_context, requested)
                 .map_err(|error| AuthError::Db(error.to_string()))?
-                .ok_or(AuthError::InvalidCredentials)?;
+                .ok_or(AuthError::NoProjectAccess)?;
             Ok(())
         }
     }

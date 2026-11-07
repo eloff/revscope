@@ -232,7 +232,7 @@ pub(crate) fn authorize_session_project_or_demo(
 ) -> Result<DownloadableProject, AuthError> {
     match ensure_project_access(server_context.clone(), &account.user, project_id) {
         Ok(()) => {}
-        Err(AuthError::InvalidCredentials) if is_demo_project_id(project_id) => {
+        Err(AuthError::NoProjectAccess) if is_demo_project_id(project_id) => {
             ensure_project_is_public(server_context, project_id)?;
         }
         Err(error) => return Err(error),
@@ -292,32 +292,39 @@ pub(crate) fn authorize_download_token(
         .download_tokens
         .get(secret)
         .ok_or(AuthError::InvalidSession)?;
-    if granted.project_key != project_key {
-        return Err(AuthError::InvalidSession);
-    }
-    crate::db::require_project(server_context.clone(), project_key)
-        .map_err(|error| AuthError::Db(error.to_string()))?;
     // The token outlives the session cache and lives only in this process, so
     // an admin removing the holder or narrowing their projects elsewhere has
     // to be read from Postgres. The demo needs no holder; it is matched by
     // id, as for session downloads, so another project named like it does
-    // not skip the check.
-    if !is_demo_project_id(project_id) {
+    // not skip the check. Checked against the token's own project before the
+    // one asked for, so a dead token answers 401 whichever project it names;
+    // a demo token, with no holder to check, is never dead this way.
+    if !is_demo_project_id(&granted.project_key.to_string()) {
         block_on(async {
-            let conn = crate::db::open_main_database_read(server_context).await?;
+            let conn = crate::db::open_main_database_read(server_context.clone()).await?;
             user_project_access(
                 &conn,
                 &granted.user_id,
                 &granted.account_id,
-                Some(project_key),
+                Some(granted.project_key),
             )
             .await
         })
+        // The token names this one project, so a holder who can no longer
+        // reach it holds a dead token: 401, as for a revoked query token.
         .map_err(|error| match error {
-            AuthError::InvalidCredentials => AuthError::InvalidSession,
+            AuthError::InvalidCredentials | AuthError::NoProjectAccess => AuthError::InvalidSession,
             error => error,
         })?;
     }
+    if granted.project_key != project_key {
+        return Err(AuthError::NoProjectAccess);
+    }
+    // Deleting a project leaves its download tokens in place until they expire.
+    crate::db::require_project(server_context, project_key).map_err(|error| match error {
+        crate::db::DbError::ProjectDatabaseNotFound(_) => AuthError::NoProjectAccess,
+        error => AuthError::Db(error.to_string()),
+    })?;
     Ok(DownloadableProject {
         project: AuthorizedProject::from_parsed(project_id)?,
     })
@@ -337,7 +344,7 @@ pub(crate) fn authorize_chat(
         Some(account) => ChatCaller::SignedIn(account.user.clone()),
         // A publicly named project other than the demo stays owner-only:
         // anonymous Ask is billed to, and stored with, the demo alone.
-        None if !is_demo_project_id(project.id()) => return Err(AuthError::InvalidSession),
+        None if !is_demo_project_id(project.id()) => return Err(AuthError::NoProjectAccess),
         None => {
             let client_ip = client_ip.ok_or(AuthError::InvalidRequest(
                 "a client IP is required for anonymous demo Ask",
@@ -356,7 +363,7 @@ pub(crate) fn authorize_mcp_project(
     project: &ProjectCache,
 ) -> Result<AuthorizedProject, AuthError> {
     if project.account_id() != account_key {
-        return Err(AuthError::InvalidCredentials);
+        return Err(AuthError::NoProjectAccess);
     }
     AuthorizedProject::from_parsed(&project.id_string())
 }
@@ -371,11 +378,11 @@ pub(crate) fn ensure_project_is_public(
 ) -> Result<(), AuthError> {
     let project_key = parse_project_id(project_id)?;
     let project = crate::projects::fetch_project_blocking(server_context, project_key)?
-        .ok_or(AuthError::InvalidCredentials)?;
+        .ok_or(AuthError::NoProjectAccess)?;
     if is_public_project_name(project.name()) {
         Ok(())
     } else {
-        Err(AuthError::InvalidCredentials)
+        Err(AuthError::NoProjectAccess)
     }
 }
 
@@ -388,11 +395,11 @@ pub(crate) fn ensure_project_access(
     let user_account = crate::db::project::parse_uuid_key(&user.account_id)
         .ok_or(AuthError::InvalidCredentials)?;
     let project = crate::projects::fetch_project_blocking(server_context, project_key)?
-        .ok_or(AuthError::InvalidCredentials)?;
+        .ok_or(AuthError::NoProjectAccess)?;
     if project.account_id() == user_account && user.projects.allows(project_key) {
         Ok(())
     } else {
-        Err(AuthError::InvalidCredentials)
+        Err(AuthError::NoProjectAccess)
     }
 }
 
@@ -404,7 +411,7 @@ pub(crate) fn ensure_project_access_or_public(
 ) -> Result<(), AuthError> {
     match ensure_project_access(server_context.clone(), user, project_id) {
         Ok(()) => Ok(()),
-        Err(AuthError::InvalidCredentials) => ensure_project_is_public(server_context, project_id),
+        Err(AuthError::NoProjectAccess) => ensure_project_is_public(server_context, project_id),
         Err(error) => Err(error),
     }
 }
@@ -416,7 +423,7 @@ pub(crate) fn ensure_project_not_public(
 ) -> Result<(), AuthError> {
     match ensure_project_is_public(server_context, project_id) {
         Ok(()) => Err(AuthError::InvalidRequest("the demo project is read-only")),
-        Err(AuthError::InvalidCredentials) => Ok(()),
+        Err(AuthError::NoProjectAccess) => Ok(()),
         Err(error) => Err(error),
     }
 }
@@ -555,8 +562,8 @@ mod tests {
 
     fn assert_rejected<T: std::fmt::Debug>(result: Result<T, AuthError>) {
         assert!(
-            matches!(result, Err(AuthError::InvalidCredentials)),
-            "expected InvalidCredentials, got {result:?}"
+            matches!(result, Err(AuthError::NoProjectAccess)),
+            "expected NoProjectAccess, got {result:?}"
         );
     }
 
@@ -841,17 +848,19 @@ mod tests {
     fn a_session_user_with_an_unparseable_account_reaches_nothing() {
         let fx = Fixture::new();
         let broken = fx.account_for("not-a-uuid");
+        // A credential this broken is dead, so it answers 401 like one rather
+        // than 404 like a live session asking for someone else's project.
         fx.run(|| {
-            assert_rejected(authorize_session_project(
-                fx.ctx(),
-                &broken,
-                &OWN_ID.to_string(),
-            ));
-            assert_rejected(ensure_project_access(
-                fx.ctx(),
-                &user_on("not-a-uuid"),
-                &OWN_ID.to_string(),
-            ));
+            let results = [
+                authorize_session_project(fx.ctx(), &broken, &OWN_ID.to_string()).map(|_| ()),
+                ensure_project_access(fx.ctx(), &user_on("not-a-uuid"), &OWN_ID.to_string()),
+            ];
+            for result in results {
+                assert!(
+                    matches!(result, Err(AuthError::InvalidCredentials)),
+                    "{result:?}"
+                );
+            }
         });
     }
 
@@ -924,12 +933,14 @@ mod tests {
     #[test]
     fn a_download_token_reaches_only_the_project_it_was_minted_for() {
         let fx = Fixture::new();
+        // Minted for the demo, whose tokens need no holder check, since this
+        // fixture has no Postgres to read one from.
         let issued = fx
             .context
             .download_tokens
             .issue(
                 crate::download_db::DownloadGrant {
-                    project_key: OWN_ID,
+                    project_key: DEMO_ID,
                     user_id: user_on(OWN_ACCOUNT).user_id,
                     account_id: OWN_ACCOUNT.to_string(),
                 },
@@ -938,10 +949,10 @@ mod tests {
             .expect("issue download token");
         let token = issued.secret.to_string();
         fx.run(|| {
-            for project in [OTHER_ID, DEMO_ID] {
+            for project in [OTHER_ID, OWN_ID] {
                 let result = authorize_download_token(fx.ctx(), &token, &project.to_string());
                 assert!(
-                    matches!(result, Err(AuthError::InvalidSession)),
+                    matches!(result, Err(AuthError::NoProjectAccess)),
                     "download token reached project {project}: {result:?}"
                 );
             }

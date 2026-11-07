@@ -289,7 +289,7 @@ async fn check_user_project_access(
     if listed {
         Ok(())
     } else {
-        Err(AuthError::InvalidCredentials)
+        Err(AuthError::NoProjectAccess)
     }
 }
 
@@ -399,7 +399,7 @@ mod tests {
             .expect("the access change commits");
         let minted = mint.await.expect("mint task");
         assert!(
-            matches!(minted, Err(AuthError::InvalidCredentials)),
+            matches!(minted, Err(AuthError::NoProjectAccess)),
             "the mint should read the narrowed access, got {minted:?}"
         );
 

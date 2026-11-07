@@ -11,13 +11,23 @@ export function authRequestInit(session?: AuthSession, init: RequestInit = {}): 
 }
 
 /**
- * Re-checks the session after a 401. The API also answers 401 to a live
- * session asking for a project it can't access, so this signs the tab out
- * only once `/v2/session/me` refuses the session too; a missing permission
- * leaves it signed in.
+ * Re-checks the session after a 401, and signs the tab out only once
+ * `/v2/session/me` refuses it too. The API keeps 401 for dead credentials
+ * (a project the caller can't access is a 404), but a 401 about some other
+ * credential, such as a sign-in attempt, mustn't end a live session.
  */
 export function noticeUnauthorized(response: Response): void {
   if (response.status === 401) {
+    void revalidateAuthSession();
+  }
+}
+
+/**
+ * Re-reads the account after a project turned out to be deleted or taken from
+ * this user since the tab loaded its list, so the dashboard moves to one they can use.
+ */
+export function noticeProjectGone(status: number, error: unknown): void {
+  if (status === 404 && error === "project not found") {
     void revalidateAuthSession();
   }
 }
@@ -32,6 +42,7 @@ export async function readJson<T>(response: Response, fallbackError: string): Pr
   const payload = (await response.json().catch(() => undefined)) as
     | (T & { error?: unknown })
     | undefined;
+  noticeProjectGone(response.status, payload?.error);
   if (!response.ok || payload === undefined) {
     throw new Error(typeof payload?.error === "string" ? payload.error : fallbackError);
   }

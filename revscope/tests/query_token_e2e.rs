@@ -118,14 +118,15 @@ async fn a_query_token_reaches_no_other_project_and_nothing_without_one() -> io:
     let authorization = format!("Bearer {token}");
     let auth_header = [("Authorization", authorization.as_str())];
 
-    // The token names its project; asking for another one is not authorized,
-    // whichever endpoint asks.
+    // The token names its project; asking for another one finds nothing,
+    // whichever endpoint asks. Not a 401, which would tell the caller the
+    // token itself had been revoked.
     let other_project = server
         .get_query(&schema_path(DEMO_PROJECT_ID), &auth_header)
         .await?;
     assert_eq!(
         other_project.status_code(),
-        401,
+        404,
         "{}",
         other_project.body_str()
     );
@@ -138,7 +139,7 @@ async fn a_query_token_reaches_no_other_project_and_nothing_without_one() -> io:
         .await?;
     assert_eq!(
         other_project.status_code(),
-        401,
+        404,
         "{}",
         other_project.body_str()
     );
@@ -214,7 +215,7 @@ async fn minting_a_query_token_validates_the_project_and_the_method() -> io::Res
         .await?;
     assert_eq!(
         foreign_project.status_code(),
-        401,
+        404,
         "{}",
         foreign_project.body_str()
     );

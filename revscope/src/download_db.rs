@@ -502,7 +502,7 @@ mod tests {
         let (server_context, _data_dir, token) = context_with_token();
         assert!(matches!(
             download_with_token(server_context.clone(), &token, "2", None, None),
-            Err(AuthError::InvalidSession)
+            Err(AuthError::NoProjectAccess)
         ));
         assert!(matches!(
             download_with_token(server_context.clone(), "not-a-token", "1", None, None),

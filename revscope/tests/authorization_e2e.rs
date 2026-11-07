@@ -13,7 +13,6 @@ use std::io;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use common::{DEMO_PROJECT_ID, DEMO_PROJECT_ID_B, HttpResponse, TestServer};
-#[cfg(not(feature = "self-hosted"))]
 use serde_json::{Value, json};
 
 #[cfg(not(feature = "self-hosted"))]
@@ -190,7 +189,16 @@ async fn every_route_rejects_a_request_without_live_credentials() -> io::Result<
         for project_id in [DEMO_PROJECT_ID_B, MISSING_PROJECT_ID] {
             for route in PROJECT_ROUTES {
                 let response = send(&server, route, project_id, headers).await?;
-                if response.status_code() != 401 {
+                // A missing or private project is no reason to stop asking
+                // for credentials.
+                let expected = if headers.is_empty() {
+                    "not authenticated"
+                } else {
+                    "invalid session"
+                };
+                if response.status_code() != 401
+                    || response.json::<Value>()["error"] != json!(expected)
+                {
                     failures.push(format!(
                         "{} [{label}]",
                         describe(route, project_id, &response)
@@ -253,11 +261,13 @@ async fn every_project_route_rejects_another_accounts_session() -> io::Result<()
     let bearer = format!("Bearer {}", account.session_id);
 
     let mut failures = Vec::new();
-    // Project 2 belongs to another account. Project 1 is the public demo,
-    // which signed-in callers may read, Ask about and download, but no one may
-    // change or query with their own credentials.
+    // Project 2 belongs to another account, and is refused exactly as a
+    // project that doesn't exist, with the same answer. Project 1 is the
+    // public demo, which signed-in callers may read, Ask about and download,
+    // but no one may change or query with their own credentials.
     for (project_id, routes) in [
         (DEMO_PROJECT_ID_B, PROJECT_ROUTES.iter().collect::<Vec<_>>()),
+        (MISSING_PROJECT_ID, PROJECT_ROUTES.iter().collect()),
         (
             DEMO_PROJECT_ID,
             PROJECT_ROUTES
@@ -286,6 +296,15 @@ async fn every_project_route_rejects_another_accounts_session() -> io::Result<()
         failures.is_empty(),
         "another account's session must not reach a project:\n{}",
         failures.join("\n")
+    );
+    let me = server
+        .get_query("/v2/session/me", &[("Cookie", cookie.as_str())])
+        .await?;
+    assert_eq!(
+        me.status_code(),
+        200,
+        "refusing a project must not end the session: {}",
+        me.body_str()
     );
 
     delete_account(&server, &account.account_name).await;
@@ -330,7 +349,7 @@ async fn any_signed_in_account_may_download_the_demo() -> io::Result<()> {
             &[],
         )
         .await?;
-    assert_eq!(elsewhere.status_code(), 401, "{}", elsewhere.body_str());
+    assert_eq!(elsewhere.status_code(), 404, "{}", elsewhere.body_str());
 
     delete_account(&server, &account.account_name).await;
     Ok(())
@@ -346,9 +365,10 @@ async fn every_route_admits_its_own_accounts_session() -> io::Result<()> {
     let project_id = account.project_id.to_string();
 
     // A control for the rejection tests: if a path here stopped resolving, or
-    // an owner were turned away too, a 401 there would prove nothing. Routes
-    // naming a conversation this account lacks answer 404, which still means
-    // the owner got past authorization.
+    // an owner were turned away too, a rejection there would prove nothing.
+    // Routes naming a conversation this account lacks answer a 404 of their
+    // own, which still means the owner got past authorization; "project not
+    // found" is the 404 a refused caller gets.
     let mut failures = Vec::new();
     let account_routes = ACCOUNT_ROUTES
         .iter()
@@ -362,7 +382,8 @@ async fn every_route_admits_its_own_accounts_session() -> io::Result<()> {
         let response = send(&server, route, project_id, &[("Cookie", cookie.as_str())]).await?;
         let status = response.status_code();
         let honeypot = response.header("content-encoding") == Some("gzip");
-        if status == 401 || status == 403 || status == 405 || honeypot {
+        let refused_project = status == 404 && response.body_str().contains("project not found");
+        if status == 401 || status == 403 || status == 405 || honeypot || refused_project {
             failures.push(describe(route, project_id, &response));
         }
     }
@@ -539,11 +560,15 @@ fn is_download_route(route: &ProjectRoute) -> bool {
 }
 
 #[cfg(not(feature = "self-hosted"))]
-/// A foreign session gets 401, except that changing the public demo is
-/// refused as read-only rather than as unauthorized.
+/// A live session refused a project: 404, as for one that doesn't exist, not
+/// the 401 that would tell the dashboard the session had died. Changing the
+/// public demo is refused as read-only instead.
 fn is_rejected(route: &ProjectRoute, project_id: &str, response: &HttpResponse) -> bool {
     match response.status_code() {
-        401 => true,
+        404 => {
+            let body = response.json::<Value>();
+            body["error"] == json!("project not found") && body["code"] == json!("not_found")
+        }
         400 if project_id == DEMO_PROJECT_ID => {
             response.json::<Value>()["error"] == json!("the demo project is read-only")
                 && !is_demo_open_to_any_account(route)

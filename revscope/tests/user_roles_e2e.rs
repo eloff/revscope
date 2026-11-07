@@ -85,7 +85,8 @@ async fn admins_invite_scope_and_remove_the_rest_of_the_account() -> io::Result<
         json!(second_id.to_string())
     );
 
-    // Reads reach only the project they were given.
+    // Reads reach only the project they were given. The rest answer 404, as
+    // for a project that doesn't exist, while the session stays live.
     let overview = |id: i32| format!("/v2/read/projects/{id}/overview?start=0&end=86400");
     assert_eq!(
         get(&server, &overview(second_id), &limited.cookie)
@@ -97,18 +98,18 @@ async fn admins_invite_scope_and_remove_the_rest_of_the_account() -> io::Result<
         get(&server, &overview(first_id), &limited.cookie)
             .await?
             .status_code(),
-        401
+        404
     );
     let settings = format!("/v2/session/projects/{first_id}/settings");
     assert_eq!(
         get(&server, &settings, &limited.cookie)
             .await?
             .status_code(),
-        401
+        404
     );
 
     // Long-lived tokens follow the same scope.
-    for (id, status) in [(second_id, 200), (first_id, 401)] {
+    for (id, status) in [(second_id, 200), (first_id, 404)] {
         let minted = post(
             &server,
             &format!("/v2/session/projects/{id}/query-token"),
@@ -337,6 +338,25 @@ async fn admins_invite_scope_and_remove_the_rest_of_the_account() -> io::Result<
         }
     };
     assert_eq!(with_token(schema.clone()).await?.status_code(), 200);
+    let first_download = post(
+        &server,
+        &format!("/v2/session/projects/{first_id}/download-token"),
+        json!({}),
+        &limited.cookie,
+    )
+    .await?;
+    assert_eq!(
+        first_download.status_code(),
+        200,
+        "{}",
+        first_download.body_str()
+    );
+    let first_download_path = format!(
+        "/v2/download/projects/{first_id}?token={}",
+        first_download.json::<Value>()["token"]
+            .as_str()
+            .expect("token")
+    );
     let narrowed = post(
         &server,
         UPDATE_PATH,
@@ -346,6 +366,29 @@ async fn admins_invite_scope_and_remove_the_rest_of_the_account() -> io::Result<
     .await?;
     assert_eq!(narrowed.status_code(), 200, "{}", narrowed.body_str());
     assert_eq!(with_token(schema).await?.status_code(), 401);
+    // A download token isn't stored, so it outlives the narrowing, but it
+    // names only the project its holder lost: as dead as the query token.
+    // Whichever project it's presented for, so a dead token can't be told
+    // apart from a live one by asking about another project.
+    let other_project_path = first_download_path.replacen(
+        &format!("/projects/{first_id}?"),
+        &format!("/projects/{second_id}?"),
+        1,
+    );
+    for path in [&first_download_path, &other_project_path] {
+        let narrowed_download = server.get_query(path, &[]).await?;
+        assert_eq!(
+            narrowed_download.status_code(),
+            401,
+            "{path}: {}",
+            narrowed_download.body_str()
+        );
+        assert_eq!(
+            narrowed_download.json::<Value>()["error"],
+            json!("invalid session"),
+            "{path}"
+        );
+    }
 
     // Admins can't change or remove themselves.
     let owner_id = me.json::<Value>()["user_id"]

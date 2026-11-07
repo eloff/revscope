@@ -122,6 +122,9 @@ pub(crate) fn map_auth_error(error: AuthError, context: &str) -> Response {
         AuthError::NotFound(message) => {
             error_response("404 Not Found", ErrorCode::NotFound, message)
         }
+        AuthError::NoProjectAccess => {
+            error_response("404 Not Found", ErrorCode::NotFound, "project not found")
+        }
         AuthError::Temporary(message) => {
             error_response("503 Service Unavailable", ErrorCode::Temporary, message)
         }

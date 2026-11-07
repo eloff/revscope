@@ -3,6 +3,7 @@ import { projectApiPath, publicApiPath } from "@revscope/web-shared/apiPaths";
 import {
   authRequestInit,
   fetchJson,
+  noticeProjectGone,
   noticeUnauthorized,
   readJson,
 } from "@revscope/web-shared/apiRequest";
@@ -163,6 +164,7 @@ export async function deleteConversation(
   // Already gone, which is what the caller wanted.
   if (!response.ok && !(await isConversationNotFound(response))) {
     const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    noticeProjectGone(response.status, payload.error);
     throw new Error(payload.error ?? "Unable to delete this conversation.");
   }
 }
@@ -205,6 +207,7 @@ export async function streamChat(
   }
   if (!response.ok) {
     const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    noticeProjectGone(response.status, payload.error);
     throw new Error(payload.error ?? "The assistant could not be reached.");
   }
   if (!response.body) {

@@ -61,8 +61,9 @@ pub(super) fn run(request: &ApiRequest, policy: &AuthPolicy) -> RouteResult {
         }
         AuthPolicy::Read(handle) => {
             let account = optional_account(request)?;
-            let project = authorize_read_project(context, account.as_ref(), request.project_id())
-                .map_err(|error| project_error(request, error))?;
+            let project =
+                authorize_read_project(context, account.as_ref(), request.project_id())
+                    .map_err(|error| caller_project_error(request, account.as_ref(), error))?;
             handle(request, &project)
         }
         AuthPolicy::Query(handle) => handle(request, &authorize_query_caller(request)?),
@@ -95,7 +96,7 @@ pub(super) fn run(request: &ApiRequest, policy: &AuthPolicy) -> RouteResult {
                 request.project_id(),
                 request.client_ip,
             )
-            .map_err(|error| project_error(request, error))?;
+            .map_err(|error| caller_project_error(request, account.as_ref(), error))?;
             handle(request, &grant)
         }
     }
@@ -109,6 +110,20 @@ fn route_name(request: &ApiRequest) -> String {
 /// A refusal of a verified caller: the session is fine, so it stays cached.
 fn project_error(request: &ApiRequest, error: AuthError) -> Response {
     map_project_auth_error(error, &route_name(request))
+}
+
+/// [`project_error`] for routes that also admit anonymous callers. Without a
+/// session, a project that isn't public may well be one logging in would open,
+/// so the caller is told to authenticate rather than that it doesn't exist.
+fn caller_project_error(
+    request: &ApiRequest,
+    account: Option<&Account>,
+    error: AuthError,
+) -> Response {
+    match (account, error) {
+        (None, AuthError::NoProjectAccess) => unauthorized_not_authenticated(),
+        (_, error) => project_error(request, error),
+    }
 }
 
 fn require_account(request: &ApiRequest) -> Result<Account, Response> {

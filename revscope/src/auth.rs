@@ -116,6 +116,11 @@ pub(crate) enum AuthError {
     /// The caller may use the route, but has nothing by that id. Also what a
     /// record owned by someone else reports, so its existence is not revealed.
     NotFound(&'static str),
+    /// A project the caller can't use, or one that doesn't exist; the two get
+    /// the same answer, so its content doesn't reveal which ids exist. A caller
+    /// that presented a live credential gets 404 rather than the 401 a dead one
+    /// gets; the router still tells an anonymous caller to authenticate.
+    NoProjectAccess,
     Temporary(&'static str),
     Db(String),
     Query(String),
