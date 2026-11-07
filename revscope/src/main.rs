@@ -29,9 +29,13 @@ fn main() -> io::Result<()> {
     // inherit a Hub with the client bound (required for panic capture).
     let _sentry = init_sentry();
 
-    let env_logger = env_logger::Builder::from_default_env()
-        .format_timestamp_millis()
-        .build();
+    let mut env_logger = env_logger::Builder::from_default_env();
+    // default_filter_or only covers an unset RUST_LOG; an empty one, as an
+    // uncommented `RUST_LOG=` in .env gives, would otherwise mean error.
+    if std::env::var(env_logger::DEFAULT_FILTER_ENV).map_or(true, |value| value.trim().is_empty()) {
+        env_logger.parse_filters("warn");
+    }
+    let env_logger = env_logger.format_timestamp_millis().build();
     // error! -> Sentry issue; lower levels are local-only (env_logger still prints them).
     let logger = SentryLogger::with_dest(env_logger).filter(|md| match md.level() {
         log::Level::Error => LogFilter::Exception,
@@ -121,7 +125,8 @@ async fn async_main() -> io::Result<()> {
     revscope::start_project_db_sweep_task(server_context.clone(), previous_pids);
 
     let listener_shutdown = Arc::new(Notify::new());
-    info!("revscope listening on {listen_addr}");
+    // At warn so the address shows at the default log level.
+    warn!("revscope listening on {listen_addr}");
     let mut server_task = revscope::task::spawn(
         server_context.clone(),
         revscope::run_listener(
@@ -134,7 +139,7 @@ async fn async_main() -> io::Result<()> {
 
     let mut tls_server_task = tls_listener.map(|listener| {
         let addr = tls_listen_addr.as_deref().expect("tls listen address");
-        info!("revscope listening for https on {addr}");
+        warn!("revscope listening for https on {addr}");
         revscope::task::spawn(
             server_context.clone(),
             revscope::run_tls_listener(

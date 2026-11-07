@@ -5,7 +5,7 @@
 //! what to do, runs the SQL the stub asks for against the real project
 //! database, and streams the answer back as server-sent events.
 //!
-//! `CF_AI_GATEWAY_URL` is what makes this possible: pointing it at a local
+//! `REVSCOPE_CHAT_URL` is what makes this possible: pointing it at a local
 //! listener that replays canned completions exercises the whole route without
 //! reaching a model.
 
@@ -70,8 +70,8 @@ async fn a_question_runs_sql_streams_the_answer_and_is_replayable() -> io::Resul
     .await?;
     // SAFETY: single-threaded setup before any request reads the configuration.
     unsafe {
-        std::env::set_var("CF_AI_GATEWAY_URL", gateway.base_url());
-        std::env::set_var("XAI_API_KEY", "test-key");
+        std::env::set_var("REVSCOPE_CHAT_URL", gateway.base_url());
+        std::env::set_var("REVSCOPE_CHAT_API_KEY", "test-key");
         std::env::set_var("REVSCOPE_CHAT_MODEL", "grok/grok-4.7");
     }
 

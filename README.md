@@ -144,7 +144,7 @@ To run it:
    your public URL followed by `/ui`, for example
    `https://analytics.example.com/ui`.
 3. Run the binary as an unprivileged user under a process manager such as
-   systemd. Set `RUST_LOG=info` to see the address it listens on.
+   systemd.
 4. Put it behind a reverse proxy that handles HTTPS, and set
    `REVSCOPE_TRUST_X_FORWARDED_FOR=true` so visitor IPs come from the proxy's
    `X-Forwarded-For` header. Make sure the backend's port can be reached only
@@ -179,7 +179,7 @@ with a comment explaining it. The main groups are:
 | `MAILCHANNELS_API_KEY`, `MAILCHANNELS_FROM_EMAIL`                          | Sending email (invitations, password resets)            |
 | `REVSCOPE_GOOGLE_CLIENT_ID`, `REVSCOPE_APPLE_CLIENT_ID`                    | Sign in with Google and Apple, hidden unless configured |
 | `REVSCOPE_GOOGLE_CLIENT_ID`, `REVSCOPE_GOOGLE_CLIENT_SECRET`               | "Connect with Google" for Google Analytics imports      |
-| `CF_AI_GATEWAY_URL`, `XAI_API_KEY`, `CF_AIG_TOKEN`, `REVSCOPE_CHAT_MODEL`  | The AI chat tab, which is hidden unless configured      |
+| `REVSCOPE_CHAT_URL`, `REVSCOPE_CHAT_API_KEY`, `REVSCOPE_CHAT_*`            | The AI chat tab, which is hidden unless configured      |
 | `SENTRY_DSN`                                                               | Error reporting to Sentry                               |
 | `REVSCOPE_CORS_ORIGINS`                                                    | Hosts of a web app deployed separately from the backend |
 | `REVSCOPE_LISTEN_TLS`, `REVSCOPE_TLS_DOMAINS`, `REVSCOPE_ACME_*`           | Built-in HTTPS with Let's Encrypt certificates          |
@@ -190,8 +190,9 @@ such as Stripe before they are stored. If you lose it, those keys can't be
 decrypted and have to be entered again.
 
 The AI chat tab sends requests to an OpenAI-compatible chat completions
-endpoint. It was built for Cloudflare AI Gateway forwarding to xAI, which is
-what the variable names refer to.
+endpoint. It was built for Cloudflare AI Gateway forwarding to xAI, so
+`REVSCOPE_CHAT_GATEWAY_TOKEN` is sent as Cloudflare's `cf-aig-authorization`
+header and the default model is `grok/grok-4.7`.
 
 ## Development
 

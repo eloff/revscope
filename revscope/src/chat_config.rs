@@ -8,7 +8,7 @@
 use std::env;
 use std::fmt;
 
-/// Cloudflare's OpenAI-compatible endpoint lives under this path.
+/// OpenAI-compatible endpoints serve completions under this path.
 const COMPLETIONS_PATH: &str = "/chat/completions";
 const DEFAULT_MODEL: &str = "grok/grok-4.7";
 /// How long the gateway has to produce a whole turn, tool calls included.
@@ -18,9 +18,9 @@ pub(crate) const REQUEST_TIMEOUT_SECONDS: u64 = 180;
 pub(crate) struct ChatConfig {
     /// Fully qualified chat completions URL.
     pub(crate) completions_url: String,
-    /// xAI key, forwarded by the gateway to the provider.
+    /// Model provider key, sent as the bearer token.
     pub(crate) api_key: String,
-    /// Set only when the gateway itself is authenticated.
+    /// Set only when a Cloudflare AI Gateway is itself authenticated.
     pub(crate) gateway_token: Option<String>,
     pub(crate) model: String,
 }
@@ -37,12 +37,13 @@ impl fmt::Display for MissingChatConfig {
 impl ChatConfig {
     pub(crate) fn from_env() -> Result<Self, MissingChatConfig> {
         let base =
-            optional_env("CF_AI_GATEWAY_URL").ok_or(MissingChatConfig("CF_AI_GATEWAY_URL"))?;
-        let api_key = optional_env("XAI_API_KEY").ok_or(MissingChatConfig("XAI_API_KEY"))?;
+            optional_env("REVSCOPE_CHAT_URL").ok_or(MissingChatConfig("REVSCOPE_CHAT_URL"))?;
+        let api_key = optional_env("REVSCOPE_CHAT_API_KEY")
+            .ok_or(MissingChatConfig("REVSCOPE_CHAT_API_KEY"))?;
         Ok(Self {
             completions_url: completions_url(&base),
             api_key,
-            gateway_token: optional_env("CF_AIG_TOKEN"),
+            gateway_token: optional_env("REVSCOPE_CHAT_GATEWAY_TOKEN"),
             model: optional_env("REVSCOPE_CHAT_MODEL").unwrap_or_else(|| DEFAULT_MODEL.to_string()),
         })
     }
@@ -54,8 +55,8 @@ impl ChatConfig {
     }
 }
 
-/// Accepts either the gateway base (`.../compat`) or a full completions URL, so
-/// operators can paste whichever one Cloudflare showed them.
+/// Accepts either the endpoint base (such as a gateway's `.../compat`) or a full
+/// completions URL, so operators can paste whichever one their provider showed them.
 fn completions_url(base: &str) -> String {
     let trimmed = base.trim_end_matches('/');
     if trimmed.ends_with(COMPLETIONS_PATH) {
