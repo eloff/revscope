@@ -1,7 +1,16 @@
 /// <reference types="solid-js" />
 
 import { Dialog } from "@ark-ui/solid/dialog";
-import { createEffect, createSignal, createUniqueId, on, onCleanup, onMount, Show } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  createUniqueId,
+  on,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js";
 import { Portal } from "solid-js/web";
 import { error, form, input, label, primaryButton, success } from "./AuthForm.css";
 import { getApiBaseUrl } from "./apiBaseUrl";
@@ -14,6 +23,7 @@ import {
   validateLoginPassword,
 } from "./authValidation";
 import { type IdTokenSignIn, signInWithIdToken } from "./idTokenSignIn";
+import LastUsedFrame from "./LastUsedFrame";
 import {
   actionPrimaryButton,
   actionRow,
@@ -28,6 +38,7 @@ import {
   textButton,
   title,
 } from "./LoginDialog.css";
+import { readLastLoginMethod, rememberLoginMethod } from "./lastLoginMethod";
 import { appPath, SELF_HOSTED, signupPath } from "./links";
 import SocialSignIn from "./SocialSignIn";
 
@@ -104,6 +115,8 @@ export default function LoginDialog(props: LoginDialogProps) {
   // revscope.co it always is.
   const [signupOpen, setSignupOpen] = createSignal(!SELF_HOSTED);
   const isForgotPassword = () => mode() === "forgot-password";
+  // Read on each open: another tab may have logged in with a different method.
+  const lastUsed = createMemo(() => (open() ? readLastLoginMethod() : undefined));
   const dialogTitle = () => (isForgotPassword() ? "Reset password" : "Log in");
   const dialogDescription = () =>
     isForgotPassword()
@@ -238,6 +251,7 @@ export default function LoginDialog(props: LoginDialogProps) {
         return;
       }
       saveAuthSession(session);
+      rememberLoginMethod("email");
       writeRememberedEmail(rememberMe() ? trimmedEmail : null);
       window.location.assign(props.redirectTo ?? appPath("/dashboard"));
     } catch {
@@ -268,79 +282,84 @@ export default function LoginDialog(props: LoginDialogProps) {
             {/* Only while open: a closed dialog's Google button would take the
                 sign-ins of the page's own, such as the signup form's. */}
             <Show when={open() && !isForgotPassword()}>
-              <SocialSignIn onSignIn={(signIn) => void onIdTokenSignIn(signIn)} />
-            </Show>
-            <form class={form} onSubmit={onSubmit}>
-              <label class={label} for={emailInputId}>
-                Email
-              </label>
-              <input
-                id={emailInputId}
-                name="email"
-                type="email"
-                autocomplete="username"
-                required
-                pattern={EMAIL_PATTERN.source}
-                class={input}
-                value={email()}
-                onInput={(event) => setEmail(event.currentTarget.value)}
+              <SocialSignIn
+                lastUsed={lastUsed()}
+                onSignIn={(signIn) => void onIdTokenSignIn(signIn)}
               />
-              {!isForgotPassword() && (
-                <>
-                  <label class={label} for={passwordInputId}>
-                    Password
-                  </label>
-                  <input
-                    id={passwordInputId}
-                    name="password"
-                    type="password"
-                    autocomplete="current-password"
-                    required
-                    minLength={MIN_PASSWORD_LENGTH}
-                    class={input}
-                    value={password()}
-                    onInput={(event) => setPassword(event.currentTarget.value)}
-                  />
-                  <button
-                    type="button"
-                    class={textButton}
-                    onClick={() => switchMode("forgot-password")}
-                  >
-                    Forgot password?
-                  </button>
-                  <label class={rememberMeRow} for={rememberMeInputId}>
+            </Show>
+            <LastUsedFrame active={!isForgotPassword() && lastUsed() === "email"}>
+              <form class={form} onSubmit={onSubmit}>
+                <label class={label} for={emailInputId}>
+                  Email
+                </label>
+                <input
+                  id={emailInputId}
+                  name="email"
+                  type="email"
+                  autocomplete="username"
+                  required
+                  pattern={EMAIL_PATTERN.source}
+                  class={input}
+                  value={email()}
+                  onInput={(event) => setEmail(event.currentTarget.value)}
+                />
+                {!isForgotPassword() && (
+                  <>
+                    <label class={label} for={passwordInputId}>
+                      Password
+                    </label>
                     <input
-                      id={rememberMeInputId}
-                      name="rememberMe"
-                      type="checkbox"
-                      class={rememberMeInput}
-                      checked={rememberMe()}
-                      onChange={(event) => setRememberMe(event.currentTarget.checked)}
+                      id={passwordInputId}
+                      name="password"
+                      type="password"
+                      autocomplete="current-password"
+                      required
+                      minLength={MIN_PASSWORD_LENGTH}
+                      class={input}
+                      value={password()}
+                      onInput={(event) => setPassword(event.currentTarget.value)}
                     />
-                    Remember me
-                  </label>
-                </>
-              )}
-              {isForgotPassword() && (
-                <button type="button" class={textButton} onClick={() => switchMode("login")}>
-                  Back to log in
-                </button>
-              )}
-              <div class={actionRow}>
-                <button
-                  type="submit"
-                  class={`${primaryButton} ${actionPrimaryButton}`}
-                  disabled={isSubmitting()}
-                >
-                  {submitLabel()}
-                </button>
-                <Show when={signupOpen()}>
-                  <a href={signupHref()} class={secondaryButton}>
-                    Sign up
-                  </a>
-                </Show>
-              </div>
-            </form>
+                    <button
+                      type="button"
+                      class={textButton}
+                      onClick={() => switchMode("forgot-password")}
+                    >
+                      Forgot password?
+                    </button>
+                    <label class={rememberMeRow} for={rememberMeInputId}>
+                      <input
+                        id={rememberMeInputId}
+                        name="rememberMe"
+                        type="checkbox"
+                        class={rememberMeInput}
+                        checked={rememberMe()}
+                        onChange={(event) => setRememberMe(event.currentTarget.checked)}
+                      />
+                      Remember me
+                    </label>
+                  </>
+                )}
+                {isForgotPassword() && (
+                  <button type="button" class={textButton} onClick={() => switchMode("login")}>
+                    Back to log in
+                  </button>
+                )}
+                <div class={actionRow}>
+                  <button
+                    type="submit"
+                    class={`${primaryButton} ${actionPrimaryButton}`}
+                    disabled={isSubmitting()}
+                  >
+                    {submitLabel()}
+                  </button>
+                  <Show when={signupOpen()}>
+                    <a href={signupHref()} class={secondaryButton}>
+                      Sign up
+                    </a>
+                  </Show>
+                </div>
+              </form>
+            </LastUsedFrame>
             {errorMessage() && <p class={error}>{errorMessage()}</p>}
             {successMessage() && <p class={success}>{successMessage()}</p>}
           </Dialog.Content>

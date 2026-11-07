@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockApi } from "../../../shared/test/api";
 import { signOut } from "../../../shared/test/auth";
+import { clearCookie } from "../../../shared/test/cookies";
 import { testSession } from "../../../shared/test/fixtures";
 import { stubLocation } from "../../../shared/test/location";
 import { fakeApple } from "../../../shared/test/signInScripts";
@@ -11,6 +12,7 @@ import SignupForm from "./SignupForm";
 const SIGNUP = "/v2/public/auth/signup";
 
 afterEach(async () => {
+  clearCookie("revscope_last_login");
   vi.unstubAllGlobals();
   await signOut();
 });
@@ -56,6 +58,7 @@ describe("SignupForm", () => {
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     });
     expect(localStorage.getItem("revscope.auth.session")).toContain("ada@example.com");
+    expect(document.cookie).toContain("revscope_last_login=email");
   });
 
   it("signs up with Apple, passing on the name Apple gave the browser", async () => {
@@ -118,6 +121,7 @@ describe("SignupForm", () => {
     submit();
     expect(await screen.findByText("Unable to sign up.")).toBeInTheDocument();
     expect(assign).not.toHaveBeenCalled();
+    expect(document.cookie).not.toContain("revscope_last_login");
   });
 
   it("names the project after the website until it's edited", async () => {

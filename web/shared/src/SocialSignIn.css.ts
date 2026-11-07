@@ -19,6 +19,7 @@ export const appleButton = style({
   alignItems: "center",
   justifyContent: "center",
   gap: "8px",
+  width: "100%",
   height: "40px",
   border: 0,
   borderRadius: "4px",
@@ -57,7 +58,7 @@ export const divider = style({
 });
 
 export const error = style({
-  margin: 0,
+  margin: "10px 0 0",
   color: "#dc2626",
   fontSize: "0.9rem",
 });

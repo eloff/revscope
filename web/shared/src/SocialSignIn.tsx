@@ -4,6 +4,8 @@ import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { appleSignIn, loadAppleJs } from "./appleSignIn";
 import { receiveGoogleSignIns, renderGoogleButton } from "./googleSignIn";
 import { fetchSignInProviders, type IdTokenSignIn, knownSignInProviders } from "./idTokenSignIn";
+import LastUsedFrame from "./LastUsedFrame";
+import type { LoginMethod } from "./lastLoginMethod";
 import { appleButton, buttons, divider, error, googleButton } from "./SocialSignIn.css";
 
 type SocialSignInProps = {
@@ -11,6 +13,8 @@ type SocialSignInProps = {
   onSignIn: (signIn: IdTokenSignIn) => void;
   /** Labels the divider below the buttons, between them and the email form. */
   dividerLabel?: string;
+  /** Marks this method's button as the one used last, if it's one of these. */
+  lastUsed?: LoginMethod;
 };
 
 /**
@@ -31,10 +35,18 @@ export default function SocialSignIn(props: SocialSignInProps) {
     <Show when={providers() && (providers()?.google || providers()?.apple)}>
       <div class={buttons}>
         <Show when={providers()?.google}>
-          {(clientId) => <GoogleButton clientId={clientId()} />}
+          {(clientId) => (
+            <LastUsedFrame active={props.lastUsed === "google"}>
+              <GoogleButton clientId={clientId()} />
+            </LastUsedFrame>
+          )}
         </Show>
         <Show when={providers()?.apple}>
-          {(servicesId) => <AppleButton servicesId={servicesId()} onSignIn={props.onSignIn} />}
+          {(servicesId) => (
+            <LastUsedFrame active={props.lastUsed === "apple"}>
+              <AppleButton servicesId={servicesId()} onSignIn={props.onSignIn} />
+            </LastUsedFrame>
+          )}
         </Show>
       </div>
       <p class={divider}>{props.dividerLabel ?? "or use your email"}</p>
