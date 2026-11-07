@@ -24,12 +24,18 @@ pub struct IntegrationView {
     /// or `None` if there hasn't been one.
     pub last_synced_at: Option<String>,
     /// `error_text` from the most recent sync attempt with the current credentials and
-    /// account, or `None` on success / none yet.
+    /// account, or `None` on success / none yet / still running. Released CLIs read an
+    /// error here as that attempt's outcome. To show status, use
+    /// [`IntegrationView::last_finished_sync_error`].
     pub last_sync_error: Option<String>,
     /// `started_at` of the most recent such attempt, finished or not. The same format
     /// as `last_synced_at`, so the two are equal once that attempt has succeeded.
     #[serde(default)]
     pub last_sync_attempted_at: Option<String>,
+    /// `error_text` from the most recent such attempt that finished, so a sync still
+    /// running, or one a crash left unfinished, doesn't hide the last failure.
+    #[serde(default)]
+    pub last_finished_sync_error: Option<String>,
 }
 
 impl IntegrationView {

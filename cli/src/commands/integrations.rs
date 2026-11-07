@@ -375,7 +375,12 @@ impl Render for Connections {
                     opt(view.external_account_id.as_deref()).to_string(),
                     opt(view.api_key_masked.as_deref()).to_string(),
                     opt(view.last_synced_at.as_deref()).to_string(),
-                    opt(view.last_sync_error.as_deref()).to_string(),
+                    // An older server doesn't send the finished error.
+                    opt(view
+                        .last_finished_sync_error
+                        .as_deref()
+                        .or(view.last_sync_error.as_deref()))
+                    .to_string(),
                 ]
             })
             .collect();
@@ -476,6 +481,7 @@ mod tests {
             last_synced_at: None,
             last_sync_error: None,
             last_sync_attempted_at: None,
+            last_finished_sync_error: None,
         }
     }
 
@@ -486,6 +492,22 @@ mod tests {
             last_sync_error: error.map(str::to_string),
             ..view(None, Some("***"), None)
         }
+    }
+
+    #[test]
+    fn the_list_shows_the_finished_error_or_an_older_servers_only_error() {
+        let finished = IntegrationView {
+            last_finished_sync_error: Some("finished failure".to_string()),
+            ..after_sync("t2", None, None)
+        };
+        let older_server = after_sync("t2", None, Some("older server failure"));
+        let rendered = Connections {
+            integrations: vec![finished, older_server],
+        }
+        .render();
+
+        assert!(rendered.contains("finished failure"), "{rendered}");
+        assert!(rendered.contains("older server failure"), "{rendered}");
     }
 
     #[test]

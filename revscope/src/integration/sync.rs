@@ -846,8 +846,68 @@ mod tests {
             .await
             .expect("load status");
         assert_eq!(after[0].last_sync_error, None);
+        assert_eq!(after[0].last_finished_sync_error, None);
         assert_eq!(after[0].last_sync_attempted_at, None);
         assert_eq!(after[0].last_synced_at, None);
+        delete_account(&conn, &account_id).await;
+    }
+
+    #[tokio::test]
+    async fn a_running_sync_does_not_hide_the_last_error() {
+        let (server_context, conn) = crate::test_utils::main_test_db("status-running").await;
+        let (account_id, integration_id) = insert_integration(&conn, "status_running").await;
+        let project_id: i32 = conn
+            .query_one(
+                "SELECT project_id FROM integrations WHERE id = $1",
+                &[&integration_id],
+            )
+            .await
+            .expect("load integration")
+            .get(0);
+        run_sync(
+            &server_context,
+            integration_id,
+            SyncKind::Full,
+            SyncKind::Full,
+            Some("key was revoked"),
+        )
+        .await;
+        let status = async || {
+            crate::settings::load_integrations(&conn, project_id)
+                .await
+                .expect("load status")
+                .remove(0)
+        };
+        assert_eq!(
+            status().await.last_finished_sync_error.as_deref(),
+            Some("key was revoked")
+        );
+
+        let started_at =
+            create_integration_sync_row(server_context.clone(), integration_id, 0, SyncKind::Full)
+                .await
+                .expect("start sync")
+                .expect("credentials are current");
+        let running = status().await;
+        assert_eq!(
+            running.last_finished_sync_error.as_deref(),
+            Some("key was revoked")
+        );
+        // What released CLIs read: no outcome yet for the attempt they see.
+        assert_eq!(running.last_sync_error, None);
+
+        complete_integration_sync(
+            server_context.clone(),
+            integration_id,
+            0,
+            SyncKind::Full,
+            started_at,
+            SyncCounts::default(),
+            None,
+        )
+        .await
+        .expect("complete sync");
+        assert_eq!(status().await.last_finished_sync_error, None);
         delete_account(&conn, &account_id).await;
     }
 

@@ -185,16 +185,28 @@ pub(crate) async fn load_integrations(
                 i.encrypted_secret,
                 i.last_sync_success_at::text,
                 latest.error_text,
-                latest.started_at::text
+                latest.started_at::text,
+                finished.error_text
              FROM integrations i
              LEFT JOIN LATERAL (
-                SELECT error_text, started_at
+                SELECT started_at, error_text
                 FROM integration_syncs s
                 WHERE s.integration_id = i.id
                   AND s.credentials_version = i.credentials_version
                 ORDER BY s.started_at DESC
                 LIMIT 1
              ) latest ON true
+             -- A running sync has no outcome yet, and neither has one a crash left behind,
+             -- so neither may hide the last error.
+             LEFT JOIN LATERAL (
+                SELECT error_text
+                FROM integration_syncs s
+                WHERE s.integration_id = i.id
+                  AND s.credentials_version = i.credentials_version
+                  AND s.completed_at IS NOT NULL
+                ORDER BY s.started_at DESC
+                LIMIT 1
+             ) finished ON true
              WHERE i.project_id = $1
              ORDER BY i.integration_type",
             &params,
@@ -219,6 +231,7 @@ pub(crate) async fn load_integrations(
                 last_synced_at: row.get(4),
                 last_sync_error: row.get(5),
                 last_sync_attempted_at: row.get(6),
+                last_finished_sync_error: row.get(7),
             }
         })
         .collect())

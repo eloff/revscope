@@ -250,7 +250,7 @@ fn bare_host(host: &str) -> String {
 }
 
 fn integration_status(view: IntegrationView) -> IntegrationStatus {
-    let status = if view.last_sync_error.is_some() {
+    let status = if view.last_finished_sync_error.is_some() {
         SyncStatus::Error
     } else if view.last_synced_at.is_some() {
         SyncStatus::Ok
@@ -260,7 +260,7 @@ fn integration_status(view: IntegrationView) -> IntegrationStatus {
     IntegrationStatus {
         integration_type: view.integration_type,
         last_synced_at: view.last_synced_at,
-        last_sync_error: view.last_sync_error,
+        last_sync_error: view.last_finished_sync_error,
         status,
     }
 }
@@ -656,6 +656,23 @@ fn stub_project_names(html: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_running_sync_does_not_turn_a_failing_integration_ok() {
+        let status = integration_status(IntegrationView {
+            integration_type: "stripe".to_string(),
+            external_account_id: None,
+            api_key_masked: None,
+            secret_masked: None,
+            last_synced_at: Some("2026-11-01".to_string()),
+            last_sync_error: None,
+            last_sync_attempted_at: Some("2026-11-02".to_string()),
+            last_finished_sync_error: Some("key was revoked".to_string()),
+        });
+
+        assert!(matches!(status.status, SyncStatus::Error));
+        assert_eq!(status.last_sync_error.as_deref(), Some("key was revoked"));
+    }
 
     #[test]
     fn analyze_finds_default_stub() {

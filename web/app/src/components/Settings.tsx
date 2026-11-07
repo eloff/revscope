@@ -33,6 +33,7 @@ import { Portal } from "solid-js/web";
 import { isPlainLeftClick } from "../lib/plainClick";
 import {
   fetchSettings,
+  finishedSyncError,
   INTEGRATION_META,
   INTEGRATION_TYPES,
   type IntegrationField,
@@ -137,7 +138,7 @@ function buildForm(response: SettingsResponse): FormState {
         masked: existing?.secret_masked ?? null,
       },
       last_synced_at: existing?.last_synced_at ?? null,
-      last_sync_error: existing?.last_sync_error ?? null,
+      last_sync_error: existing ? finishedSyncError(existing) : null,
     };
   }
   return {

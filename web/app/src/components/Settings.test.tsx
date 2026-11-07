@@ -181,7 +181,7 @@ describe("Settings", () => {
           {
             ...stripe,
             last_synced_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
-            last_sync_error: "Key revoked",
+            last_finished_sync_error: "Key revoked",
           },
         ],
       }),

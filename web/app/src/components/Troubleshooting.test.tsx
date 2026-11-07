@@ -98,6 +98,27 @@ describe("Troubleshooting", () => {
     expect(screen.getByText("Event count unavailable.")).toBeInTheDocument();
   });
 
+  it("keeps showing the last failure while a sync runs", async () => {
+    signIn();
+    mockApi("get", BASE, { error: "Status unavailable." }, 500);
+    mockApi("get", "/v2/session/projects/42/settings", {
+      timezone: "UTC",
+      integrations: [
+        {
+          integration_type: "polar",
+          external_account_id: null,
+          api_key_masked: "x",
+          secret_masked: null,
+          last_synced_at: "2026-11-01T00:00:00Z",
+          last_sync_error: null,
+          last_finished_sync_error: "Key revoked",
+        },
+      ],
+    });
+    render(() => <Troubleshooting />);
+    expect(await screen.findByText("Key revoked")).toBeInTheDocument();
+  });
+
   it("checks the page, then reports the first event from it", async () => {
     const user = await renderLoaded();
     const checks = mockApi("post", `${BASE}/check`, check);

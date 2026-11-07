@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { INTEGRATION_META, INTEGRATION_TYPES, timezoneOptions } from "./settingsApi";
+import {
+  finishedSyncError,
+  INTEGRATION_META,
+  INTEGRATION_TYPES,
+  timezoneOptions,
+} from "./settingsApi";
 
 const JANUARY = new Date("2026-01-15T12:00:00Z");
 const JULY = new Date("2026-07-15T12:00:00Z");
@@ -46,5 +51,21 @@ describe("INTEGRATION_META", () => {
       expect(INTEGRATION_META[type].type).toBe(type);
       expect(INTEGRATION_META[type].fields.some((field) => field.secret)).toBe(true);
     }
+  });
+});
+
+describe("finishedSyncError", () => {
+  it("shows the last failure while a new sync runs", () => {
+    expect(finishedSyncError({ last_sync_error: null, last_finished_sync_error: "Revoked" })).toBe(
+      "Revoked",
+    );
+  });
+
+  it("falls back to the only error an older server sends", () => {
+    expect(finishedSyncError({ last_sync_error: "Revoked" })).toBe("Revoked");
+  });
+
+  it("reports nothing after a success", () => {
+    expect(finishedSyncError({ last_sync_error: null, last_finished_sync_error: null })).toBeNull();
   });
 });

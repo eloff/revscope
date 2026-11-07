@@ -184,9 +184,18 @@ export type IntegrationView = {
   secret_masked: string | null;
   /** ISO timestamp of the last successful sync with the current credentials and account, or null if none yet. */
   last_synced_at: string | null;
-  /** Error from the most recent sync attempt with the current credentials and account, or null on success or if none yet. */
+  /** Error from the most recent sync attempt with the current credentials and account, or null on success, if none yet, or while it runs. */
   last_sync_error: string | null;
+  /** Error from the most recent such attempt that finished, which a running sync doesn't hide. Read through finishedSyncError. */
+  last_finished_sync_error?: string | null;
 };
+
+/** The error to show as an integration's status. An older server only sends `last_sync_error`. */
+export function finishedSyncError(
+  integration: Pick<IntegrationView, "last_sync_error" | "last_finished_sync_error">,
+): string | null {
+  return integration.last_finished_sync_error ?? integration.last_sync_error;
+}
 
 export type SettingsResponse = {
   timezone: string;

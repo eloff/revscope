@@ -8,7 +8,7 @@ import {
   selectedProjectId,
 } from "@revscope/web-shared/projectSelection";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
-import { fetchSettings } from "../lib/settingsApi";
+import { fetchSettings, finishedSyncError } from "../lib/settingsApi";
 import {
   fetchTroubleshootingStatus,
   formatDetectedAt,
@@ -86,8 +86,12 @@ function integrationsFromSettings(
   return integrations.map((integration) => ({
     integration_type: integration.integration_type,
     last_synced_at: integration.last_synced_at,
-    last_sync_error: integration.last_sync_error,
-    status: integration.last_sync_error ? "error" : integration.last_synced_at ? "ok" : "never_run",
+    last_sync_error: finishedSyncError(integration),
+    status: finishedSyncError(integration)
+      ? "error"
+      : integration.last_synced_at
+        ? "ok"
+        : "never_run",
   }));
 }
 
