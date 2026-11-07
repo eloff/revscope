@@ -20,11 +20,13 @@ pub struct IntegrationView {
     pub api_key_masked: Option<String>,
     /// Masked preview of the secret, or `None` when no secret is stored.
     pub secret_masked: Option<String>,
-    /// `started_at` of the last successful sync, or `None` if never succeeded.
+    /// `started_at` of the last successful sync with the current credentials and account,
+    /// or `None` if there hasn't been one.
     pub last_synced_at: Option<String>,
-    /// `error_text` from the most recent sync attempt, or `None` on success / never synced.
+    /// `error_text` from the most recent sync attempt with the current credentials and
+    /// account, or `None` on success / none yet.
     pub last_sync_error: Option<String>,
-    /// `started_at` of the most recent sync attempt, finished or not. The same format
+    /// `started_at` of the most recent such attempt, finished or not. The same format
     /// as `last_synced_at`, so the two are equal once that attempt has succeeded.
     #[serde(default)]
     pub last_sync_attempted_at: Option<String>,

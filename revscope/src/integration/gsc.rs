@@ -67,7 +67,8 @@ pub(crate) async fn load_due_integrations(
                     external_account_id,
                     encrypted_api_key,
                     encrypted_secret,
-                    synced_through_date::text
+                    synced_through_date::text,
+                    credentials_version
                  FROM integrations
                  WHERE disabled_at IS NULL
                     AND integration_type = 'google_search_console'::integration_type
@@ -94,6 +95,7 @@ pub(crate) async fn load_due_integrations(
             encrypted_client_email: row.get(3),
             encrypted_private_key: row.get(4),
             synced_through: row.get::<_, Option<&str>>(5).and_then(parse_iso_date),
+            credentials_version: row.get(6),
         })
         .collect())
 }
@@ -106,6 +108,7 @@ pub(crate) async fn run_sync_with_retries(
         server_context.clone(),
         "gsc",
         integration.id,
+        integration.credentials_version,
         SyncKind::Full,
         || async { sync_integration(server_context.clone(), &integration).await },
     )
@@ -120,6 +123,7 @@ pub(crate) struct GscIntegration {
     encrypted_private_key: Option<Vec<u8>>,
     /// Newest report date already written, used to resume an interrupted backfill.
     synced_through: Option<Date>,
+    credentials_version: i64,
 }
 
 /// Walks the integration's pending report days oldest-first, committing and
@@ -158,6 +162,17 @@ async fn sync_integration(
             caught_up = false;
             break;
         }
+        // A backfill takes one request per day of history, and the new site's sync
+        // can't start until this one ends.
+        if !super::sync::credentials_are_current(
+            server_context.clone(),
+            integration.id,
+            integration.credentials_version,
+        )
+        .await
+        {
+            return Err(SyncError::CredentialsChanged);
+        }
         let access_token = token.get(client, &client_email, &private_key).await?;
         let snapshot = fetch_day_snapshot(
             &server_context,
@@ -174,7 +189,13 @@ async fn sync_integration(
             write_day_snapshot(&server_context, &project, day, snapshot)?,
         );
         if synced_through.is_none_or(|cursor| day > cursor) {
-            record_synced_through(server_context.clone(), integration.id, day).await?;
+            record_synced_through(
+                server_context.clone(),
+                integration.id,
+                integration.credentials_version,
+                day,
+            )
+            .await?;
             synced_through = Some(day);
         }
         days += 1;
@@ -510,16 +531,19 @@ fn retry_backoff(attempt: usize) -> Duration {
 async fn record_synced_through(
     server_context: Arc<ServerContext>,
     integration_id: i32,
+    credentials_version: i64,
     date: Date,
 ) -> SyncResult<()> {
     let conn = open_main_database_write(server_context).await?;
     // GREATEST ignores NULLs, so the cursor only ever moves forward even when the
-    // trailing window re-syncs days that are already covered.
+    // trailing window re-syncs days that are already covered. The version check
+    // keeps a sync of the old site from setting the cursor a new site's backfill
+    // starts from, which would skip that site's history for good.
     conn.execute(
         "UPDATE integrations
          SET synced_through_date = GREATEST(synced_through_date, $2::text::date)
-         WHERE id = $1",
-        &[&integration_id, &format_date(date)],
+         WHERE id = $1 AND credentials_version = $3",
+        &[&integration_id, &format_date(date), &credentials_version],
     )
     .await?;
     Ok(())
@@ -972,6 +996,115 @@ struct GscSearchAnalyticsRow {
 mod tests {
     use super::*;
     use crate::test_utils::open_migrated_db;
+
+    #[tokio::test]
+    async fn a_backfill_stops_when_the_site_changes() {
+        let (server_context, conn) = crate::test_utils::main_test_db("gsc-stop").await;
+        let account_id = crate::test_utils::insert_test_account(&conn, "gsc_stop").await;
+        let name = format!("p{}", account_id.replace('-', ""));
+        let project_id: i32 = conn
+            .query_one(
+                "INSERT INTO projects (account_id, name) VALUES ($1::text::uuid, $2) RETURNING id",
+                &[&account_id, &name],
+            )
+            .await
+            .expect("insert project")
+            .get(0);
+        let integration_id: i32 = conn
+            .query_one(
+                "INSERT INTO integrations (project_id, integration_type, credentials_version)
+                 VALUES ($1, 'google_search_console', 1) RETURNING id",
+                &[&project_id],
+            )
+            .await
+            .expect("insert integration")
+            .get(0);
+        let integration = GscIntegration {
+            id: integration_id,
+            project_id: project_id.to_string(),
+            site_url: "sc-domain:old.example".to_string(),
+            encrypted_client_email: Some(crate::crypto::encrypt(b"sync@example.com")),
+            encrypted_private_key: Some(crate::crypto::encrypt(b"not used")),
+            synced_through: None,
+            credentials_version: 0,
+        };
+
+        // The check comes before the first request, so no provider is needed.
+        let outcome = sync_integration(server_context.clone(), &integration).await;
+
+        assert!(matches!(outcome, Err(SyncError::CredentialsChanged)));
+        conn.execute(
+            "DELETE FROM accounts WHERE id = $1::text::uuid",
+            &[&account_id],
+        )
+        .await
+        .expect("delete account");
+    }
+
+    #[tokio::test]
+    async fn a_new_site_still_backfills_after_a_sync_of_the_old_site_finishes() {
+        let (server_context, conn) = crate::test_utils::main_test_db("gsc-cursor-race").await;
+        let account_id = crate::test_utils::insert_test_account(&conn, "gsc_cursor_race").await;
+        let name = format!("p{}", account_id.replace('-', ""));
+        let project_id: i32 = conn
+            .query_one(
+                "INSERT INTO projects (account_id, name) VALUES ($1::text::uuid, $2) RETURNING id",
+                &[&account_id, &name],
+            )
+            .await
+            .expect("insert project")
+            .get(0);
+        let integration_id: i32 = conn
+            .query_one(
+                "INSERT INTO integrations
+                    (project_id, integration_type, external_account_id, encrypted_api_key)
+                 VALUES ($1, 'google_search_console', 'sc-domain:old.example', '\\x00')
+                 RETURNING id",
+                &[&project_id],
+            )
+            .await
+            .expect("insert integration")
+            .get(0);
+        let newest = date(2026, 6, 1);
+
+        crate::settings::upsert_integration(
+            &conn,
+            project_id,
+            &revscope_api::settings::IntegrationInput {
+                integration_type: "google_search_console".to_string(),
+                external_account_id: Some("sc-domain:new.example".to_string()),
+                api_key: None,
+                secret: None,
+            },
+        )
+        .await
+        .expect("save new site");
+        record_synced_through(server_context.clone(), integration_id, 0, newest)
+            .await
+            .expect("record old site's cursor");
+
+        let cursor = conn
+            .query_one(
+                "SELECT synced_through_date::text FROM integrations WHERE id = $1",
+                &[&integration_id],
+            )
+            .await
+            .expect("load cursor")
+            .get::<_, Option<&str>>(0)
+            .and_then(parse_iso_date);
+        assert_eq!(cursor, None);
+        assert_eq!(
+            gsc_sync_start_date(newest, cursor),
+            newest - time::Duration::days(GSC_BACKFILL_DAYS)
+        );
+
+        conn.execute(
+            "DELETE FROM accounts WHERE id = $1::text::uuid",
+            &[&account_id],
+        )
+        .await
+        .expect("delete account");
+    }
 
     fn date(year: i32, month: u8, day: u8) -> Date {
         Date::from_calendar_date(year, Month::try_from(month).expect("month"), day).expect("date")

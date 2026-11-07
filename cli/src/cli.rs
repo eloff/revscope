@@ -251,9 +251,7 @@ pub enum ConnectCommand {
 #[derive(Debug, Args)]
 pub struct WaitArg {
     /// Wait this many seconds, at most 600, for the next sync to finish, so a bad credential
-    /// usually shows up now. Exits 7 if it fails or doesn't finish in time. A sync the server
-    /// had already begun can still use the old credential, so `integrations list` is the
-    /// word on a key that was just changed.
+    /// usually shows up now. Exits 7 if it fails or doesn't finish in time.
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u64).range(0..=600))]
     pub wait: u64,
 }

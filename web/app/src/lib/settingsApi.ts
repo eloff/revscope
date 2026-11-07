@@ -182,9 +182,9 @@ export type IntegrationView = {
   external_account_id: string | null;
   api_key_masked: string | null;
   secret_masked: string | null;
-  /** ISO timestamp of the last successful sync, or null if never succeeded. */
+  /** ISO timestamp of the last successful sync with the current credentials and account, or null if none yet. */
   last_synced_at: string | null;
-  /** Error from the most recent sync attempt, or null on success / never synced. */
+  /** Error from the most recent sync attempt with the current credentials and account, or null on success or if none yet. */
   last_sync_error: string | null;
 };
 

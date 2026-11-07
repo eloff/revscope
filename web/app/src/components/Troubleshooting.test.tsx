@@ -94,7 +94,7 @@ describe("Troubleshooting", () => {
     render(() => <Troubleshooting />);
     expect(await screen.findByText("Status unavailable.")).toBeInTheDocument();
     expect(await screen.findByText("Polar")).toBeInTheDocument();
-    expect(screen.getByText("Never synced")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for first sync")).toBeInTheDocument();
     expect(screen.getByText("Event count unavailable.")).toBeInTheDocument();
   });
 

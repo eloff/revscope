@@ -16,7 +16,10 @@ use super::polar;
 use super::shopify;
 use super::square;
 use super::stripe;
-use crate::db::{DbError, PostgresError, ProjectCache, open_main_database_write, parse_project_id};
+use crate::db::{
+    DbError, PostgresError, ProjectCache, open_main_database_read, open_main_database_write,
+    parse_project_id,
+};
 use crate::sentry_report::report_error;
 use crate::server_context::ServerContext;
 
@@ -149,21 +152,46 @@ where
     true
 }
 
+/// Records the start of a sync, or returns `None` without recording anything if
+/// the credentials changed since `credentials_version` was read.
 pub(crate) async fn create_integration_sync_row(
     server_context: Arc<ServerContext>,
     integration_id: i32,
+    credentials_version: i64,
     sync_kind: SyncKind,
-) -> SyncResult<SystemTime> {
+) -> SyncResult<Option<SystemTime>> {
     let conn = open_main_database_write(server_context).await?;
     let row = conn
-        .query_one(
-            "INSERT INTO integration_syncs (integration_id, sync_kind)
-             VALUES ($1, $2)
+        .query_opt(
+            "INSERT INTO integration_syncs (integration_id, sync_kind, credentials_version)
+             SELECT id, $2, credentials_version
+             FROM integrations
+             WHERE id = $1 AND credentials_version = $3
              RETURNING started_at",
-            &[&integration_id, &sync_kind.as_str()],
+            &[&integration_id, &sync_kind.as_str(), &credentials_version],
         )
         .await?;
-    Ok(row.get(0))
+    Ok(row.map(|row| row.get(0)))
+}
+
+/// Whether the integration still has the credentials a sync started with. A
+/// sync that fails to find out carries on, since the final write checks again.
+pub(crate) async fn credentials_are_current(
+    server_context: Arc<ServerContext>,
+    integration_id: i32,
+    credentials_version: i64,
+) -> bool {
+    let current = async {
+        let conn = open_main_database_read(server_context).await?;
+        let row = conn
+            .query_opt(
+                "SELECT 1 FROM integrations WHERE id = $1 AND credentials_version = $2",
+                &[&integration_id, &credentials_version],
+            )
+            .await?;
+        SyncResult::Ok(row.is_some())
+    };
+    current.await.unwrap_or(true)
 }
 
 /// Records the outcome of a sync attempt and updates the denormalized scheduler
@@ -174,16 +202,21 @@ pub(crate) async fn create_integration_sync_row(
 /// the kind it started as: a provider that only covered part of a full window
 /// reports [`SyncKind::Incremental`] so `last_full_sync_success_at` stays put and
 /// the run is retried on the throttle interval rather than a day later.
+///
+/// If the credentials changed since `credentials_version` was read, only the
+/// `integration_syncs` row is updated. The scheduler state now belongs to the new
+/// credentials, and restoring it would delay their first sync.
 pub(crate) async fn complete_integration_sync(
     server_context: Arc<ServerContext>,
     integration_id: i32,
+    credentials_version: i64,
     sync_kind: SyncKind,
     started_at: SystemTime,
     counts: SyncCounts,
     error_text: Option<&str>,
 ) -> SyncResult<()> {
     let conn = open_main_database_write(server_context).await?;
-    let params: [&(dyn ToSql + Sync); 7] = [
+    let params: [&(dyn ToSql + Sync); 8] = [
         &integration_id,
         &started_at,
         &counts.records_inserted,
@@ -191,6 +224,7 @@ pub(crate) async fn complete_integration_sync(
         &counts.records_deleted,
         &error_text,
         &sync_kind.as_str(),
+        &credentials_version,
     ];
     conn.execute(
         "WITH updated_sync AS (
@@ -211,7 +245,8 @@ pub(crate) async fn complete_integration_sync(
                 WHEN $6 IS NULL AND $7 = 'full' THEN $2
                 ELSE last_full_sync_success_at
             END
-         WHERE id = (SELECT integration_id FROM updated_sync)",
+         WHERE id = (SELECT integration_id FROM updated_sync)
+            AND credentials_version = $8",
         &params,
     )
     .await?;
@@ -291,6 +326,7 @@ pub(crate) enum SyncError {
     LemonSqueezy(String),
     InvalidProviderData(String),
     MissingUpsertedRow(&'static str),
+    CredentialsChanged,
 }
 
 impl fmt::Display for SyncError {
@@ -351,6 +387,7 @@ impl fmt::Display for SyncError {
             Self::LemonSqueezy(error) => write!(f, "{error}"),
             Self::InvalidProviderData(error) => write!(f, "{error}"),
             Self::MissingUpsertedRow(table) => write!(f, "upserted row was missing from {table}"),
+            Self::CredentialsChanged => write!(f, "the credentials changed during this sync"),
         }
     }
 }
@@ -536,9 +573,10 @@ mod tests {
         error_text: Option<&str>,
     ) -> SystemTime {
         let started_at =
-            create_integration_sync_row(server_context.clone(), integration_id, started_as)
+            create_integration_sync_row(server_context.clone(), integration_id, 0, started_as)
                 .await
-                .expect("start sync");
+                .expect("start sync")
+                .expect("credentials are current");
         let counts = SyncCounts {
             records_inserted: 3,
             records_updated: 2,
@@ -547,6 +585,7 @@ mod tests {
         complete_integration_sync(
             server_context.clone(),
             integration_id,
+            0,
             completed_as,
             started_at,
             counts,
@@ -657,6 +696,178 @@ mod tests {
         delete_account(&conn, &account_id).await;
     }
 
+    async fn save_new_stripe_key(
+        conn: &crate::db::main::Connection,
+        integration_id: i32,
+        key: &str,
+    ) {
+        let project_id: i32 = conn
+            .query_one(
+                "SELECT project_id FROM integrations WHERE id = $1",
+                &[&integration_id],
+            )
+            .await
+            .expect("load integration")
+            .get(0);
+        crate::settings::upsert_integration(
+            conn,
+            project_id,
+            &revscope_api::settings::IntegrationInput {
+                integration_type: "stripe".to_string(),
+                external_account_id: None,
+                api_key: Some(key.to_string()),
+                secret: None,
+            },
+        )
+        .await
+        .expect("save new credential");
+    }
+
+    #[tokio::test]
+    async fn a_sync_finishing_after_a_credential_change_leaves_the_new_credential_due() {
+        let (server_context, conn) = crate::test_utils::main_test_db("credentials-race").await;
+        let (account_id, integration_id) = insert_integration(&conn, "credentials_race").await;
+        run_sync(
+            &server_context,
+            integration_id,
+            SyncKind::Full,
+            SyncKind::Full,
+            None,
+        )
+        .await;
+        let started_at =
+            create_integration_sync_row(server_context.clone(), integration_id, 0, SyncKind::Full)
+                .await
+                .expect("start sync")
+                .expect("credentials are current");
+
+        save_new_stripe_key(&conn, integration_id, "sk_new").await;
+        complete_integration_sync(
+            server_context.clone(),
+            integration_id,
+            0,
+            SyncKind::Full,
+            started_at,
+            SyncCounts::default(),
+            None,
+        )
+        .await
+        .expect("complete sync");
+
+        assert_eq!(
+            scheduler_state(&conn, integration_id).await,
+            SchedulerState {
+                completed_at: None,
+                success_at: None,
+                full_success_at: None,
+            }
+        );
+        let still_running: i64 = conn
+            .query_one(
+                "SELECT COUNT(*) FROM integration_syncs
+                 WHERE integration_id = $1 AND completed_at IS NULL",
+                &[&integration_id],
+            )
+            .await
+            .expect("count open sync rows")
+            .get(0);
+        assert_eq!(still_running, 0, "the sync's own record should be closed");
+        delete_account(&conn, &account_id).await;
+    }
+
+    #[tokio::test]
+    async fn the_reported_status_covers_only_the_current_credential() {
+        let (server_context, conn) = crate::test_utils::main_test_db("credentials-status").await;
+        let (account_id, integration_id) = insert_integration(&conn, "credentials_status").await;
+        save_new_stripe_key(&conn, integration_id, "sk_first").await;
+        let row = conn
+            .query_one(
+                "SELECT project_id, credentials_version FROM integrations WHERE id = $1",
+                &[&integration_id],
+            )
+            .await
+            .expect("load integration");
+        let (project_id, version): (i32, i64) = (row.get(0), row.get(1));
+        assert!(version > 0);
+        let succeeded_at = create_integration_sync_row(
+            server_context.clone(),
+            integration_id,
+            version,
+            SyncKind::Full,
+        )
+        .await
+        .expect("start sync")
+        .expect("credentials are current");
+        complete_integration_sync(
+            server_context.clone(),
+            integration_id,
+            version,
+            SyncKind::Full,
+            succeeded_at,
+            SyncCounts::default(),
+            None,
+        )
+        .await
+        .expect("complete sync");
+        let failed_at = create_integration_sync_row(
+            server_context.clone(),
+            integration_id,
+            version,
+            SyncKind::Full,
+        )
+        .await
+        .expect("start sync")
+        .expect("credentials are current");
+        complete_integration_sync(
+            server_context.clone(),
+            integration_id,
+            version,
+            SyncKind::Full,
+            failed_at,
+            SyncCounts::default(),
+            Some("key was revoked"),
+        )
+        .await
+        .expect("complete sync");
+
+        let before = crate::settings::load_integrations(&conn, project_id)
+            .await
+            .expect("load status");
+        assert_eq!(
+            before[0].last_sync_error.as_deref(),
+            Some("key was revoked")
+        );
+        assert!(before[0].last_sync_attempted_at.is_some());
+        assert!(before[0].last_synced_at.is_some());
+
+        save_new_stripe_key(&conn, integration_id, "sk_second").await;
+
+        let after = crate::settings::load_integrations(&conn, project_id)
+            .await
+            .expect("load status");
+        assert_eq!(after[0].last_sync_error, None);
+        assert_eq!(after[0].last_sync_attempted_at, None);
+        assert_eq!(after[0].last_synced_at, None);
+        delete_account(&conn, &account_id).await;
+    }
+
+    #[tokio::test]
+    async fn a_queued_sync_with_old_credentials_does_not_start() {
+        let (server_context, conn) = crate::test_utils::main_test_db("credentials-queued").await;
+        let (account_id, integration_id) = insert_integration(&conn, "credentials_queued").await;
+        assert!(credentials_are_current(server_context.clone(), integration_id, 0).await);
+
+        save_new_stripe_key(&conn, integration_id, "sk_new").await;
+
+        assert!(!credentials_are_current(server_context.clone(), integration_id, 0).await);
+        let started =
+            create_integration_sync_row(server_context.clone(), integration_id, 0, SyncKind::Full)
+                .await
+                .expect("start sync");
+        assert_eq!(started, None);
+        delete_account(&conn, &account_id).await;
+    }
+
     #[tokio::test]
     async fn completing_a_sync_that_was_never_started_changes_nothing() {
         let (server_context, conn) = crate::test_utils::main_test_db("sync-unknown").await;
@@ -665,6 +876,7 @@ mod tests {
         complete_integration_sync(
             server_context.clone(),
             integration_id,
+            0,
             SyncKind::Full,
             SystemTime::UNIX_EPOCH,
             SyncCounts::default(),

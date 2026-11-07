@@ -246,9 +246,8 @@ fn check_complete(
     )))
 }
 
-/// Waits for a sync attempt that started after this save. That rules out one already
-/// running, but not all of them: a scheduler pass loads its keys before it reaches each
-/// integration, so an attempt starting just after the save can still use the old key.
+/// Waits for a sync attempt that started after this save. The server only reports
+/// attempts made with the current key or account, so one using the old key doesn't count.
 fn wait_for_sync(
     context: &Context,
     project: &Project,
@@ -491,7 +490,7 @@ mod tests {
 
     #[test]
     fn only_a_sync_that_started_after_the_save_says_anything_about_the_new_key() {
-        // Running when it was saved, so it may finish on the old key.
+        // Already reported when it was saved, so it says nothing new.
         assert_eq!(
             sync_outcome(&after_sync("t1", Some("t1"), None), Some("t1")),
             None

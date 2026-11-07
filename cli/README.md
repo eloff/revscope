@@ -128,5 +128,5 @@ or `--api-url`. Plain `http://` is refused except to a loopback address, so a cr
 
 - `signup` creates free-plan accounts. Paid plans go through checkout on the site.
 - The CLI doesn't change your site's code. `install snippet` prints what to add.
-- Credentials are saved without being tried. Syncs run on a schedule, and a changed credential is due on the next pass, so `integrations connect --wait 300` waits for one to finish. A sync the server had already begun can still use the old credential, so a result right after a change isn't conclusive.
+- Credentials are saved without being tried. Syncs run on a schedule, and a changed credential is due on the next pass, so `integrations connect --wait 300` waits for one to finish. A sync with the old credential doesn't count, but the wait can run out if another integration's sync is ahead of it.
 - `query` offsets stop at 5000, so narrow a larger result with `WHERE`.

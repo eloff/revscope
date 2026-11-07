@@ -36,6 +36,7 @@ pub(crate) struct CloudflareIntegration {
     id: i32,
     project_id: String,
     encrypted_api_token: Option<Vec<u8>>,
+    credentials_version: i64,
 }
 
 #[derive(Debug)]
@@ -54,7 +55,8 @@ pub(crate) async fn load_due_integrations(
                 "SELECT
                     id,
                     project_id::text AS project_id,
-                    encrypted_api_key
+                    encrypted_api_key,
+                    credentials_version
                  FROM integrations
                  WHERE disabled_at IS NULL
                     AND integration_type = 'cloudflare'::integration_type
@@ -76,6 +78,7 @@ pub(crate) async fn load_due_integrations(
             id: row.get(0),
             project_id: row.get(1),
             encrypted_api_token: row.get(2),
+            credentials_version: row.get(3),
         })
         .collect())
 }
@@ -88,6 +91,7 @@ pub(crate) async fn run_sync_with_retries(
         server_context.clone(),
         "cloudflare",
         integration.id,
+        integration.credentials_version,
         SyncKind::Full,
         || async { sync_integration(server_context.clone(), &integration).await },
     )

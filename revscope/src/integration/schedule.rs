@@ -4,11 +4,11 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::warn;
+use log::{info, warn};
 
 use super::sync::{
     SyncCounts, SyncError, SyncKind, SyncResult, complete_integration_sync,
-    create_integration_sync_row, sleep_or_shutdown,
+    create_integration_sync_row, credentials_are_current, sleep_or_shutdown,
 };
 use crate::crypto;
 use crate::db::open_main_database_read;
@@ -73,6 +73,7 @@ pub(crate) struct PaymentIntegration {
     pub(super) id: i32,
     pub(super) project_id: String,
     pub(super) encrypted_secret: Option<Vec<u8>>,
+    pub(super) credentials_version: i64,
     pub(super) last_success_started_at: Option<i64>,
     pub(super) sync_kind: SyncKind,
 }
@@ -130,7 +131,8 @@ pub(super) async fn load_due_payment_integrations(
                  project_id::text AS project_id,
                  encrypted_api_key,
                  EXTRACT(EPOCH FROM last_sync_success_at)::BIGINT,
-                 EXTRACT(EPOCH FROM last_full_sync_success_at)::BIGINT",
+                 EXTRACT(EPOCH FROM last_full_sync_success_at)::BIGINT,
+                 credentials_version",
                 integration_type,
                 "",
             ),
@@ -144,6 +146,7 @@ pub(super) async fn load_due_payment_integrations(
             id: row.get(0),
             project_id: row.get(1),
             encrypted_secret: row.get(2),
+            credentials_version: row.get(5),
             last_success_started_at: row.get(3),
             sync_kind: sync_kind(row.get(4), PAYMENT_FULL_SYNC_INTERVAL_SECS),
         })
@@ -158,12 +161,16 @@ pub(super) struct SyncOutcome {
 
 /// Records a sync of integration `integration_id` in `integration_syncs`, and
 /// runs `attempt` until it succeeds, up to [`SYNC_MAX_ATTEMPTS`] times or until
-/// shutdown. `sync_kind` is recorded when the sync starts and if it fails; a
+/// shutdown or a credential change, which skips the sync if it comes first.
+/// `sync_kind` is recorded when the sync starts and if it fails; a
 /// success records the kind its outcome reports. `provider` labels log lines.
+/// `credentials_version` must be read together with the credentials `attempt`
+/// uses, since a batch can wait minutes for its turn.
 pub(super) async fn run_sync_with_retries<F, Fut>(
     server_context: Arc<ServerContext>,
     provider: &str,
     integration_id: i32,
+    credentials_version: i64,
     sync_kind: SyncKind,
     mut attempt: F,
 ) where
@@ -173,11 +180,16 @@ pub(super) async fn run_sync_with_retries<F, Fut>(
     let started_at = match create_integration_sync_row(
         server_context.clone(),
         integration_id,
+        credentials_version,
         sync_kind,
     )
     .await
     {
-        Ok(started_at) => started_at,
+        Ok(Some(started_at)) => started_at,
+        Ok(None) => {
+            info!("skipping {provider} integration {integration_id} sync: its credentials changed");
+            return;
+        }
         Err(error) => {
             report_error!(
                 &format!("integration_sync.create_row:{integration_id}"),
@@ -194,6 +206,7 @@ pub(super) async fn run_sync_with_retries<F, Fut>(
                 if let Err(error) = complete_integration_sync(
                     server_context,
                     integration_id,
+                    credentials_version,
                     outcome.sync_kind,
                     started_at,
                     outcome.counts,
@@ -215,6 +228,12 @@ pub(super) async fn run_sync_with_retries<F, Fut>(
                 last_error = Some(error.to_string());
                 if attempt_number == SYNC_MAX_ATTEMPTS
                     || sleep_or_shutdown(&server_context, SYNC_RETRY_BACKOFF).await
+                    || !credentials_are_current(
+                        server_context.clone(),
+                        integration_id,
+                        credentials_version,
+                    )
+                    .await
                 {
                     break;
                 }
@@ -225,6 +244,7 @@ pub(super) async fn run_sync_with_retries<F, Fut>(
     if let Err(error) = complete_integration_sync(
         server_context,
         integration_id,
+        credentials_version,
         sync_kind,
         started_at,
         SyncCounts::default(),
@@ -242,6 +262,60 @@ pub(super) async fn run_sync_with_retries<F, Fut>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_failing_sync_stops_retrying_once_the_credentials_change() {
+        let (server_context, conn) = crate::test_utils::main_test_db("sync-stop-retry").await;
+        let account_id = crate::test_utils::insert_test_account(&conn, "sync_stop_retry").await;
+        let project_id: i32 = conn
+            .query_one(
+                "INSERT INTO projects (account_id, name) VALUES ($1::text::uuid, $2) RETURNING id",
+                &[&account_id, &format!("p{}", account_id.replace('-', ""))],
+            )
+            .await
+            .expect("insert project")
+            .get(0);
+        let integration_id: i32 = conn
+            .query_one(
+                "INSERT INTO integrations (project_id, integration_type)
+                 VALUES ($1, 'stripe') RETURNING id",
+                &[&project_id],
+            )
+            .await
+            .expect("insert integration")
+            .get(0);
+        let attempts = std::cell::Cell::new(0);
+
+        run_sync_with_retries(
+            server_context.clone(),
+            "stripe",
+            integration_id,
+            0,
+            SyncKind::Full,
+            || {
+                attempts.set(attempts.get() + 1);
+                let conn = &conn;
+                async move {
+                    conn.execute(
+                        "UPDATE integrations SET credentials_version = 1 WHERE id = $1",
+                        &[&integration_id],
+                    )
+                    .await
+                    .expect("change credentials");
+                    Err(SyncError::CredentialsChanged)
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(attempts.get(), 1);
+        conn.execute(
+            "DELETE FROM accounts WHERE id = $1::text::uuid",
+            &[&account_id],
+        )
+        .await
+        .expect("delete account");
+    }
 
     #[test]
     fn a_full_sync_runs_first_and_then_once_per_interval() {

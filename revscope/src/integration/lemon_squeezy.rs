@@ -40,6 +40,7 @@ pub(crate) async fn run_sync_with_retries(
         server_context.clone(),
         PROVIDER,
         integration.id,
+        integration.credentials_version,
         sync_kind,
         || async {
             let counts = sync_integration(server_context.clone(), &integration).await?;

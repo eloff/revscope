@@ -177,7 +177,8 @@ pub(crate) async fn load_due_integrations(
                  external_account_id,
                  encrypted_api_key,
                  EXTRACT(EPOCH FROM last_sync_success_at)::BIGINT,
-                 EXTRACT(EPOCH FROM last_full_sync_success_at)::BIGINT",
+                 EXTRACT(EPOCH FROM last_full_sync_success_at)::BIGINT,
+                 credentials_version",
                 PROVIDER,
                 "\n            AND external_account_id IS NOT NULL",
             ),
@@ -195,6 +196,7 @@ pub(crate) async fn load_due_integrations(
                 project_id: row.get(1),
                 shop_domain: row.get(2),
                 encrypted_api_key: row.get(3),
+                credentials_version: row.get(6),
                 last_success_started_at,
                 sync_kind: sync_kind(
                     last_full_success_started_at,
@@ -214,6 +216,7 @@ pub(crate) async fn run_sync_with_retries(
         server_context.clone(),
         PROVIDER,
         integration.id,
+        integration.credentials_version,
         sync_kind,
         || async {
             let counts = sync_integration(server_context.clone(), &integration).await?;
@@ -228,6 +231,7 @@ pub(crate) struct ShopifyIntegration {
     project_id: String,
     shop_domain: String,
     encrypted_api_key: Option<Vec<u8>>,
+    credentials_version: i64,
     last_success_started_at: Option<i64>,
     sync_kind: SyncKind,
 }

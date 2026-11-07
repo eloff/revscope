@@ -126,7 +126,7 @@ export function integrationStatusLabel(status: string): string {
     return "Error";
   }
   if (status === "never_run") {
-    return "Never synced";
+    return "Waiting for first sync";
   }
   return status;
 }

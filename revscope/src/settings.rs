@@ -171,7 +171,7 @@ async fn load_payment_success_path(
     Ok(row.and_then(|row| row.get::<_, Option<String>>(0)))
 }
 
-async fn load_integrations(
+pub(crate) async fn load_integrations(
     conn: &Connection,
     project_id: i32,
 ) -> Result<Vec<IntegrationView>, AuthError> {
@@ -191,6 +191,7 @@ async fn load_integrations(
                 SELECT error_text, started_at
                 FROM integration_syncs s
                 WHERE s.integration_id = i.id
+                  AND s.credentials_version = i.credentials_version
                 ORDER BY s.started_at DESC
                 LIMIT 1
              ) latest ON true
@@ -223,7 +224,18 @@ async fn load_integrations(
         .collect())
 }
 
-async fn upsert_integration(
+pub(crate) async fn upsert_integration(
+    conn: &Connection,
+    project_id: i32,
+    input: &IntegrationInput,
+) -> Result<(), AuthError> {
+    conn.in_transaction(async |conn| {
+        upsert_integration_in_transaction(conn, project_id, input).await
+    })
+    .await
+}
+
+async fn upsert_integration_in_transaction(
     conn: &Connection,
     project_id: i32,
     input: &IntegrationInput,
@@ -234,7 +246,8 @@ async fn upsert_integration(
         .query_opt(
             "SELECT encrypted_api_key, encrypted_secret
              FROM integrations
-             WHERE project_id = $1 AND integration_type = $2::text::integration_type",
+             WHERE project_id = $1 AND integration_type = $2::text::integration_type
+             FOR UPDATE",
             &select_params,
         )
         .await
@@ -281,6 +294,13 @@ async fn upsert_integration(
                 THEN NULL
                 ELSE integrations.synced_through_date
             END,
+            credentials_version = CASE
+                WHEN $6::bool
+                     OR integrations.external_account_id
+                        IS DISTINCT FROM EXCLUDED.external_account_id
+                THEN integrations.credentials_version + 1
+                ELSE integrations.credentials_version
+            END,
             -- What makes a sync due, cleared so a new credential or account is tried on the
             -- next pass, and a fix can be confirmed. Not for the same credential again, or
             -- a retry loop on a bad key would hammer the provider past the throttle.
@@ -290,6 +310,15 @@ async fn upsert_integration(
                         IS DISTINCT FROM EXCLUDED.external_account_id
                 THEN NULL
                 ELSE integrations.last_sync_completed_at
+            END,
+            -- Reported as the last sync, and only an incremental sync reads it, which can't
+            -- run until the new credential's first full sync sets it again.
+            last_sync_success_at = CASE
+                WHEN $6::bool
+                     OR integrations.external_account_id
+                        IS DISTINCT FROM EXCLUDED.external_account_id
+                THEN NULL
+                ELSE integrations.last_sync_success_at
             END,
             last_full_sync_success_at = CASE
                 WHEN $6::bool
@@ -432,6 +461,71 @@ fn map_custom_domain_error(error: tokio_postgres::Error) -> AuthError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Returns the account id, for cleanup, and the project id.
+    async fn insert_project(conn: &Connection, tag: &str) -> (String, i32) {
+        let account_id = crate::test_utils::insert_test_account(conn, tag).await;
+        let name = format!("p{}", account_id.replace('-', ""));
+        let project_id = conn
+            .query_one(
+                "INSERT INTO projects (account_id, name) VALUES ($1::text::uuid, $2) RETURNING id",
+                &[&account_id, &name],
+            )
+            .await
+            .expect("insert project")
+            .get(0);
+        (account_id, project_id)
+    }
+
+    async fn save_stripe(conn: &Connection, project_id: i32, account: &str, key: Option<&str>) {
+        let input = IntegrationInput {
+            integration_type: "stripe".to_string(),
+            external_account_id: Some(account.to_string()),
+            api_key: key.map(str::to_string),
+            secret: None,
+        };
+        upsert_integration(conn, project_id, &input)
+            .await
+            .expect("save integration");
+    }
+
+    async fn stripe_version(conn: &Connection, project_id: i32) -> (i32, i64) {
+        let row = conn
+            .query_one(
+                "SELECT id, credentials_version FROM integrations
+                 WHERE project_id = $1 AND integration_type = 'stripe'",
+                &[&project_id],
+            )
+            .await
+            .expect("load integration");
+        (row.get(0), row.get(1))
+    }
+
+    #[tokio::test]
+    async fn only_a_new_credential_or_account_bumps_the_credentials_version() {
+        let (_server_context, conn) = crate::test_utils::main_test_db("credentials-version").await;
+        let (account_id, project_id) = insert_project(&conn, "credentials_version").await;
+
+        save_stripe(&conn, project_id, "acct_1", Some("sk_1")).await;
+        let (_, created) = stripe_version(&conn, project_id).await;
+
+        save_stripe(&conn, project_id, "acct_1", Some("sk_1")).await;
+        save_stripe(&conn, project_id, "acct_1", None).await;
+        assert_eq!(stripe_version(&conn, project_id).await.1, created);
+
+        save_stripe(&conn, project_id, "acct_1", Some("sk_2")).await;
+        assert_eq!(stripe_version(&conn, project_id).await.1, created + 1);
+
+        save_stripe(&conn, project_id, "acct_2", None).await;
+        assert_eq!(stripe_version(&conn, project_id).await.1, created + 2);
+
+        conn.execute(
+            "DELETE FROM accounts WHERE id = $1::text::uuid",
+            &[&account_id],
+        )
+        .await
+        .expect("delete account");
+    }
 
     #[test]
     fn accepts_a_bare_hostname_and_lowercases_it() {

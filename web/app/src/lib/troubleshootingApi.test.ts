@@ -65,7 +65,7 @@ describe("troubleshooting labels", () => {
   it("labels sync statuses", () => {
     expect(integrationStatusLabel("ok")).toBe("Synced");
     expect(integrationStatusLabel("error")).toBe("Error");
-    expect(integrationStatusLabel("never_run")).toBe("Never synced");
+    expect(integrationStatusLabel("never_run")).toBe("Waiting for first sync");
     expect(integrationStatusLabel("paused")).toBe("paused");
   });
 
