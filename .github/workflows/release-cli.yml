@@ -87,20 +87,23 @@ jobs:
 
   npm:
     needs: release
+    # npm only trusts this repository's workflow to publish, so a fork's tag would just fail here.
+    if: github.repository == 'eloff/revscope'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # npm's trusted publishing authenticates this job with its GitHub identity, not a token.
+      # It's set up in the package's settings on npmjs.com, naming this workflow file and allowing
+      # `npm publish`, which new setups don't by default. A new setup expires unless it publishes
+      # within 2 days, so create it just before pushing the tag.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
+      # Trusted publishing needs npm 11.5.1 or later, which comes with Node 24.5 and later.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
       - name: Publish the wrapper
         working-directory: cli/npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "::warning::NPM_TOKEN isn't set, so the npm wrapper wasn't published."
-            exit 0
-          fi
-          npm publish --access public
+        run: npm publish --access public
