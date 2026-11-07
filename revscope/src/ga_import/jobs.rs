@@ -10,6 +10,8 @@ use super::api;
 use super::credential::GaCredential;
 
 const CREDENTIAL_COLUMNS: &str = "encrypted_client_email, encrypted_secret, oauth_subject";
+/// Both are picked up once `resume_at` passes, so `paused` only tells the UI the
+/// wait is for GA's quota. `running` can also be waiting, on a retry or on settings.
 const ACTIVE: &str = "('running', 'paused')";
 
 #[derive(Debug, Clone)]
@@ -203,7 +205,8 @@ pub(super) async fn pause_until_next_hour(
         &format!(
             "UPDATE ga_imports
              SET status = 'paused',
-                 resume_at = date_trunc('hour', NOW()) + INTERVAL '1 hour'
+                 resume_at = date_trunc('hour', NOW()) + INTERVAL '1 hour',
+                 error_text = NULL
              WHERE id = $1 AND status IN {ACTIVE}"
         ),
         &[&import_id],
@@ -270,4 +273,58 @@ pub(super) async fn take_expired_connections(
         )
         .await?;
     Ok(rows.iter().filter_map(stranded_token).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn pausing_for_quota_clears_the_last_attempts_error() {
+        let (_server_context, conn) = crate::test_utils::main_test_db("ga-pause").await;
+        let account_id = crate::test_utils::insert_test_account(&conn, "ga_pause").await;
+        let project_id: i32 = conn
+            .query_one(
+                "INSERT INTO projects (account_id, name) VALUES ($1::text::uuid, $2) RETURNING id",
+                &[&account_id, &format!("p{}", account_id.replace('-', ""))],
+            )
+            .await
+            .expect("insert project")
+            .get(0);
+        let import_id: i32 = conn
+            .query_one(
+                "INSERT INTO ga_imports
+                    (project_id, property_id, property_name, start_date, end_date, chunks_total)
+                 VALUES ($1, 'p', 'Property', '2026-01-01', '2026-01-31', 1)
+                 RETURNING id",
+                &[&project_id],
+            )
+            .await
+            .expect("insert import")
+            .get(0);
+        retry_later(&conn, import_id, 60, "GA was unavailable")
+            .await
+            .expect("record a failed attempt");
+
+        pause_until_next_hour(&conn, import_id)
+            .await
+            .expect("pause");
+
+        let row = conn
+            .query_one(
+                "SELECT status, error_text FROM ga_imports WHERE id = $1",
+                &[&import_id],
+            )
+            .await
+            .expect("load import");
+        let (status, error): (String, Option<String>) = (row.get(0), row.get(1));
+        assert_eq!(status, "paused");
+        assert_eq!(error, None);
+        conn.execute(
+            "DELETE FROM accounts WHERE id = $1::text::uuid",
+            &[&account_id],
+        )
+        .await
+        .expect("delete account");
+    }
 }

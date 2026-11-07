@@ -87,6 +87,14 @@ fn import_rows(imports: &[ImportView]) -> String {
                 import.property_name.clone(),
                 format!("{} to {}", import.start_date, import.end_date),
                 import.status.clone(),
+                // `running` can be waiting too: an error means its last attempt failed.
+                if import.status == "paused"
+                    || (import.status == "running" && import.error.is_some())
+                {
+                    without_fractional_seconds(&import.resume_at)
+                } else {
+                    "-".to_string()
+                },
                 format!("{}/{}", import.chunks_done, import.chunks_total),
                 import.sessions_imported.to_string(),
                 opt(import.error.as_deref()).to_string(),
@@ -95,10 +103,26 @@ fn import_rows(imports: &[ImportView]) -> String {
         .collect();
     table(
         &[
-            "ID", "PROPERTY", "RANGE", "STATUS", "CHUNKS", "SESSIONS", "ERROR",
+            "ID",
+            "PROPERTY",
+            "RANGE",
+            "STATUS",
+            "NEXT ATTEMPT",
+            "CHUNKS",
+            "SESSIONS",
+            "ERROR",
         ],
         &rows,
     )
+}
+
+/// The API sends Postgres's timestamp text, down to the microsecond.
+fn without_fractional_seconds(timestamp: &str) -> String {
+    let Some((seconds, fraction)) = timestamp.split_once('.') else {
+        return timestamp.to_string();
+    };
+    let offset = fraction.trim_start_matches(|digit: char| digit.is_ascii_digit());
+    format!("{seconds}{offset}")
 }
 
 #[derive(Serialize)]
@@ -191,5 +215,22 @@ struct Deleted(DeletedImport);
 impl Render for Deleted {
     fn render(&self) -> String {
         format!("Deleted import {} and the data it brought in.", self.0.id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shortens_a_timestamp_to_seconds_and_keeps_its_offset() {
+        assert_eq!(
+            without_fractional_seconds("2026-11-07 14:32:10.482913+00"),
+            "2026-11-07 14:32:10+00"
+        );
+        assert_eq!(
+            without_fractional_seconds("2026-11-07 15:00:00+00"),
+            "2026-11-07 15:00:00+00"
+        );
     }
 }

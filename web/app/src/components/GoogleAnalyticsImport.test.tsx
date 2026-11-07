@@ -269,6 +269,42 @@ describe("GoogleAnalyticsImport", () => {
     ).toBeTruthy();
   });
 
+  it("says when a retrying import will try again", async () => {
+    mockList(() =>
+      imports({
+        imports: [
+          job({
+            status: "running",
+            error: "Hit a temporary problem; retrying automatically.",
+            resume_at: "2099-11-07 14:32:10.482913+00",
+          }),
+        ],
+      }),
+    );
+    renderSection();
+    const when = new Date("2099-11-07T14:32:10Z").toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+    expect(await screen.findByText(new RegExp(`Next attempt: ${when}\\.`))).toBeTruthy();
+  });
+
+  it("leaves out a next attempt that's already due", async () => {
+    mockList(() =>
+      imports({
+        imports: [
+          job({
+            status: "paused",
+            chunks_done: 14,
+            resume_at: "2020-01-01 00:00:00+00",
+          }),
+        ],
+      }),
+    );
+    renderSection();
+    expect(await screen.findByText(/resumes automatically\.\s*$/)).toBeTruthy();
+  });
+
   it("shows why an import failed", async () => {
     mockList(() =>
       imports({ imports: [job({ status: "failed", error: "Google Analytics refused access." })] }),

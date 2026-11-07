@@ -62,14 +62,31 @@ function isActive(item: GaImport): boolean {
   return item.status === "running" || item.status === "paused";
 }
 
+/**
+ * When a waiting import tries again, as a sentence, or nothing once that's due. The
+ * server sends Postgres's timestamp text, and not every browser parses it as is.
+ */
+function nextAttempt(item: GaImport): string {
+  const iso = item.resume_at
+    .replace(" ", "T")
+    .replace(/\.\d+/, "")
+    .replace(/([+-]\d\d)$/, "$1:00");
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime()) || date.getTime() <= Date.now()) {
+    return "";
+  }
+  const when = date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  return ` Next attempt: ${when}.`;
+}
+
 function statusText(item: GaImport): string {
   const percent =
     item.chunks_total > 0 ? Math.floor((item.chunks_done / item.chunks_total) * 100) : 0;
   switch (item.status) {
     case "running":
-      return item.error ?? `Importing, ${percent}% done`;
+      return item.error ? `${item.error}${nextAttempt(item)}` : `Importing, ${percent}% done`;
     case "paused":
-      return `Paused at ${percent}%: out of Google Analytics quota, resumes automatically`;
+      return `Paused at ${percent}%: out of Google Analytics quota, resumes automatically.${nextAttempt(item)}`;
     case "completed":
       return "Finished";
     case "cancelled":
