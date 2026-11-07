@@ -1,3 +1,5 @@
+import { isEmbedPage, writeHistoryUrl } from "./embedHistory";
+
 export function readJourneyHistoryParam(param: string): string | null {
   if (typeof window === "undefined") {
     return null;
@@ -11,7 +13,7 @@ export function pushJourneyHistoryParam(param: string, value: string) {
   }
   const url = new URL(window.location.href);
   url.searchParams.set(param, value);
-  window.history.pushState(null, "", url);
+  writeHistoryUrl(url);
 }
 
 export function clearJourneyHistoryParam(param: string) {
@@ -26,11 +28,16 @@ export function clearJourneyHistoryParam(param: string) {
   window.history.replaceState(null, "", url);
 }
 
-export function backFromJourneyHistory() {
+/** `close` runs instead of Back in an embed, where opening the journey added no entry to go back over. */
+export function backFromJourneyHistory(close: () => void) {
   if (typeof window === "undefined") {
     return;
   }
-  window.history.back();
+  if (isEmbedPage()) {
+    close();
+  } else {
+    window.history.back();
+  }
 }
 
 const NEAR_PAGE_TOP_PX = 720;

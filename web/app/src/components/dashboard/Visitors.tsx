@@ -118,7 +118,7 @@ export function VisitorJourneyPanel(props: {
 
   const handleBack = () => {
     if (selectedVisitor()) {
-      backFromJourneyHistory();
+      backFromJourneyHistory(closeJourney);
       return;
     }
     closeJourney();

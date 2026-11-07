@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { EMBED_PAGE_ATTRIBUTE } from "./embedHistory";
 import {
+  backFromJourneyHistory,
   clearJourneyHistoryParam,
   installJourneyHistoryListener,
   pushJourneyHistoryParam,
@@ -8,8 +10,41 @@ import {
 } from "./journeyHistory";
 
 afterEach(() => {
+  document.documentElement.removeAttribute(EMBED_PAGE_ATTRIBUTE);
   window.history.replaceState(null, "", "/");
   vi.restoreAllMocks();
+});
+
+describe("journey history in a framed page that isn't an embed", () => {
+  it("keeps pushing entries, as when the dashboard sits in someone's dashboard panel", () => {
+    const realParent = window.parent;
+    Object.defineProperty(window, "parent", { value: {}, configurable: true });
+    try {
+      const length = window.history.length;
+      pushJourneyHistoryParam("journey", "abc");
+      expect(window.history.length).toBe(length + 1);
+    } finally {
+      Object.defineProperty(window, "parent", { value: realParent, configurable: true });
+    }
+  });
+});
+
+describe("journey history in an embed", () => {
+  // The home page demo embed shares the host page's session history.
+  it("adds no entries, and Back closes the journey instead of leaving the host page", () => {
+    document.documentElement.setAttribute(EMBED_PAGE_ATTRIBUTE, "");
+    window.history.replaceState(null, "", "/embed?tab=visitors");
+    const length = window.history.length;
+    pushJourneyHistoryParam("journey", "abc");
+    expect(window.location.search).toBe("?tab=visitors&journey=abc");
+    expect(window.history.length).toBe(length);
+
+    const back = vi.spyOn(window.history, "back");
+    const close = vi.fn();
+    backFromJourneyHistory(close);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(back).not.toHaveBeenCalled();
+  });
 });
 
 describe("journey history params", () => {

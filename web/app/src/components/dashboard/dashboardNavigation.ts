@@ -1,4 +1,5 @@
 import { createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { writeHistoryUrl } from "../../lib/embedHistory";
 import { setVisitorFilterParams, type VisitorSessionFilter } from "../../lib/visitorsApi";
 import {
   clearDashboardTargetParams,
@@ -18,7 +19,8 @@ export type DashboardNavigation = ReturnType<typeof createDashboardNavigation>;
 
 /**
  * The dashboard's URL-backed state: which tab is open and which row a link
- * drilled into. Every navigation pushes a history entry, so Back retraces it.
+ * drilled into. Every navigation pushes a history entry, so Back retraces it
+ * (except in an embed; see writeHistoryUrl).
  */
 export function createDashboardNavigation(options: {
   /** Maps a requested tab to one the viewer may open. */
@@ -34,19 +36,19 @@ export function createDashboardNavigation(options: {
     return readDashboardRoute();
   });
 
-  const pushUrl = (configure: (params: URLSearchParams) => void) => {
+  const writeUrl = (configure: (params: URLSearchParams) => void) => {
     if (typeof window === "undefined") {
       return;
     }
     const url = new URL(window.location.href);
     configure(url.searchParams);
-    window.history.pushState(null, "", url);
+    writeHistoryUrl(url);
     routeChanged();
   };
 
   const navigate = (tab: DashboardTab, configure?: (params: URLSearchParams) => void) => {
     setActiveTab(tab);
-    pushUrl((params) => {
+    writeUrl((params) => {
       params.set("tab", tab);
       clearDashboardTargetParams(params);
       configure?.(params);
@@ -116,8 +118,8 @@ export function createDashboardNavigation(options: {
       navigate("visitors", (params) => {
         setVisitorFilterParams(params, filter);
       }),
-    setPeopleMode: (mode: PeopleMode) => pushUrl((params) => setPeopleModeParams(params, mode)),
-    setPagesMode: (mode: PagesMode) => pushUrl((params) => setPagesModeParams(params, mode)),
+    setPeopleMode: (mode: PeopleMode) => writeUrl((params) => setPeopleModeParams(params, mode)),
+    setPagesMode: (mode: PagesMode) => writeUrl((params) => setPagesModeParams(params, mode)),
     // readDashboardRoute() nulls each drill-down outside its own tab and mode.
     visitorsFilter: createMemo(() => route().visitorFilter),
     revenueSourceScrollTarget: scrollTarget("key", (r) => r.revenueSourceKey),

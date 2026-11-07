@@ -30,6 +30,7 @@ import {
 } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import { Portal } from "solid-js/web";
+import { isPlainLeftClick } from "../lib/plainClick";
 import {
   fetchSettings,
   INTEGRATION_META,
@@ -369,7 +370,7 @@ export default function Settings() {
     if (!dirty() || bypassGuard || event.defaultPrevented) {
       return;
     }
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+    if (!isPlainLeftClick(event)) {
       return;
     }
     const target = event.target as Element | null;

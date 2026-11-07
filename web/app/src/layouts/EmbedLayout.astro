@@ -1,4 +1,6 @@
 ---
+import { EMBED_REPORT_HEIGHT_EVENT } from "../lib/embedExpansion";
+import { EMBED_PAGE_ATTRIBUTE } from "../lib/embedHistory";
 import Layout from "./Layout.astro";
 
 interface Props {
@@ -16,7 +18,16 @@ const { title, embed, expandable = false } = Astro.props;
 	<base slot="head" target="_top" />
 	<meta slot="head" name="robots" content="noindex" />
 	<slot />
-	<script define:vars={{ embed, expandable }}>
+	<script
+		define:vars={{
+			embed,
+			expandable,
+			reportHeightEvent: EMBED_REPORT_HEIGHT_EVENT,
+			embedPageAttribute: EMBED_PAGE_ATTRIBUTE,
+		}}
+	>
+		// Inline scripts run before the deferred island modules hydrate and read it.
+		document.documentElement.setAttribute(embedPageAttribute, "");
 		const embedId = embed;
 		// Stop the collapsed frame scrolling before the page hydrates, so the wheel
 		// scrolls the host page from the start.
@@ -31,7 +42,12 @@ const { title, embed, expandable = false } = Astro.props;
 		const observer = new ResizeObserver(() => report());
 		let observedFold = null;
 		const foldHeight = () => {
-			const fold = document.querySelector("[data-embed-fold]");
+			// A view kept mounted but hidden (the demo's overview behind its full
+			// dashboard) has a fold too, which must not cap the height.
+			const fold =
+				Array.from(document.querySelectorAll("[data-embed-fold]")).find(
+					(element) => element.getClientRects().length > 0,
+				) ?? null;
 			if (fold !== observedFold) {
 				if (observedFold) {
 					observer.unobserve(observedFold);
@@ -58,6 +74,7 @@ const { title, embed, expandable = false } = Astro.props;
 		if (document.body) {
 			observer.observe(document.body);
 		}
+		window.addEventListener(reportHeightEvent, report);
 		report();
 	</script>
 </Layout>

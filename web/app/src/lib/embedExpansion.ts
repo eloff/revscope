@@ -4,6 +4,8 @@ import { createSignal, onCleanup, onMount } from "solid-js";
 export const EMBED_EXPAND_MESSAGE = "revscope-embed-expand";
 /** Sent by the host page when Esc is pressed while it has focus. */
 export const EMBED_COLLAPSE_MESSAGE = "revscope-embed-collapse";
+/** Dispatched on the window to make EmbedLayout report the embed's height to the host right away. */
+export const EMBED_REPORT_HEIGHT_EVENT = "revscope-embed-report-height";
 
 /**
  * Ark-ui popovers and menus close on Esc, so Esc closes them first and only then
@@ -17,6 +19,14 @@ function hasOpenLayer(): boolean {
     document.querySelector(
       '[data-part="positioner"] [data-state="open"]:not([data-scope="hover-card"]):not([data-scope="tooltip"]), [data-scope="dialog"][data-part="content"][data-state="open"]',
     ) !== null
+  );
+}
+
+/** Free text such as an Ask question; the date picker's short inputs don't count. */
+function isTextEntry(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLTextAreaElement ||
+    (target instanceof HTMLElement && target.isContentEditable)
   );
 }
 
@@ -55,6 +65,10 @@ export function createEmbedExpansion(embedId: string) {
     setExpanded(false);
     window.scrollTo(0, 0);
     setScrollable(false);
+    // The host measures the slot to animate into as soon as it hears of the
+    // collapse, so it must first hear the collapsed height, which changes when
+    // an expanded-only view (another tab) gives way to the overview.
+    window.dispatchEvent(new Event(EMBED_REPORT_HEIGHT_EVENT));
     notifyHost(false);
   };
 
@@ -79,6 +93,11 @@ export function createEmbedExpansion(embedId: string) {
       }
     };
     const onKeyDown = (event: KeyboardEvent) => {
+      // Esc also cancels an input method's candidates, and collapsing would
+      // discard what's typed (an Ask question); the close button still works.
+      if (event.isComposing || isTextEntry(event.target)) {
+        return;
+      }
       if (event.key === "Escape" && expanded() && !hasOpenLayer()) {
         collapse();
       }

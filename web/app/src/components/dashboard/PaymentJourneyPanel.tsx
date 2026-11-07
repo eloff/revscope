@@ -52,7 +52,7 @@ export default function PaymentJourneyPanel(props: PaymentJourneyPanelProps) {
 
   const handleBack = () => {
     if (selectedPayment()) {
-      backFromJourneyHistory();
+      backFromJourneyHistory(closeJourney);
       return;
     }
     closeJourney();

@@ -1,11 +1,12 @@
 /// <reference types="solid-js" />
 /**
- * Homepage island: overview metrics/chart plus tab links to `/demo`.
- * Kept separate from `Demo` so the landing page does not download the rest of
- * the dashboard until a visitor opens another tab.
+ * Homepage island: overview metrics/chart plus tab links. Kept separate from
+ * `Demo` so the landing page does not download the rest of the dashboard until
+ * a visitor expands the embed (see demoEmbedTabs.ts).
  */
 import { appPath } from "@revscope/web-shared/links";
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
+import { Dynamic } from "solid-js/web";
 import {
   DEMO_PROJECT_ID,
   deriveMetrics,
@@ -15,6 +16,7 @@ import {
 import { type CacheEntry, isCacheEntryStale, rangesEqual } from "../../lib/dashboardDataCache";
 import type { DateRangeSeconds } from "../../lib/dateRange";
 import { createEmbedExpansion } from "../../lib/embedExpansion";
+import { isPlainLeftClick } from "../../lib/plainClick";
 import { hasSegmentFilters, segmentFiltersKey } from "../../lib/segmentFilters";
 import DashboardFilters from "./DashboardFilters";
 import {
@@ -36,7 +38,8 @@ import {
   fullscreenLink,
 } from "./Demo.css";
 import { DashboardStateProvider, useDashboardState } from "./dashboardPeriodContext";
-import { DEMO_TAB_ITEMS, demoTabHref } from "./dashboardTabs";
+import { type DashboardTab, DEMO_TAB_ITEMS, demoTabHref } from "./dashboardTabs";
+import { createDemoEmbedTabs } from "./demoEmbedTabs";
 import { message } from "./messages.css";
 import OverviewTabContent from "./OverviewTabContent";
 import { hasOverviewData } from "./tabDataPresence";
@@ -48,6 +51,7 @@ export const DEMO_EMBED_ID = "demo";
 export default function DemoOverview() {
   const expansion = createEmbedExpansion(DEMO_EMBED_ID);
   const collapsed = () => expansion.enabled() && !expansion.expanded();
+  const tabs = createDemoEmbedTabs(expansion.expanded);
   return (
     <div class={embed}>
       <Show when={collapsed()}>
@@ -99,15 +103,53 @@ export default function DemoOverview() {
             </svg>
           </a>
         </Show>
+        {/* Shared by the overview and the full dashboard, so the period and filters carry over. */}
         <DashboardStateProvider>
-          <DemoOverviewContent />
+          {/* Stays behind the dashboard, so collapsing keeps its data without a new request and its reserved height is right for the host page to collapse to. The tab's content, chart included, is rebuilt after a tab click, so the chart draws once it's revealed. */}
+          <div hidden={Boolean(tabs.shell())}>
+            <DemoOverviewContent
+              concealed={Boolean(tabs.shell())}
+              pendingTab={tabs.pendingTab()}
+              failed={tabs.failed()}
+              openInPlace={expansion.expanded()}
+              onTabIntent={tabs.prefetch}
+              onTabOpen={tabs.open}
+            />
+          </div>
+          <Show when={tabs.shell()}>
+            {(shell) => (
+              <Dynamic
+                component={shell()}
+                projectId={DEMO_PROJECT_ID}
+                publicAccess
+                layout="embedded"
+              />
+            )}
+          </Show>
         </DashboardStateProvider>
       </div>
     </div>
   );
 }
 
-function DemoOverviewContent() {
+type DemoOverviewContentProps = {
+  /**
+   * Hidden behind the full dashboard. The filter bar is unmounted meanwhile: it
+   * labels its date preset once on mount, so it remounts to match whatever
+   * period the dashboard left behind.
+   */
+  concealed: boolean;
+  /** A tab clicked while the full dashboard loads; shown selected in place of the overview. */
+  pendingTab: DashboardTab | null;
+  /** The pending tab couldn't be downloaded. */
+  failed: boolean;
+  /** Whether tab clicks stay in the embed rather than following their link to `/demo`. */
+  openInPlace: boolean;
+  onTabIntent: () => void;
+  onTabOpen: (tab: DashboardTab) => void;
+};
+
+function DemoOverviewContent(props: DemoOverviewContentProps) {
   const { range, rangeReady, segments } = useDashboardState();
   const [overviewCache, setOverviewCache] = createSignal<
     CacheEntry<OverviewResponse> | undefined
@@ -224,13 +266,15 @@ function DemoOverviewContent() {
 
   return (
     <div class={embeddedShell}>
-      <DashboardFilters showBrand={false} showAccount={false} />
+      <Show when={!props.concealed}>
+        <DashboardFilters showBrand={false} showAccount={false} />
+      </Show>
       <div class={tabsRoot}>
         <nav class={tabList} aria-label="Dashboard views">
           <For each={DEMO_TAB_ITEMS}>
             {(item) => (
               <Show
-                when={item.value !== "overview"}
+                when={item.value !== "overview" || props.pendingTab !== null}
                 fallback={
                   <span class={tabTrigger} data-selected="true" aria-current="page">
                     <span class={`${item.iconClass} ${tabIcon}`} aria-hidden="true" />
@@ -238,7 +282,24 @@ function DemoOverviewContent() {
                   </span>
                 }
               >
-                <a href={demoTabHref(item.value)} class={tabLink}>
+                {/* A pending tab stays this same link, so keyboard focus survives the click. */}
+                <a
+                  href={demoTabHref(item.value)}
+                  class={item.value === props.pendingTab ? tabTrigger : tabLink}
+                  data-selected={item.value === props.pendingTab ? "true" : undefined}
+                  aria-current={item.value === props.pendingTab ? "page" : undefined}
+                  data-demo-tab={item.value}
+                  onPointerEnter={() => props.openInPlace && props.onTabIntent()}
+                  onFocus={() => props.openInPlace && props.onTabIntent()}
+                  onClick={(event) => {
+                    // Modified clicks still open the full demo in a new tab.
+                    if (!props.openInPlace || !isPlainLeftClick(event)) {
+                      return;
+                    }
+                    event.preventDefault();
+                    props.onTabOpen(item.value);
+                  }}
+                >
                   <span class={`${item.iconClass} ${tabIcon}`} aria-hidden="true" />
                   <span>{item.label}</span>
                 </a>
@@ -247,7 +308,20 @@ function DemoOverviewContent() {
           </For>
         </nav>
         <div class={tabContent}>
-          <Show when={rangeReady()} fallback={<p class={message}>Loading analytics…</p>}>
+          <Show
+            when={rangeReady() && props.pendingTab === null}
+            fallback={
+              <Show
+                when={props.pendingTab !== null && props.failed}
+                fallback={<p class={message}>Loading analytics…</p>}
+              >
+                <p class={message}>
+                  This view couldn't be loaded.{" "}
+                  <a href={demoTabHref(props.pendingTab ?? "overview")}>Open it in the full demo</a>
+                </p>
+              </Show>
+            }
+          >
             <OverviewTabContent
               data={overviewData()}
               metrics={metrics()}
