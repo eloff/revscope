@@ -44,7 +44,7 @@ Run the checks for every part you touched before opening a pull request:
 | `revscope/` | `cargo fmt`, then `cargo clippy` and `cargo test` with and without `--features self-hosted` |
 | `web/`      | `pnpm tsc`, `pnpm check`, `pnpm test`                                                      |
 | `e2e/`      | `pnpm tsc`, `pnpm check`, `pnpm test` (see below)                                          |
-| `cli/`      | `cargo fmt`, `cargo clippy`, `cargo test`, and in `cli/npm` `npm test`                      |
+| `cli/`      | `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, in `cli/npm` `npm test`, and in `revscope/` `cargo test --test cli_e2e` |
 | `crates/`   | `cargo fmt`, `cargo clippy`, `cargo test`, then the checks of `revscope/` and `cli/`        |
 
 `pnpm check` uses biome with `--write`, so it may reformat files. Commit those
@@ -83,6 +83,9 @@ against production, those covering undeployed changes fail until the next deploy
 
 Match the style of the surrounding code. A few project-specific rules:
 
+- Move a component or class into its own file once it's used from more than one
+  file or grows past about 100 lines.
+
 **Tracker (`tracker/`)**
 
 - `tracker.js` stays a single file and targets ES5: no arrow functions, `let` or
@@ -115,8 +118,12 @@ Match the style of the surrounding code. A few project-specific rules:
 - Styles use vanilla-extract, scoped to each component, with no separate
   stylesheets. vanilla-extract doesn't support comma-separated selectors or
   nested child rules.
-- Move a component into its own file once it's used from more than one file or
-  grows past about 100 lines.
+
+## Releasing the CLI
+
+Deploy any server changes the release depends on first. Then bump the version in
+`cli/Cargo.toml` and `cli/npm/package.json` and push a tag `cli-vX.Y.Z`;
+`.github/workflows/release-cli.yml` does the rest.
 
 ## Pull requests
 
