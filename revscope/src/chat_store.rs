@@ -10,8 +10,8 @@
 //! depends on plan: starter accounts are hard-capped
 //! at 200K tokens/month. Other plans derive the budget from subscription price
 //! — an estimated $6 per million tokens, with a spend cap of 40% of
-//! `actual_price_cents` or $10, whichever is larger. Trial accounts on those
-//! plans (those with `trial_ends_at` set, i.e. not yet paid) are capped at $5.
+//! `actual_price_cents` or $10, whichever is larger. Accounts on those plans
+//! that came through a trial are capped at $5 until their first real payment.
 //! Anonymous demo Ask is capped at a flat lifetime token budget per client IP.
 
 use std::net::IpAddr;
@@ -636,14 +636,14 @@ pub(crate) enum QuotaError {
 /// Monthly token ceiling for an account from its plan and subscription price.
 ///
 /// Starter is a hard 200K tokens/month. Other plans: paid accounts get
-/// max(40% of `actual_price_cents`, $10); trial accounts (`trial_ends_at`
-/// set — not yet paid) get a flat $5. Converted at $6 / million tokens.
+/// max(40% of `actual_price_cents`, $10); accounts that had a trial and
+/// haven't paid yet (see [`check_quota`]) get a flat $5. Converted at $6 / million tokens.
 /// Complimentary paid non-starter accounts (price 0) still get the $10 floor.
-fn monthly_token_budget(plan_type: &str, actual_price_cents: i32, on_trial: bool) -> i64 {
+fn monthly_token_budget(plan_type: &str, actual_price_cents: i32, trial_unpaid: bool) -> i64 {
     if plan_type == "starter" {
         return STARTER_MONTHLY_TOKEN_BUDGET;
     }
-    let budget_cents = if on_trial {
+    let budget_cents = if trial_unpaid {
         TRIAL_AI_BUDGET_CENTS
     } else {
         let from_subscription = i64::from(actual_price_cents) * AI_BUDGET_PERCENT / 100;
@@ -661,7 +661,7 @@ pub(crate) fn check_quota(
 ) -> Result<(), QuotaError> {
     let account_id = account_id.to_string();
     let user_id = user_id.to_string();
-    let (turns_this_hour, tokens_this_month, plan_type, actual_price_cents, on_trial) =
+    let (turns_this_hour, tokens_this_month, plan_type, actual_price_cents, trial_unpaid) =
         block_on(async move {
             let conn = open_main_database_read(server_context)
                 .await
@@ -671,7 +671,19 @@ pub(crate) fn check_quota(
                     "SELECT
                      sub.plan_type::text,
                      sub.actual_price_cents,
-                     a.trial_ends_at IS NOT NULL,
+                     -- The trial date can't say this alone: a first charge can fail after it
+                     -- passes, and it can stay set once paid, since webhooks copy the
+                     -- provider's. A status can't either: `active` can precede the first
+                     -- charge, and `past_due` can follow months of payments. A trial's
+                     -- first invoice can be a paid $0.
+                     a.trial_ends_at IS NOT NULL
+                        AND NOT EXISTS (
+                            SELECT 1 FROM account_orders o
+                            WHERE o.account_id = a.id
+                              AND o.paid
+                              AND o.total_amount_cents > 0
+                              AND o.status <> 'refunded'
+                        ),
                      (
                          SELECT COUNT(*)::bigint
                          FROM chat_usage
@@ -698,10 +710,10 @@ pub(crate) fn check_quota(
                 .map_err(|error| QuotaError::Db(AuthError::from(error)))?;
             let plan_type: String = row.get(0);
             let price: i32 = row.get(1);
-            let on_trial: bool = row.get(2);
+            let trial_unpaid: bool = row.get(2);
             let turns: i64 = row.get(3);
             let tokens: i64 = row.get(4);
-            Ok::<_, QuotaError>((turns, tokens, plan_type, price, on_trial))
+            Ok::<_, QuotaError>((turns, tokens, plan_type, price, trial_unpaid))
         })?;
 
     if plan_type == "free" {
@@ -717,7 +729,7 @@ pub(crate) fn check_quota(
     }
     // A self-hosted instance pays for its own model key, so there is no plan to
     // budget against; the hourly cap above still applies.
-    let token_budget = monthly_token_budget(&plan_type, actual_price_cents, on_trial);
+    let token_budget = monthly_token_budget(&plan_type, actual_price_cents, trial_unpaid);
     if !crate::self_hosted::ENABLED && tokens_this_month >= token_budget {
         return Err(QuotaError::Exceeded(
             "this account has reached its monthly AI usage limit; it resets at the start of next month"
@@ -1100,6 +1112,109 @@ mod tests {
         // 40% of $129 = $51.60 → 8_600_000 tokens at $6 / 1M.
         assert_eq!(monthly_token_budget("growth", 12_900, false), 8_600_000);
         assert_eq!(monthly_token_budget("enterprise", 12_900, false), 8_600_000);
+    }
+
+    /// Whether a growth account, with more of this month's tokens used than the $5
+    /// trial budget allows but fewer than the $10 paid floor, may start a turn.
+    /// `trial_ends_in` is an offset from now, and `order` is its only order, as the
+    /// amount in cents, whether it's paid, and its status.
+    #[cfg(not(feature = "self-hosted"))]
+    async fn quota_allows_a_turn(
+        trial_ends_in: Option<&str>,
+        order: Option<(i32, bool, &str)>,
+    ) -> bool {
+        let tag = "quota_trial";
+        let tokens: i32 = 1_000_000;
+        let (server_context, conn) = crate::test_utils::main_test_db(tag).await;
+        let account_id = crate::test_utils::insert_test_account(&conn, tag).await;
+        conn.execute(
+            "UPDATE accounts SET trial_ends_at = NOW() + $2::text::interval
+             WHERE id = $1::text::uuid",
+            &[&account_id, &trial_ends_in],
+        )
+        .await
+        .expect("set trial end");
+        conn.execute(
+            "INSERT INTO account_subscriptions (
+                account_id, plan_type, billing_period, regular_price_cents, actual_price_cents
+             ) VALUES ($1::text::uuid, 'growth', 'monthly', 900, 900)",
+            &[&account_id],
+        )
+        .await
+        .expect("open subscription period");
+        if let Some((cents, paid, status)) = order {
+            conn.execute(
+                "INSERT INTO account_orders (
+                    polar_order_id, account_id, status, paid, total_amount_cents, currency, created_at
+                 ) VALUES ($1, $1::text::uuid, $4, $2, $3, 'usd', NOW())",
+                &[&account_id, &paid, &cents, &status],
+            )
+            .await
+            .expect("record order");
+        }
+        let project_id: i32 = conn
+            .query_one(
+                "INSERT INTO projects (account_id, name) VALUES ($1::text::uuid, $2) RETURNING id",
+                &[&account_id, &format!("p{}", account_id.replace('-', ""))],
+            )
+            .await
+            .expect("insert project")
+            .get(0);
+        let user_id: String = conn
+            .query_one(
+                "INSERT INTO users (account_id, name, email)
+                 VALUES ($1::text::uuid, 'Trial', $2) RETURNING id::text",
+                &[&account_id, &format!("{account_id}@example.com")],
+            )
+            .await
+            .expect("insert user")
+            .get(0);
+        conn.execute(
+            "INSERT INTO chat_usage (account_id, user_id, project_id, model, prompt_tokens)
+             VALUES ($1::text::uuid, $2::text::uuid, $3, 'test', $4)",
+            &[&account_id, &user_id, &project_id, &tokens],
+        )
+        .await
+        .expect("record usage");
+
+        let quota_account_id = account_id.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            check_quota(server_context, &quota_account_id, &user_id)
+        })
+        .await
+        .expect("join quota check");
+        conn.execute(
+            "DELETE FROM accounts WHERE id = $1::text::uuid",
+            &[&account_id],
+        )
+        .await
+        .expect("delete account");
+        match result {
+            Ok(()) => true,
+            Err(QuotaError::Exceeded(_)) => false,
+            Err(QuotaError::Db(_)) => panic!("quota check failed"),
+        }
+    }
+
+    #[cfg(not(feature = "self-hosted"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_trial_budget_lasts_until_the_first_real_payment() {
+        // Paid, with the provider's trial date still set.
+        assert!(quota_allows_a_turn(Some("-7 days"), Some((900, true, "paid"))).await);
+        // Partly refunded, as a plan change does, is still a real payment.
+        assert!(
+            quota_allows_a_turn(Some("-7 days"), Some((900, true, "partially_refunded"))).await
+        );
+        // Never had a trial: a complimentary account has no orders at all.
+        assert!(quota_allows_a_turn(None, None).await);
+
+        assert!(!quota_allows_a_turn(Some("7 days"), None).await);
+        // The date passed but nothing has been paid.
+        assert!(!quota_allows_a_turn(Some("-7 days"), None).await);
+        assert!(!quota_allows_a_turn(Some("-7 days"), Some((900, false, "pending"))).await);
+        assert!(!quota_allows_a_turn(Some("-7 days"), Some((900, true, "refunded"))).await);
+        // The invoice that starts a trial.
+        assert!(!quota_allows_a_turn(Some("-7 days"), Some((0, true, "paid"))).await);
     }
 
     #[test]
