@@ -533,6 +533,47 @@ async fn an_invite_must_name_at_least_one_project_when_limited() -> io::Result<(
     Ok(())
 }
 
+#[tokio::test]
+async fn a_new_invite_restarts_the_time_before_it_lapses() -> io::Result<()> {
+    let server = TestServer::spawn("user-roles-reinvite").await?;
+    let owner = signup(&server, "rolesreinvite").await?;
+    let email = format!("again-{}@example.com", owner.slug);
+    let invite = json!({
+        "name": "In Vited",
+        "email": email,
+        "is_admin": false,
+        "project_ids": [owner.project_id.parse::<i32>().expect("numeric id")],
+    });
+    let conn = common::signup::main_db(&server).await;
+    let age_in_days = async || -> f64 {
+        conn.query_one(
+            "SELECT (EXTRACT(EPOCH FROM NOW() - invited_at) / 86400)::float8
+             FROM users WHERE email = $1",
+            &[&email],
+        )
+        .await
+        .expect("load user")
+        .get(0)
+    };
+
+    let first = post(&server, INVITE_PATH, invite.clone(), &owner.cookie).await?;
+    assert_eq!(first.status_code(), 200, "{}", first.body_str());
+    assert!(age_in_days().await < 1.0);
+
+    conn.execute(
+        "UPDATE users SET invited_at = NOW() - INTERVAL '40 days' WHERE email = $1",
+        &[&email],
+    )
+    .await
+    .expect("age the invite");
+    let second = post(&server, INVITE_PATH, invite, &owner.cookie).await?;
+    assert_eq!(second.status_code(), 200, "{}", second.body_str());
+    assert!(age_in_days().await < 1.0);
+
+    delete_account(&server, &owner.account_name).await;
+    Ok(())
+}
+
 struct Member {
     user_id: String,
     cookie: String,

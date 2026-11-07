@@ -112,7 +112,8 @@ A self-hosted instance has one account, and every user sees all of its projects.
 Signup creates the first project, named as you choose, and you can add more from
 the dashboard. After the first person signs up, they invite others from
 Settings. An invitation link lets the invited person choose a password and
-expires after 7 days. RevScope emails the link if email is configured
+expires after 7 days, and someone who hasn't accepted 30 days after their latest
+invitation is removed, so they stop reserving their email address. RevScope emails the link if email is configured
 (`MAILCHANNELS_API_KEY` and `MAILCHANNELS_FROM_EMAIL`), and Settings always
 shows it so you can send it yourself.
 

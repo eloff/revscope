@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::auth::{AuthError, map_query_error};
 use crate::authorize::AdminAccount;
 use crate::db::open_main_database_read;
+use crate::pending_users::pending_user_sql;
 use crate::server_context::ServerContext;
 use crate::util::block_on;
 
@@ -42,12 +43,12 @@ pub(crate) fn account_users(
         // Ids are UUIDv7, so they sort by creation time.
         let rows = conn
             .query(
-                "SELECT
+                &format!(
+                    "SELECT
                     u.id::text,
                     u.name,
                     COALESCE(u.original_email, u.email),
-                    u.hashed_password IS NULL
-                    AND NOT EXISTS (SELECT 1 FROM user_identities i WHERE i.user_id = u.id),
+                    {pending},
                     EXTRACT(EPOCH FROM u.last_login_at)::bigint,
                     u.is_admin,
                     CASE WHEN u.all_projects THEN NULL ELSE ARRAY(
@@ -58,6 +59,8 @@ pub(crate) fn account_users(
                  FROM users u
                  WHERE u.account_id = $1::text::uuid
                  ORDER BY u.id",
+                    pending = pending_user_sql("u"),
+                ),
                 &[&user.account_id],
             )
             .await

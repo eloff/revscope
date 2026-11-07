@@ -1,7 +1,7 @@
 //! A daily task that reports refunds still owed, on the hosted service, and deletes
 //! rows the main Postgres database no longer needs:
-//! expired tokens and sessions, old ingest errors, and MCP client
-//! registrations that never got a token.
+//! expired tokens and sessions, old ingest errors, invites that lapsed, and MCP
+//! client registrations that never got a token.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,6 +44,12 @@ pub async fn run_main_db_cleanup(server_context: Arc<ServerContext>) {
         report_error!(
             "owed_refunds.report",
             "could not check for owed refunds: {error:?}"
+        );
+    }
+    if let Err(error) = crate::pending_users::delete_lapsed_invites(server_context.clone()).await {
+        report_error!(
+            "pending_users.cleanup",
+            "lapsed invite cleanup failed: {error:?}"
         );
     }
     if let Err(error) = crate::mcp::clients::delete_unused_clients(server_context).await {

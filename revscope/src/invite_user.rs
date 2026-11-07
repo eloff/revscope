@@ -19,6 +19,7 @@ use crate::auth::{
 use crate::authorize::AdminAccount;
 use crate::db::open_main_database_write;
 use crate::email::{EmailError, send_invite_email};
+use crate::pending_users::pending_user_sql;
 use crate::server_context::ServerContext;
 use crate::tokens::INVITE_TTL_SECONDS;
 use crate::user_access::{AccessRequest, UserAccess, lock_account_as_admin, write_user_access};
@@ -68,14 +69,13 @@ pub(crate) fn invite_user(
                 // would hand the inviter their account.
                 let existing = conn
                     .query_opt(
-                        "SELECT id::text, account_id::text,
-                            hashed_password IS NULL
-                            AND NOT EXISTS (
-                                SELECT 1 FROM user_identities i WHERE i.user_id = users.id
-                            )
-                         FROM users
-                         WHERE email = $1
-                         FOR UPDATE",
+                        &format!(
+                            "SELECT u.id::text, u.account_id::text, {}
+                             FROM users u
+                             WHERE u.email = $1
+                             FOR UPDATE",
+                            pending_user_sql("u")
+                        ),
                         &[&email.normalized],
                     )
                     .await
@@ -96,6 +96,12 @@ pub(crate) fn invite_user(
                     }
                 };
                 write_user_access(conn, &inviter.account_id, &user_id, &access).await?;
+                conn.execute(
+                    "UPDATE users SET invited_at = NOW() WHERE id = $1::text::uuid",
+                    &[&user_id],
+                )
+                .await
+                .map_err(map_query_error)?;
 
                 conn.execute(
                     "DELETE FROM password_reset_tokens WHERE user_id = $1::text::uuid",

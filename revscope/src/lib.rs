@@ -61,6 +61,7 @@ mod pages;
 mod payment_activity;
 mod payment_journey;
 mod payments;
+mod pending_users;
 mod plan_retention;
 mod project_db_sweep;
 mod projects;
