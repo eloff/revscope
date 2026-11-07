@@ -60,8 +60,14 @@ impl CertificateStore {
         let signing_key =
             aws_lc_rs::sign::any_supported_type(&private_key).map_err(CertificateError::Key)?;
 
+        let certified_key = CertifiedKey::new(chain, signing_key);
+        // The certificate and key are separate files, so a crash during a renewal
+        // can leave a new certificate beside the old key. Handshakes would fail
+        // for months; rejecting the pair makes the renewal task order a new one.
+        certified_key.keys_match().map_err(CertificateError::Key)?;
+
         let stored = Arc::new(StoredCertificate {
-            certified_key: Arc::new(CertifiedKey::new(chain, signing_key)),
+            certified_key: Arc::new(certified_key),
             not_after,
             names: names.to_vec(),
         });
@@ -311,6 +317,24 @@ mod tests {
 
         let second = store.certified_key("example.com").expect("second key");
         assert_ne!(first.cert, second.cert);
+    }
+
+    #[test]
+    fn rejects_a_certificate_with_another_certificates_key() {
+        let (certificate_pem, _) = self_signed_certificate(&["example.com"]);
+        let (_, other_key_pem) = self_signed_certificate(&["example.com"]);
+        let store = CertificateStore::new();
+
+        let error = store
+            .install_pem(
+                &name_list(&["example.com"]),
+                &certificate_pem,
+                &other_key_pem,
+            )
+            .expect_err("mismatched key is rejected");
+
+        assert!(matches!(error, CertificateError::Key(_)), "{error:?}");
+        assert!(store.certified_key("example.com").is_none());
     }
 
     #[test]

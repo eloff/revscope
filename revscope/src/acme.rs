@@ -3,6 +3,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
+use tokio::io::AsyncWriteExt;
 
 use dashmap::DashMap;
 use dashmap::DashSet;
@@ -57,14 +58,20 @@ const DEFAULT_PLATFORM_DOMAINS: &[&str] = if cfg!(feature = "self-hosted") {
 };
 
 /// Order a replacement once the certificate has this little validity left.
-/// Let's Encrypt issues 90 day certificates, so this leaves a month of daily
+/// Let's Encrypt issues 90 day certificates, so this leaves a month of
 /// retries before an expiry would take HTTPS down.
 const RENEW_BEFORE_EXPIRY: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-/// How long to wait between checks once the certificate is not due yet.
+/// How long to wait between checks when nothing needs following up soon.
 const RENEWAL_CHECK_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
-/// Backoff after a failed order, so a misconfigured domain cannot spend the
-/// ACME rate limit in a loop.
+/// How long to wait after starting an order, and the cooldown before another
+/// order after one fails, so a misconfigured domain cannot spend the ACME rate
+/// limit in a loop.
 const RENEWAL_RETRY_INTERVAL: Duration = Duration::from_secs(15 * 60);
+/// How soon the renewal task retries a failed platform order. Every customer
+/// depends on this certificate, so it doesn't wait as long as a custom domain.
+/// Let's Encrypt pauses a hostname after 1,152 consecutive failed validations,
+/// and this pace stays under that for the whole [`RENEW_BEFORE_EXPIRY`] window.
+const PLATFORM_RENEWAL_RETRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// How long a TLS handshake may block waiting for an in-flight HTTP-01 order.
 /// Kept under typical browser TLS timeouts; the settings save already starts
 /// issuance so this is the remainder, not a full order from a cold start.
@@ -73,6 +80,10 @@ const ISSUANCE_WAIT: Duration = Duration::from_secs(25);
 /// the certificate after finalize. Handshake waiters use [`ISSUANCE_WAIT`] and
 /// return sooner; this is the background order, not the first connection.
 const ORDER_WAIT: Duration = Duration::from_secs(5 * 60);
+/// Limit on a whole order. instant-acme sets no timeout on its requests, so a
+/// stalled connection would otherwise keep the order in flight until a restart,
+/// and every later check would join it instead of retrying.
+const ORDER_DEADLINE: Duration = Duration::from_secs(15 * 60);
 
 /// Everything needed to obtain certificates for this deployment. Absent when
 /// the deployment terminates TLS elsewhere, which leaves the HTTPS listener off.
@@ -428,7 +439,7 @@ pub(crate) fn request_issuance(server_context: Arc<ServerContext>, domain: &str)
     if server_context.acme.config.read().is_none() {
         return;
     }
-    let _ = start_or_join_order(&server_context, domain);
+    let _ = order_if_missing(&server_context, domain);
 }
 
 fn wait_for_certificate(
@@ -445,14 +456,16 @@ fn wait_for_certificate(
     {
         return None;
     }
-    let Some(waiter) = start_or_join_order(server_context, name) else {
+    let Some(waiter) = order_if_missing(server_context, name) else {
         return server_context.acme.certificates.certified_key(name);
     };
     waiter.wait_timeout(ISSUANCE_WAIT);
     server_context.acme.certificates.certified_key(name)
 }
 
-fn start_or_join_order(
+/// For callers that only need a certificate to exist. Renewal must replace an
+/// installed one, so it calls [`start_or_join_order`] directly.
+fn order_if_missing(
     server_context: &Arc<ServerContext>,
     name: &str,
 ) -> Option<Arc<IssuanceWaiter>> {
@@ -464,6 +477,13 @@ fn start_or_join_order(
     {
         return None;
     }
+    start_or_join_order(server_context, name)
+}
+
+fn start_or_join_order(
+    server_context: &Arc<ServerContext>,
+    name: &str,
+) -> Option<Arc<IssuanceWaiter>> {
     let order_key = server_context.acme.order_key(name);
     // Join an order already running, including tests that insert a waiter
     // without an ACME config.
@@ -507,7 +527,10 @@ async fn run_order(
             finish_order(&server_context, &order_key, false);
             return;
         }
-        outcome = provision_certificate(&server_context, &config, &domains, &cache_subdir) => outcome,
+        outcome = tokio::time::timeout(
+            ORDER_DEADLINE,
+            provision_certificate(&server_context, &config, &domains, &cache_subdir),
+        ) => outcome.unwrap_or(Err(AcmeError::Timeout)),
     };
     match outcome {
         Ok(not_after) => {
@@ -519,12 +542,23 @@ async fn run_order(
             finish_order(&server_context, &order_key, true);
         }
         Err(AcmeError::Timeout) => {
-            // Do not record a failure: Let's Encrypt may still be working, and
-            // the next handshake should be allowed to start a new order.
-            warn!(
-                "ACME order for {names} still pending after {}s; will retry",
-                ORDER_WAIT.as_secs()
-            );
+            // Without a certificate, the next handshake may start a new order
+            // rather than fail. A renewal has no one waiting, and each order that
+            // finishes late counts toward Let's Encrypt's weekly duplicate limit.
+            let renewing = domains.iter().any(|domain| {
+                server_context
+                    .acme
+                    .certificates
+                    .certified_key(domain)
+                    .is_some()
+            });
+            if renewing {
+                server_context
+                    .acme
+                    .last_failure
+                    .insert(order_key.clone(), Instant::now());
+            }
+            warn!("ACME order for {names} timed out; will retry");
             finish_order(&server_context, &order_key, false);
         }
         Err(error) => {
@@ -551,30 +585,73 @@ async fn renewal_loop(server_context: Arc<ServerContext>) {
             Err(error) => warn!("unable to refresh custom ACME domains: {error}"),
         }
 
-        let mut wait = RENEWAL_CHECK_INTERVAL;
-        for (names, not_after) in server_context.acme.certificates.unique_certificates() {
-            if let Some(reason) = renewal_reason(Some(not_after)) {
-                let Some(name) = names.first() else {
-                    continue;
-                };
-                info!("renewing certificate for {}: {reason}", names.join(", "));
-                if start_or_join_order(&server_context, name).is_some() {
-                    wait = RENEWAL_RETRY_INTERVAL;
-                }
-            }
-        }
-        for name in missing_allowed_names(&server_context) {
-            info!("ordering a certificate for {name}: no certificate is installed");
-            if start_or_join_order(&server_context, &name).is_some() {
-                wait = RENEWAL_RETRY_INTERVAL;
-            }
-        }
+        let wait = if start_due_orders(&server_context) {
+            RENEWAL_RETRY_INTERVAL
+        } else {
+            RENEWAL_CHECK_INTERVAL
+        };
 
         tokio::select! {
             _ = server_context.wait_for_shutdown() => return,
             _ = tokio::time::sleep(wait) => {}
         }
     }
+}
+
+/// Starts or joins an order for every certificate that is due or missing, and
+/// returns whether to check again after [`RENEWAL_RETRY_INTERVAL`].
+fn start_due_orders(server_context: &Arc<ServerContext>) -> bool {
+    let mut check_again_soon = false;
+    for (names, not_after) in server_context.acme.certificates.unique_certificates() {
+        let Some(reason) = renewal_reason(not_after) else {
+            continue;
+        };
+        let Some(name) = names.first() else {
+            continue;
+        };
+        // The store keeps a removed custom domain's certificate until restart,
+        // but its hostname may no longer point at us or belong to the customer.
+        if !server_context.acme.is_allowed(name) {
+            continue;
+        }
+        if waiting_to_retry(server_context, name) {
+            check_again_soon |= server_context.acme.is_platform_domain(name);
+            continue;
+        }
+        if start_or_join_order(server_context, name).is_some() {
+            info!("renewing certificate for {}: {reason}", names.join(", "));
+            check_again_soon = true;
+        }
+    }
+    for name in missing_allowed_names(server_context) {
+        if waiting_to_retry(server_context, &name) {
+            check_again_soon |= server_context.acme.is_platform_domain(&name);
+            continue;
+        }
+        if start_or_join_order(server_context, &name).is_some() {
+            info!("ordering a certificate for {name}: no certificate is installed");
+            check_again_soon = true;
+        }
+    }
+    check_again_soon
+}
+
+/// Whether the renewal task should leave a recently failed order alone. The
+/// loop's sleep is shared, and a failing platform certificate keeps it short, so
+/// the wait is enforced per order: many broken CNAMEs retrying every cooldown
+/// could spend the account's order limit, platform orders included. Handshakes
+/// can still retry sooner, under [`RENEWAL_RETRY_INTERVAL`].
+fn waiting_to_retry(server_context: &ServerContext, name: &str) -> bool {
+    let wait = if server_context.acme.is_platform_domain(name) {
+        PLATFORM_RENEWAL_RETRY_INTERVAL
+    } else {
+        RENEWAL_CHECK_INTERVAL
+    };
+    server_context
+        .acme
+        .last_failure
+        .get(&server_context.acme.order_key(name))
+        .is_some_and(|failed_at| failed_at.elapsed() < wait)
 }
 
 fn missing_allowed_names(server_context: &ServerContext) -> Vec<String> {
@@ -603,10 +680,7 @@ fn missing_allowed_names(server_context: &ServerContext) -> Vec<String> {
     names
 }
 
-fn renewal_reason(not_after: Option<SystemTime>) -> Option<&'static str> {
-    let Some(not_after) = not_after else {
-        return Some("no certificate is installed");
-    };
+fn renewal_reason(not_after: SystemTime) -> Option<&'static str> {
     let remaining = not_after
         .duration_since(SystemTime::now())
         .unwrap_or_default();
@@ -905,7 +979,7 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, AcmeError> {
     }
 }
 
-/// Writes through a temporary file so a crash mid-write cannot leave a
+/// Writes through a temporary file so a process crash mid-write cannot leave a
 /// half-written certificate behind, and keeps the file owner-only because it
 /// holds private keys.
 async fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), AcmeError> {
@@ -914,20 +988,23 @@ async fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), AcmeErro
             .await
             .map_err(AcmeError::Io)?;
     }
+    // Unique because orders for different domains can create the shared account
+    // file at once.
+    let mut suffix = [0u8; 8];
+    getrandom::getrandom(&mut suffix).map_err(|error| AcmeError::Io(io::Error::other(error)))?;
     let mut temporary = path.as_os_str().to_os_string();
-    temporary.push(".tmp");
+    temporary.push(format!(".{:016x}.tmp", u64::from_ne_bytes(suffix)));
     let temporary = PathBuf::from(temporary);
 
-    tokio::fs::write(&temporary, contents)
-        .await
-        .map_err(AcmeError::Io)?;
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    // Set at creation so the key is never readable by others, even briefly.
     #[cfg(unix)]
-    tokio::fs::set_permissions(
-        &temporary,
-        std::os::unix::fs::PermissionsExt::from_mode(0o600),
-    )
-    .await
-    .map_err(AcmeError::Io)?;
+    options.mode(0o600);
+    let mut file = options.open(&temporary).await.map_err(AcmeError::Io)?;
+    file.write_all(contents).await.map_err(AcmeError::Io)?;
+    file.flush().await.map_err(AcmeError::Io)?;
+    drop(file);
     tokio::fs::rename(&temporary, path)
         .await
         .map_err(AcmeError::Io)
@@ -949,8 +1026,8 @@ pub(crate) enum AcmeError {
     /// Order did not become ready. For `Invalid`, this includes each
     /// hostname's HTTP-01 problem document.
     OrderStatus(String),
-    /// Let's Encrypt had not finished the order when the poll budget ran out.
-    /// Not a validation failure; the order may still complete.
+    /// The ACME server had not finished the order, or stopped responding, within
+    /// the time allowed. Not a validation failure; the order may still complete.
     Timeout,
 }
 
@@ -970,7 +1047,7 @@ impl fmt::Display for AcmeError {
                 write!(formatter, "no http-01 challenge offered for an identifier")
             }
             Self::OrderStatus(status) => write!(formatter, "unexpected order status: {status}"),
-            Self::Timeout => write!(formatter, "timed out waiting for an order update"),
+            Self::Timeout => write!(formatter, "timed out waiting for the ACME server"),
         }
     }
 }
@@ -994,18 +1071,28 @@ impl From<CertificateError> for AcmeError {
 mod tests {
     use super::*;
 
+    const DAY_SECS: u64 = 24 * 60 * 60;
+
     fn test_context() -> Arc<ServerContext> {
         Arc::new(ServerContext::new_in_memory("acme-tests"))
     }
 
     fn self_signed(names: &[&str]) -> (String, String) {
-        let params = rcgen::CertificateParams::new(
+        self_signed_expiring(
+            names,
+            SystemTime::now() + Duration::from_secs(365 * DAY_SECS),
+        )
+    }
+
+    fn self_signed_expiring(names: &[&str], not_after: SystemTime) -> (String, String) {
+        let mut params = rcgen::CertificateParams::new(
             names
                 .iter()
                 .map(|name| (*name).to_string())
                 .collect::<Vec<_>>(),
         )
         .expect("certificate parameters");
+        params.not_after = not_after.into();
         let signing_key = rcgen::KeyPair::generate().expect("generate key pair");
         let certificate = params.self_signed(&signing_key).expect("self-sign");
         (certificate.pem(), signing_key.serialize_pem())
@@ -1093,15 +1180,383 @@ mod tests {
     }
 
     #[test]
-    fn renews_only_when_the_certificate_is_close_to_expiring() {
-        assert_eq!(renewal_reason(None), Some("no certificate is installed"));
-        let far_future = SystemTime::now() + Duration::from_secs(60 * 24 * 60 * 60);
-        assert_eq!(renewal_reason(Some(far_future)), None);
-        let soon = SystemTime::now() + Duration::from_secs(7 * 24 * 60 * 60);
+    fn renews_only_within_thirty_days_of_expiry() {
+        let in_days = |days| SystemTime::now() + Duration::from_secs(days * DAY_SECS);
+        assert_eq!(renewal_reason(in_days(31)), None);
         assert_eq!(
-            renewal_reason(Some(soon)),
+            renewal_reason(in_days(29)),
             Some("the current one is close to expiring")
         );
+    }
+
+    fn install_expiring_in(server_context: &ServerContext, names: &[&str], days: i64) {
+        let now = SystemTime::now();
+        let offset = Duration::from_secs(days.unsigned_abs() * DAY_SECS);
+        let not_after = if days < 0 { now - offset } else { now + offset };
+        let (pem, key) = self_signed_expiring(names, not_after);
+        server_context
+            .acme
+            .certificates
+            .install_pem(&name_list(names), &pem, &key)
+            .expect("install certificate");
+    }
+
+    /// The fake server drops the connection it accepts, ending the order the way
+    /// an ACME outage would.
+    async fn assert_renewal_reaches_acme_server(names: &[&str], days_left: i64, order_key: &str) {
+        let server_context = test_context();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake ACME server");
+        let mut config = test_config(&["eu1.revscope.co", "api.revscope.co"]);
+        config.directory_url = format!(
+            "https://{}/directory",
+            listener.local_addr().expect("listener address")
+        );
+        server_context.acme.set_config(config);
+        for name in names {
+            if !server_context.acme.is_platform_domain(name) {
+                server_context.acme.custom_domains.insert(name.to_string());
+            }
+        }
+        // A missing platform certificate would start its own order, which could
+        // be the one that reaches the fake server.
+        if order_key != PLATFORM_ORDER_KEY {
+            install_expiring_in(&server_context, &["eu1.revscope.co", "api.revscope.co"], 60);
+        }
+        install_expiring_in(&server_context, names, days_left);
+        let current = server_context
+            .acme
+            .certificates
+            .certified_key(names[0])
+            .expect("installed certificate");
+
+        assert!(start_due_orders(&server_context), "order should start");
+        assert!(server_context.acme.in_flight.contains_key(order_key));
+
+        tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("renewal should contact the ACME server")
+            .expect("accept ACME connection");
+        drop(listener);
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while server_context.acme.in_flight.contains_key(order_key) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("failed order should finish");
+
+        assert!(server_context.acme.last_failure.contains_key(order_key));
+        let served = server_context
+            .acme
+            .resolve_sni(&server_context, Some(names[0]))
+            .expect("the current certificate stays in service");
+        assert_eq!(served.cert, current.cert);
+    }
+
+    /// The fake server accepts the connection and never answers.
+    async fn run_order_against_a_silent_acme_server(server_context: &Arc<ServerContext>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake ACME server");
+        let mut config = test_config(&["eu1.revscope.co"]);
+        config.directory_url = format!(
+            "https://{}/directory",
+            listener.local_addr().expect("listener address")
+        );
+        server_context.acme.set_config(config);
+        tokio::spawn(async move {
+            let mut connections = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                connections.push(stream);
+            }
+        });
+
+        assert!(start_due_orders(server_context), "order should start");
+        tokio::time::timeout(ORDER_DEADLINE * 2, async {
+            while !server_context.acme.in_flight.is_empty() {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        })
+        .await
+        .expect("a stalled order should give up");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_renewal_gives_up_and_cools_down() {
+        let server_context = test_context();
+        install_expiring_in(&server_context, &["eu1.revscope.co"], 7);
+
+        run_order_against_a_silent_acme_server(&server_context).await;
+
+        assert!(
+            server_context
+                .acme
+                .last_failure
+                .contains_key(PLATFORM_ORDER_KEY)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_first_order_leaves_handshakes_free_to_retry() {
+        let server_context = test_context();
+
+        run_order_against_a_silent_acme_server(&server_context).await;
+
+        assert!(server_context.acme.last_failure.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_expired_certificate_reloaded_after_a_restart_is_renewed() {
+        let cache_dir = temporary_cache_dir("restart");
+        let platform_dir = cache_dir.join(PLATFORM_CACHE_DIR);
+        std::fs::create_dir_all(&platform_dir).expect("create platform cache");
+        let (pem, key) = self_signed_expiring(
+            &["eu1.revscope.co"],
+            SystemTime::now() - Duration::from_secs(DAY_SECS),
+        );
+        std::fs::write(platform_dir.join(CERTIFICATE_FILE), pem).expect("cache certificate");
+        std::fs::write(platform_dir.join(PRIVATE_KEY_FILE), key).expect("cache key");
+        let mut config = test_config(&["eu1.revscope.co"]);
+        config.cache_dir = cache_dir.clone();
+        config.directory_url = "https://127.0.0.1:1/directory".to_string();
+        let server_context = test_context();
+        server_context.acme.set_config(config.clone());
+
+        load_cached_certificates(&server_context, &config);
+        assert!(
+            server_context
+                .acme
+                .certificates
+                .certified_key("eu1.revscope.co")
+                .is_some()
+        );
+
+        assert!(start_due_orders(&server_context));
+        assert!(
+            server_context
+                .acme
+                .in_flight
+                .contains_key(PLATFORM_ORDER_KEY)
+        );
+        std::fs::remove_dir_all(&cache_dir).expect("remove cache directory");
+    }
+
+    #[test]
+    fn a_cached_certificate_with_the_wrong_key_counts_as_missing() {
+        let cache_dir = temporary_cache_dir("mismatched-key");
+        let (pem, _) = self_signed(&["eu1.revscope.co"]);
+        let (_, other_key) = self_signed(&["eu1.revscope.co"]);
+        std::fs::write(cache_dir.join(CERTIFICATE_FILE), pem).expect("cache certificate");
+        std::fs::write(cache_dir.join(PRIVATE_KEY_FILE), other_key).expect("cache key");
+        let server_context = test_context();
+        server_context
+            .acme
+            .set_config(test_config(&["eu1.revscope.co"]));
+
+        let loaded = load_cached_certificate(
+            &cache_dir,
+            &name_list(&["eu1.revscope.co"]),
+            server_context.acme.certificates(),
+        );
+
+        assert!(loaded.is_err());
+        assert_eq!(missing_allowed_names(&server_context), ["eu1.revscope.co"]);
+        std::fs::remove_dir_all(&cache_dir).expect("remove cache directory");
+    }
+
+    #[tokio::test]
+    async fn renews_a_platform_certificate_close_to_expiring() {
+        assert_renewal_reaches_acme_server(
+            &["eu1.revscope.co", "api.revscope.co"],
+            7,
+            PLATFORM_ORDER_KEY,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn renews_an_expired_custom_domain_certificate() {
+        assert_renewal_reaches_acme_server(&["assets.example.com"], -1, "assets.example.com").await;
+    }
+
+    #[test]
+    fn does_not_order_a_certificate_that_is_not_due() {
+        let server_context = test_context();
+        server_context
+            .acme
+            .set_config(test_config(&["eu1.revscope.co"]));
+        install_expiring_in(&server_context, &["eu1.revscope.co"], 60);
+
+        assert!(!start_due_orders(&server_context));
+        assert!(server_context.acme.in_flight.is_empty());
+    }
+
+    #[test]
+    fn does_not_renew_a_removed_custom_domain() {
+        let server_context = test_context();
+        server_context
+            .acme
+            .set_config(test_config(&["eu1.revscope.co"]));
+        install_expiring_in(&server_context, &["eu1.revscope.co"], 60);
+        install_expiring_in(&server_context, &["removed.example.com"], 7);
+
+        assert!(!start_due_orders(&server_context));
+        assert!(server_context.acme.in_flight.is_empty());
+    }
+
+    #[test]
+    fn a_cooling_down_platform_renewal_starts_no_order_but_retries_soon() {
+        let server_context = test_context();
+        server_context
+            .acme
+            .set_config(test_config(&["eu1.revscope.co"]));
+        install_expiring_in(&server_context, &["eu1.revscope.co"], 7);
+        server_context
+            .acme
+            .last_failure
+            .insert(PLATFORM_ORDER_KEY.to_string(), Instant::now());
+
+        assert!(start_due_orders(&server_context));
+        assert!(server_context.acme.in_flight.is_empty());
+    }
+
+    #[test]
+    fn a_failed_platform_renewal_waits_past_the_handshake_cooldown() {
+        let server_context = test_context();
+        server_context
+            .acme
+            .set_config(test_config(&["eu1.revscope.co"]));
+        install_expiring_in(&server_context, &["eu1.revscope.co"], 7);
+        let past_the_short_cooldown = Instant::now()
+            .checked_sub(RENEWAL_RETRY_INTERVAL + Duration::from_secs(1))
+            .expect("system has been up longer than the cooldown");
+        server_context
+            .acme
+            .last_failure
+            .insert(PLATFORM_ORDER_KEY.to_string(), past_the_short_cooldown);
+
+        assert!(start_due_orders(&server_context));
+        assert!(server_context.acme.in_flight.is_empty());
+    }
+
+    #[test]
+    fn a_failing_platform_renewal_does_not_speed_up_custom_domain_retries() {
+        let server_context = test_context();
+        server_context
+            .acme
+            .set_config(test_config(&["eu1.revscope.co"]));
+        install_expiring_in(&server_context, &["eu1.revscope.co"], 7);
+        server_context
+            .acme
+            .last_failure
+            .insert(PLATFORM_ORDER_KEY.to_string(), Instant::now());
+        let past_the_short_cooldown = Instant::now()
+            .checked_sub(RENEWAL_RETRY_INTERVAL + Duration::from_secs(1))
+            .expect("system has been up longer than the cooldown");
+        for (domain, days_left) in [("due.example.com", Some(7)), ("missing.example.com", None)] {
+            server_context
+                .acme
+                .custom_domains
+                .insert(domain.to_string());
+            if let Some(days_left) = days_left {
+                install_expiring_in(&server_context, &[domain], days_left);
+            }
+            server_context
+                .acme
+                .last_failure
+                .insert(domain.to_string(), past_the_short_cooldown);
+        }
+
+        assert!(start_due_orders(&server_context));
+        assert!(server_context.acme.in_flight.is_empty());
+    }
+
+    #[test]
+    fn a_cooling_down_custom_domain_renewal_waits_for_the_long_interval() {
+        let server_context = test_context();
+        server_context
+            .acme
+            .set_config(test_config(&["eu1.revscope.co"]));
+        install_expiring_in(&server_context, &["eu1.revscope.co"], 60);
+        server_context
+            .acme
+            .custom_domains
+            .insert("assets.example.com".to_string());
+        install_expiring_in(&server_context, &["assets.example.com"], 7);
+        server_context
+            .acme
+            .last_failure
+            .insert("assets.example.com".to_string(), Instant::now());
+
+        assert!(!start_due_orders(&server_context));
+        assert!(server_context.acme.in_flight.is_empty());
+    }
+
+    #[test]
+    fn saving_a_domain_does_not_replace_its_installed_certificate() {
+        let server_context = test_context();
+        server_context
+            .acme
+            .set_config(test_config(&["eu1.revscope.co"]));
+        server_context
+            .acme
+            .custom_domains
+            .insert("assets.example.com".to_string());
+        install_expiring_in(&server_context, &["assets.example.com"], 7);
+
+        request_issuance(server_context.clone(), "assets.example.com");
+
+        assert!(server_context.acme.in_flight.is_empty());
+    }
+
+    fn temporary_cache_dir(test_name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("revscope-acme-{test_name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create cache directory");
+        dir
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn private_files_are_owner_only_and_leave_no_temporary_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temporary_cache_dir("private-file");
+        let path = dir.join("private-key.pem");
+
+        write_private_file(&path, b"key").await.expect("write key");
+
+        assert_eq!(std::fs::read(&path).expect("read key"), b"key");
+        let mode = std::fs::metadata(&path)
+            .expect("key metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(std::fs::read_dir(&dir).expect("list cache").count(), 1);
+        std::fs::remove_dir_all(&dir).expect("remove cache directory");
+    }
+
+    #[tokio::test]
+    async fn concurrent_writes_of_a_private_file_all_succeed() {
+        let dir = temporary_cache_dir("concurrent-private-file");
+        let path = dir.join("account.json");
+
+        let writes: Vec<_> = (0..16)
+            .map(|_| {
+                let path = path.clone();
+                tokio::spawn(async move { write_private_file(&path, b"account").await })
+            })
+            .collect();
+        for write in writes {
+            write.await.expect("join write").expect("write succeeds");
+        }
+
+        assert_eq!(std::fs::read(&path).expect("read account"), b"account");
+        assert_eq!(std::fs::read_dir(&dir).expect("list cache").count(), 1);
+        std::fs::remove_dir_all(&dir).expect("remove cache directory");
     }
 
     #[test]
@@ -1307,7 +1762,7 @@ mod tests {
     fn poll_timeout_is_distinct_from_acme_failures() {
         let error = AcmeError::from(instant_acme::Error::Timeout(None));
         assert!(matches!(error, AcmeError::Timeout));
-        assert_eq!(error.to_string(), "timed out waiting for an order update");
+        assert_eq!(error.to_string(), "timed out waiting for the ACME server");
     }
 
     fn http01_challenge(error: Option<&str>) -> Challenge {
