@@ -248,6 +248,18 @@ export function loadTracker(options) {
   };
   Object.assign(locationState, options.location || {});
 
+  // Browsers keep the current URL when the url argument is omitted.
+  function applyHistoryUrl(url) {
+    if (url === undefined || url === null) {
+      return;
+    }
+    const next = new URL(url, locationState.href);
+    locationState.pathname = next.pathname;
+    locationState.search = next.search;
+    locationState.hash = next.hash;
+    locationState.href = next.href;
+  }
+
   const config = Object.assign({ projectName: projectName }, options.config || {});
   const dispatchName = options.dispatchName || config.name || "dispatch";
 
@@ -356,8 +368,9 @@ export function loadTracker(options) {
       return !event.defaultPrevented;
     },
     screen: { width: 1920, height: 1080 },
-    history: {
-      pushState: () => {},
+    history: options.history || {
+      pushState: (_state, _title, url) => applyHistoryUrl(url),
+      replaceState: (_state, _title, url) => applyHistoryUrl(url),
     },
     innerWidth: 1024,
     innerHeight: 768,

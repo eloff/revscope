@@ -5,7 +5,7 @@
     // These are variables so the script packs a little smaller
     var TRUE = true;
     var FALSE = false;
-    var version = "1.22";
+    var version = "1.25";
     var httpsProtocol = "https:";
     var cookieMaxAge = 90 * 24 * 60 * 60;
 
@@ -997,6 +997,8 @@
     var pageMetadata = {};
     var lastSentMetadata = {};
     var hiddenDuration = 0;
+    // A tab opened in the background is hidden from the start and fires no hide event.
+    var pageHiddenAt = pageEngagementStartedAt;
     var idleThresholdMs = 2 * 60 * 1000;
     var idleDuration = 0;
     var idleStartedAt;
@@ -1050,6 +1052,14 @@
         return;
       }
       var now = Date.now();
+      // A navigation or pagehide can land mid-way through a hidden period, whose
+      // elapsed time belongs to this hit and the rest to the next one. Moving the
+      // activity clock keeps that time from also counting as idle.
+      if (document.hidden) {
+        hiddenDuration += now - pageHiddenAt;
+        pageHiddenAt = now;
+        lastScrollActivityAt = now;
+      }
       var appendPayload = mergeObjects(basePayload, {
         ty: "engagement",
         pg: pageId,
@@ -1082,11 +1092,10 @@
         var now = Date.now();
         if (document.hidden) {
           finishIdlePeriod(now);
+          pageHiddenAt = now;
           if (!("on" + pagehideEventName in window)) {
             appendEngagementMetrics();
           }
-
-          pageHiddenAt = now;
         } else {
           hiddenDuration += now - pageHiddenAt;
           lastScrollActivityAt = now;
@@ -1148,7 +1157,7 @@
       );
     });
 
-    var pageHiddenAt;
+    var lastIgnoredPath;
     function getTrackedPath(pathOverride) {
       var path = "";
 
@@ -1167,9 +1176,14 @@
       }
 
       if (ignoredPagePattern && ignoredPagePattern.test(path)) {
-        warn("Ignoring " + path);
+        // This runs on every history call, which some apps make per scroll or keystroke.
+        if (lastIgnoredPath != path) {
+          warn("Ignoring " + path);
+          lastIgnoredPath = path;
+        }
         return;
       }
+      lastIgnoredPath = undefined;
 
       if (trackingMode == "hash" && location.hash) {
         path += location.hash.split("?")[0];
@@ -1225,34 +1239,39 @@
       }
     }
 
-    var originalPushState = history ? history.pushState : undefined;
-    var pushStateEventName = "pushState";
-
     function trackPageviewOnNav() {
       trackPageview(1);
     }
 
-    if (originalPushState && Event && dispatchEvent) {
-      history.pushState = (function (originalMethod, eventName) {
-        return function () {
-          var event;
-          var pushStateArgs = Array.prototype.slice.call(arguments);
-          var result = originalMethod.apply(this, pushStateArgs);
+    function trackHistoryMethod(eventName) {
+      var originalMethod = history[eventName];
 
-          if (typeof Event == "function") {
-            event = new Event(eventName);
-          } else {
-            event = document.createEvent("Event");
-            event.initEvent(eventName, TRUE, TRUE);
-          }
+      history[eventName] = function () {
+        var event;
+        var historyArgs = Array.prototype.slice.call(arguments);
+        var result = originalMethod.apply(this, historyArgs);
 
-          event.arguments = pushStateArgs;
-          dispatchEvent(event);
-          return result;
-        };
-      })(history[pushStateEventName], pushStateEventName);
+        if (typeof Event == "function") {
+          event = new Event(eventName);
+        } else {
+          event = document.createEvent("Event");
+          event.initEvent(eventName, TRUE, TRUE);
+        }
 
-      addEventListener(pushStateEventName, trackPageviewOnNav, FALSE);
+        event.arguments = historyArgs;
+        dispatchEvent(event);
+        return result;
+      };
+
+      addEventListener(eventName, trackPageviewOnNav, FALSE);
+    }
+
+    if (history && history.pushState && Event && dispatchEvent) {
+      trackHistoryMethod("pushState");
+      // Client-side redirects use replaceState so Back skips the redirecting URL.
+      // Apps also call it for query and state updates. trackPageview skips those
+      // unless a pathRewriter puts the query in the tracked path.
+      trackHistoryMethod("replaceState");
       addEventListener("popstate", trackPageviewOnNav, FALSE);
     }
 

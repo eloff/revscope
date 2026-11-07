@@ -13,7 +13,8 @@
     <h1>Mock SPA</h1>
     <p class="muted">
       Click nav items; the URL path updates without a full reload. The tracker
-      patches <code>history.pushState</code> and listens for <code>popstate</code>,
+      patches <code>history.pushState</code> and <code>history.replaceState</code>
+      and listens for <code>popstate</code>,
       flushing engagement for the previous page then sending a new pageview.
     </p>
 

@@ -1315,6 +1315,272 @@ describe("tracker public API", () => {
     expect(pageviews[1].meta).toBeUndefined();
   });
 
+  describe("history navigation", () => {
+    function queued(env, type) {
+      return env.rr.getBatchQueue().filter((payload) => payload.ty === type);
+    }
+
+    it.each(["pushState", "replaceState"])("%s to a new path records a pageview", (method) => {
+      const env = load();
+      const landingPageId = env.rr.getPageId();
+
+      env.window.history[method](null, "", "/continue");
+
+      expect(env.window.location.pathname).toBe("/continue");
+      const pageviews = queued(env, "pageview");
+      expect(pageviews).toHaveLength(1);
+      expect(pageviews[0].p).toBe("/continue");
+      expect(pageviews[0].pg).toBe(env.rr.getPageId());
+      expect(env.rr.getPageId()).not.toBe(landingPageId);
+    });
+
+    it("replaceState credits engagement so far to the page being left", () => {
+      const env = load();
+      const landingPageId = env.rr.getPageId();
+
+      env.window.history.replaceState(null, "", "/continue");
+
+      const engagement = queued(env, "engagement");
+      expect(engagement).toHaveLength(1);
+      expect(engagement[0].pg).toBe(landingPageId);
+    });
+
+    it("replaceState calls the browser's method with its arguments and result", () => {
+      const replaceState = vi.fn(() => "result");
+      const history = { pushState: vi.fn(), replaceState };
+      const env = load({ history });
+
+      const result = env.window.history.replaceState({ step: 1 }, "", "/continue");
+
+      expect(replaceState).toHaveBeenCalledExactlyOnceWith({ step: 1 }, "", "/continue");
+      expect(replaceState.mock.contexts[0]).toBe(history);
+      expect(result).toBe("result");
+    });
+
+    it.each([
+      ["a state-only update", { step: 1 }, "", undefined],
+      ["the same URL", null, "", "/"],
+      ["a query change", null, "", "/?tab=pages"],
+      ["a hash change", null, "", "/#section"],
+    ])("replaceState with %s records no pageview", (_name, state, title, url) => {
+      const env = load();
+      const pageId = env.rr.getPageId();
+
+      env.window.history.replaceState(state, title, url);
+
+      expect(queued(env, "pageview")).toHaveLength(0);
+      expect(env.rr.getPageId()).toBe(pageId);
+    });
+
+    it("replaceState with a hash change records a pageview in hash mode", () => {
+      const env = load({ config: { projectName: "demo", mode: "hash" } });
+
+      env.window.history.replaceState(null, "", "/#/continue");
+
+      expect(queued(env, "pageview").map((payload) => payload.p)).toEqual(["/#/continue"]);
+    });
+
+    it("replaceState then pushState back records both screens", () => {
+      const env = load();
+
+      env.window.history.replaceState(null, "", "/continue");
+      env.window.history.pushState(null, "", "/");
+
+      expect(queued(env, "pageview").map((payload) => payload.p)).toEqual(["/continue", "/"]);
+    });
+
+    it("replaceState to an ignored page records no pageview", () => {
+      const env = load({
+        config: { projectName: "demo", ignorePages: ["/secret"] },
+        warn: vi.fn(),
+      });
+
+      env.window.history.replaceState(null, "", "/secret");
+
+      expect(queued(env, "pageview")).toHaveLength(0);
+    });
+
+    it("replaceState on an ignored page warns about it once", () => {
+      const warn = vi.fn();
+      const env = load({
+        config: { projectName: "demo", ignorePages: ["/secret"] },
+        location: { pathname: "/secret", href: "https://example.com/secret" },
+        warn,
+      });
+      const ignoreWarnings = () =>
+        warn.mock.calls.filter((args) => args.join(" ").includes("Ignoring /secret"));
+
+      env.window.history.replaceState({ y: 1 }, "");
+      env.window.history.replaceState({ y: 2 }, "");
+
+      expect(ignoreWarnings()).toHaveLength(1);
+    });
+
+    it("warns again when returning to an ignored page", () => {
+      const warn = vi.fn();
+      const env = load({ config: { projectName: "demo", ignorePages: ["/secret"] }, warn });
+      const ignoreWarnings = () =>
+        warn.mock.calls.filter((args) => args.join(" ").includes("Ignoring /secret"));
+
+      env.window.history.replaceState(null, "", "/secret");
+      env.window.history.replaceState(null, "", "/public");
+      env.window.history.replaceState(null, "", "/secret");
+
+      expect(ignoreWarnings()).toHaveLength(2);
+    });
+
+    describe("while the tab is hidden", () => {
+      let now;
+
+      beforeEach(() => {
+        now = 1_000_000_000_000;
+        vi.spyOn(Date, "now").mockImplementation(() => now);
+      });
+
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      function sentEngagementDurations(env) {
+        return env.requests
+          .flatMap((request) => JSON.parse(new URLSearchParams(request.body).get("items") || "[]"))
+          .filter((item) => item.ty === "engagement")
+          .map((item) => item.d);
+      }
+
+      function setHidden(env, hidden) {
+        env.window.document.hidden = hidden;
+        env.window.dispatchEvent(new env.window.Event("visibilitychange"));
+      }
+
+      function loadOnPage({ pagehide = true } = {}) {
+        // Without sendBeacon the flush falls back to XHR, whose body the harness keeps readable.
+        const env = load({ navigator: { sendBeacon: undefined } });
+        if (pagehide) {
+          env.window.onpagehide = null;
+        }
+        env.rr.setPageEngagementStartedAt(now);
+        env.rr.setLastScrollActivityAt(now);
+        return env;
+      }
+
+      it("replaceState splits engagement around the hidden period", () => {
+        const env = loadOnPage();
+
+        now += 10_000;
+        setHidden(env, true);
+        now += 60_000;
+        env.window.history.replaceState(null, "", "/login");
+        now += 30_000;
+        setHidden(env, false);
+        now += 20_000;
+        env.window.history.pushState(null, "", "/next");
+
+        const durations = queued(env, "engagement").map((payload) => payload.d);
+        expect(durations).toEqual([10, 20]);
+      });
+
+      it.each([
+        ["past the idle threshold", 10_000, 200_000, [10, 20]],
+        ["crossing the idle threshold with visible time", 50_000, 80_000, [50, 20]],
+      ])(
+        "replaceState doesn't count hidden time as idle %s",
+        (_name, visible, hidden, durations) => {
+          const env = loadOnPage();
+
+          now += visible;
+          setHidden(env, true);
+          now += hidden;
+          env.window.history.replaceState(null, "", "/login");
+          now += 30_000;
+          setHidden(env, false);
+          now += 20_000;
+          env.window.history.pushState(null, "", "/next");
+
+          expect(queued(env, "engagement").map((payload) => payload.d)).toEqual(durations);
+        },
+      );
+
+      it("pagehide doesn't count hidden time as idle", () => {
+        const env = loadOnPage();
+
+        now += 10_000;
+        setHidden(env, true);
+        now += 200_000;
+        env.window.dispatchEvent(new env.window.Event("pagehide"));
+
+        expect(sentEngagementDurations(env)).toEqual([10]);
+      });
+
+      function loadHidden() {
+        return load({
+          navigator: { sendBeacon: undefined },
+          beforeLoad(window) {
+            window.document.hidden = true;
+          },
+        });
+      }
+
+      it("replaceState in a tab loaded hidden sends no engaged time", () => {
+        const env = loadHidden();
+
+        now += 5_000;
+        env.window.history.replaceState(null, "", "/login");
+        now += 30_000;
+        setHidden(env, false);
+        now += 20_000;
+        env.window.history.pushState(null, "", "/next");
+
+        expect(queued(env, "engagement").map((payload) => payload.d)).toEqual([0, 20]);
+      });
+
+      it("showing a tab loaded hidden counts only the visible time", () => {
+        const env = loadHidden();
+
+        now += 30_000;
+        setHidden(env, false);
+        now += 7_000;
+        env.window.history.pushState(null, "", "/next");
+
+        expect(queued(env, "engagement").map((payload) => payload.d)).toEqual([7]);
+      });
+
+      it("pagehide doesn't credit the hidden period", () => {
+        const env = loadOnPage();
+
+        now += 10_000;
+        setHidden(env, true);
+        now += 60_000;
+        env.window.dispatchEvent(new env.window.Event("pagehide"));
+
+        expect(sentEngagementDurations(env)).toEqual([10]);
+      });
+
+      it("browsers without pagehide don't subtract an earlier hidden period again", () => {
+        const env = loadOnPage({ pagehide: false });
+
+        now += 10_000;
+        setHidden(env, true);
+        now += 5_000;
+        setHidden(env, false);
+        now += 7_000;
+        setHidden(env, true);
+
+        expect(sentEngagementDurations(env)).toEqual([10, 7]);
+      });
+    });
+
+    it("replaceState records nothing while tracking is disabled", () => {
+      const env = load();
+      env.rr.flushTrackingQueue(false);
+      env.dispatch("set_consent", "disabled");
+
+      env.window.history.replaceState(null, "", "/continue");
+
+      expect(queued(env, "pageview")).toHaveLength(0);
+    });
+  });
+
   it("setConsent writes cookie and clears session when cookies are denied", () => {
     const env = load({
       cookies: { rsdemo: "0000000000003039", rcdemo: "1" },
