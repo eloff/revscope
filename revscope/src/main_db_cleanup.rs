@@ -1,4 +1,5 @@
-//! A daily task that deletes rows the main Postgres database no longer needs:
+//! A daily task that reports refunds still owed, on the hosted service, and deletes
+//! rows the main Postgres database no longer needs:
 //! expired tokens and sessions, old ingest errors, and MCP client
 //! registrations that never got a token.
 
@@ -36,6 +37,14 @@ pub async fn run_main_db_cleanup(server_context: Arc<ServerContext>) {
     }
     if let Err(error) = crate::ingest::delete_expired_errors(server_context.clone()).await {
         report_error!("errors.cleanup", "expired error cleanup failed: {error:?}");
+    }
+    #[cfg(feature = "billing")]
+    if let Err(error) = crate::billing::owed_refunds::report_unsettled(server_context.clone()).await
+    {
+        report_error!(
+            "owed_refunds.report",
+            "could not check for owed refunds: {error:?}"
+        );
     }
     if let Err(error) = crate::mcp::clients::delete_unused_clients(server_context).await {
         report_error!(
