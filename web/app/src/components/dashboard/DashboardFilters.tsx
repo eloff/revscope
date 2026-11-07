@@ -40,7 +40,7 @@ import {
   pageFilterKey,
   sourceFilterKey,
 } from "../../lib/segmentFilters";
-import { formatTimeZoneLabel } from "../../lib/timezone";
+import { formatUtcOffset } from "../../lib/timezone";
 import type { ActiveFilterChip } from "./ActiveFilters";
 import {
   calendarGrid,
@@ -236,7 +236,7 @@ export default function DashboardFilters(props: DashboardFiltersProps) {
   // Clock-dependent, so it stays null until mount rather than SSRing a date, and
   // re-derives once the project's zone arrives with the account.
   const today = createMemo(() => (calendarMounted() ? todayDateValue(timeZone()) : null));
-  const timezoneLabel = createMemo(() => formatTimeZoneLabel(timeZone()));
+  const timezoneLabel = createMemo(() => formatUtcOffset(timeZone()));
 
   createEffect(() => {
     if (!rangeReady() || pendingStartValue()) {
@@ -596,11 +596,7 @@ export default function DashboardFilters(props: DashboardFiltersProps) {
           </span>
         </button>
       </div>
-      <a
-        class={dateRangeTimezone}
-        href={appPath("/settings#timezone")}
-        title="Change project timezone"
-      >
+      <a class={dateRangeTimezone} href={appPath("/settings#timezone")} title={timeZone()}>
         {timezoneLabel()}
       </a>
       <Show when={hasSegmentFilters(segments())}>

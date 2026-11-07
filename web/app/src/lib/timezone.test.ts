@@ -5,7 +5,6 @@ import {
   civilDateKey,
   civilToUnix,
   civilWeekday,
-  formatTimeZoneLabel,
   formatUtcOffset,
   startOfZonedDay,
   startOfZonedDayFrom,
@@ -148,9 +147,9 @@ describe("offset labels", () => {
     expect(formatUtcOffset("America/St_Johns", winter)).toBe("UTC-3.5");
   });
 
-  it("omits a zero offset from the label", () => {
-    expect(formatTimeZoneLabel("UTC", winter)).toBe("UTC");
-    expect(formatTimeZoneLabel("Europe/London", winter)).toBe("Europe/London");
-    expect(formatTimeZoneLabel("Europe/London", summer)).toBe("Europe/London (UTC+1)");
+  it("signs a zero offset like any other", () => {
+    expect(formatUtcOffset("UTC", winter)).toBe("UTC+0");
+    expect(formatUtcOffset("Europe/London", winter)).toBe("UTC+0");
+    expect(formatUtcOffset("Europe/London", summer)).toBe("UTC+1");
   });
 });

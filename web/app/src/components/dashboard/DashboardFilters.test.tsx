@@ -35,12 +35,11 @@ function renderFilters(
 }
 
 describe("DashboardFilters", () => {
-  it("links the project's timezone to settings", () => {
+  it("shows the timezone as an offset, names it on hover, and links to settings", () => {
     renderFilters();
-    expect(screen.getByRole("link", { name: "America/New_York (UTC-4)" })).toHaveAttribute(
-      "href",
-      "/settings#timezone",
-    );
+    const link = screen.getByRole("link", { name: "UTC-4" });
+    expect(link).toHaveAttribute("title", NY);
+    expect(link).toHaveAttribute("href", "/settings#timezone");
   });
 
   it("steps back a whole period and can't step past today", async () => {

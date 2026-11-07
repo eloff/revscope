@@ -129,18 +129,6 @@ function formatOffsetMinutes(minutes: number): string {
 }
 
 /**
- * IANA name plus the offset in effect at `at`, e.g. `America/Los_Angeles (UTC-7)`.
- * A zero offset is omitted, so `UTC` stays `UTC`.
- */
-export function formatTimeZoneLabel(timeZone: string, at: Date = new Date()): string {
-  const minutes = offsetMinutes(timeZone, at);
-  if (minutes === 0) {
-    return timeZone;
-  }
-  return `${timeZone} (${formatOffsetMinutes(minutes)})`;
-}
-
-/**
  * The instant at which `civil` occurs in `timeZone`.
  *
  * The offset to apply depends on the instant being solved for, so the naive
