@@ -139,7 +139,22 @@ land() {
     landed_at[$repo]=$(git -C "$repo" rev-parse HEAD)
   done
 
-  scripts/check.sh || die "checks failed. The branches are now the squashed commits. Fix them, commit, and run this again."
+  local format_commits head folded
+  format_commits=$(mktemp)
+  msgs+=("$format_commits")
+  CHECK_FORMAT_COMMITS=$format_commits scripts/check.sh || die "checks failed. The branches are now the squashed commits. Fix them, commit, and run this again."
+
+  # What the formatters rewrote belongs in the one squashed commit. Any other commit that appeared
+  # during the checks is someone's work, which only they can decide to land.
+  head=$(git rev-parse HEAD)
+  if [ "$head" != "${landed_at[$top]}" ]; then
+    git merge-base --is-ancestor "${landed_at[$top]}" "$head" &&
+      [ "$(git rev-list --reverse "${landed_at[$top]}..$head")" = "$(cat "$format_commits")" ] ||
+      die "$top moved during the checks other than by check.sh's own commits, and nothing was pushed. Deal with that, then run this again."
+    folded=$(git log -1 --format=%B "${landed_at[$top]}" | git stripspace | git commit-tree "$head^{tree}" -p "${landed_at[$top]}^" -F -)
+    git update-ref HEAD "$folded" "$head"
+    landed_at[$top]=$folded
+  fi
 
   # A refused push after another repo's went through would leave the repos' mains out of step, so
   # make sure no main moved during the checks before pushing any.
