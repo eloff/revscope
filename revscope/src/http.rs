@@ -10,7 +10,7 @@ use log::{debug, info};
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::mpsc;
-use tokio::time::timeout;
+use tokio::time::{timeout, timeout_at};
 
 const CORS_ALLOWED_METHODS: &str = "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD";
 const CORS_DEFAULT_ALLOWED_HEADERS: &str = "Content-Type, Authorization";
@@ -268,7 +268,7 @@ fn format_header_block(extra_headers: &[(&str, String)]) -> String {
 
 #[derive(Debug)]
 pub(crate) enum ReadRequestError {
-    /// No bytes arrived before the keep-alive idle timeout; close quietly.
+    /// No request began before the idle timeout; close quietly.
     IdleTimeout,
     /// Peer closed before sending a complete request; close quietly.
     Closed,
@@ -683,9 +683,10 @@ pub(crate) fn trusted_cf_ipcountry(header: Option<&str>, headers_trusted: bool) 
 /// excess past its end is put back. Dropping them would make the next read
 /// start mid-request, so a body could be parsed as a request.
 ///
-/// `idle_timeout` applies only while waiting for the first byte of the next
-/// request (keep-alive), including after leading blank lines. Once data arrives, `request_timeout` bounds how long
-/// the rest of that request may take.
+/// `idle_timeout` bounds the whole wait for the first byte of the next request.
+/// Leading blank lines don't extend it, or a peer could hold the connection
+/// forever by trickling them. Once data arrives, `request_timeout` bounds how
+/// long the rest of that request may take.
 pub(crate) async fn read_request_with_limits<S: AsyncRead + Unpin>(
     stream: &mut S,
     pending: &mut Vec<u8>,
@@ -695,6 +696,7 @@ pub(crate) async fn read_request_with_limits<S: AsyncRead + Unpin>(
 ) -> Result<Vec<u8>, ReadRequestError> {
     let mut buffer = std::mem::take(pending);
     let mut chunk = [0_u8; 1024];
+    let idle_deadline = tokio::time::Instant::now() + idle_timeout;
 
     // RFC 9112 §2.2: ignore empty lines before a request. Some clients send a
     // CRLF after a body, and it must not start the request timer on an idle
@@ -712,7 +714,7 @@ pub(crate) async fn read_request_with_limits<S: AsyncRead + Unpin>(
         if !buffer.is_empty() && buffer != b"\r" {
             break;
         }
-        let bytes_read = match timeout(idle_timeout, stream.read(&mut chunk)).await {
+        let bytes_read = match timeout_at(idle_deadline, stream.read(&mut chunk)).await {
             Ok(Ok(0)) => return Err(ReadRequestError::Closed),
             Ok(Ok(n)) => n,
             Ok(Err(error)) => return Err(ReadRequestError::Io(error)),
@@ -1497,6 +1499,36 @@ mod tests {
             result.expect("second"),
             b"GET /b HTTP/1.1\r\nHost: x\r\n\r\n"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn blank_lines_do_not_extend_the_idle_timeout() {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        let reader = tokio::spawn(async move {
+            read_request_with_limits(
+                &mut server,
+                &mut Vec::new(),
+                1024,
+                Duration::from_secs(10),
+                Duration::from_secs(2),
+            )
+            .await
+        });
+        let started = tokio::time::Instant::now();
+        // Bounded so that a timer the blank lines reset fails the test, not hangs it.
+        let trickle = tokio::spawn(async move {
+            for _ in 0..30 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                if client.write_all(b"\r\n").await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let result = reader.await.unwrap();
+        trickle.abort();
+        assert!(matches!(result, Err(ReadRequestError::IdleTimeout)));
+        assert_eq!(started.elapsed(), Duration::from_secs(10));
     }
 
     #[tokio::test]

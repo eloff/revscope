@@ -33,7 +33,8 @@ use crate::server_context::ServerContext;
 
 const MAX_REQUEST_SIZE: usize = 128 * 1024;
 const MAX_REQUEST_TIME: Duration = Duration::from_secs(2);
-/// How long a peer may take to complete the TLS handshake. This includes the
+/// How long a peer may take to complete the TLS handshake, counted from its
+/// first byte (the wait for that is [`FIRST_REQUEST_IDLE_TIMEOUT`]). This includes the
 /// bounded wait for an in-flight ACME order when a new custom domain is first
 /// used. Anything slower is dropped rather than left holding a task, since the
 /// public internet dials port 443 constantly without intending to speak TLS.
@@ -43,6 +44,11 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// all.
 const LINGER_TIMEOUT: Duration = Duration::from_secs(2);
 const LINGER_MAX_BYTES: usize = 1024 * 1024;
+/// How long a new connection may stay silent, applied on TLS both before the
+/// handshake's first byte and again before the first request's. Short because
+/// no login is needed to open one, so each that sits silent holds a slot of
+/// the global connection cap for free.
+const FIRST_REQUEST_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a keep-alive connection may sit idle waiting for the next request.
 /// Matches Cloudflare's proxy idle timeout so CF can reuse origin connections.
 const KEEP_ALIVE_IDLE_TIMEOUT: Duration = Duration::from_secs(900);
@@ -303,6 +309,16 @@ async fn serve_tls_connection(
     // A failed handshake is routine on port 443 (port scans, clients that
     // reject our certificate, connections opened before the first certificate
     // is issued), so it is logged rather than reported as a server error.
+    //
+    // The handshake's longer allowance covers ACME waits, which can only start
+    // after a ClientHello, so a peer that sends nothing doesn't get it.
+    if timeout(FIRST_REQUEST_IDLE_TIMEOUT, stream.peek(&mut [0_u8; 1]))
+        .await
+        .is_err()
+    {
+        info!("TLS connection from {peer_addr} sent nothing");
+        return Ok(());
+    }
     let handshake = accept_tls(tls_config, stream, &server_context);
     let mut stream = match timeout(TLS_HANDSHAKE_TIMEOUT, handshake).await {
         Ok(Ok(stream)) => stream,
@@ -430,12 +446,13 @@ async fn serve_requests<S: AsyncRead + AsyncWrite + Unpin>(
 ) -> io::Result<ConnectionEnd> {
     let trusted_proxy = connection_ip.is_some_and(is_trusted_forwarding_proxy);
     let mut pending = Vec::new();
+    let mut idle_timeout = FIRST_REQUEST_IDLE_TIMEOUT;
     loop {
         let raw_request = match read_request_with_limits(
             stream,
             &mut pending,
             MAX_REQUEST_SIZE,
-            KEEP_ALIVE_IDLE_TIMEOUT,
+            idle_timeout,
             MAX_REQUEST_TIME,
         )
         .await
@@ -684,6 +701,7 @@ async fn serve_requests<S: AsyncRead + AsyncWrite + Unpin>(
         if close_after {
             return Ok(ConnectionEnd::ClosedByServer);
         }
+        idle_timeout = KEEP_ALIVE_IDLE_TIMEOUT;
     }
 }
 
@@ -1478,6 +1496,77 @@ mod tests {
         .await;
 
         assert_eq!(received, contents[100..350]);
+    }
+
+    fn open_duplex_connection(
+        name: &str,
+    ) -> (
+        tokio::io::DuplexStream,
+        tokio::task::JoinHandle<io::Result<()>>,
+    ) {
+        let (client, mut server) = tokio::io::duplex(16 * 1024);
+        let context = Arc::new(crate::server_context::ServerContext::new_in_memory(
+            name.to_string(),
+        ));
+        let task = tokio::spawn(async move {
+            handle_connection(
+                &mut server,
+                Some("203.0.113.9".parse().unwrap()),
+                false,
+                ServerHooks::default(),
+                context,
+            )
+            .await
+        });
+        (client, task)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_new_connection_that_sends_nothing_is_closed_quickly() {
+        let (mut client, task) = open_duplex_connection("silent-connection");
+        let started = tokio::time::Instant::now();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.expect("read");
+        assert!(response.is_empty());
+        assert_eq!(started.elapsed(), FIRST_REQUEST_IDLE_TIMEOUT);
+        task.await.expect("join").expect("handle");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_tls_connection_that_sends_no_bytes_is_closed_quickly() {
+        let (addr, _authority, shutdown, server) = start_tls_listener("silent-tls").await;
+        let mut client = TcpStream::connect(addr).await.expect("connect");
+        let started = tokio::time::Instant::now();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.expect("read");
+        assert!(response.is_empty());
+        assert_eq!(started.elapsed(), FIRST_REQUEST_IDLE_TIMEOUT);
+
+        shutdown.notify_waiters();
+        server.await.expect("join listener").expect("serve");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_connection_that_completed_a_request_keeps_the_long_idle_timeout() {
+        let (mut client, task) = open_duplex_connection("kept-alive-connection");
+        client
+            .write_all(b"GET /robots.txt HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .expect("write");
+        let mut response = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        while !response.ends_with(b"Disallow: /\n") {
+            let read = client.read(&mut chunk).await.expect("read");
+            assert_ne!(read, 0, "{}", String::from_utf8_lossy(&response));
+            response.extend_from_slice(&chunk[..read]);
+        }
+
+        let answered = tokio::time::Instant::now();
+        let mut rest = Vec::new();
+        client.read_to_end(&mut rest).await.expect("read");
+        assert!(rest.is_empty());
+        assert_eq!(answered.elapsed(), KEEP_ALIVE_IDLE_TIMEOUT);
+        task.await.expect("join").expect("handle");
     }
 
     #[tokio::test(start_paused = true)]
