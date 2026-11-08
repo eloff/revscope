@@ -38,8 +38,9 @@ const MAX_REQUEST_TIME: Duration = Duration::from_secs(2);
 /// used. Anything slower is dropped rather than left holding a task, since the
 /// public internet dials port 443 constantly without intending to speak TLS.
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
-/// Bounds on draining a connection we close, so a peer that keeps sending
-/// can't hold the connection slot; past them it may get a reset after all.
+/// Bounds on closing a connection, so a peer that keeps sending or has stopped
+/// reading can't hold the connection slot; past them it may get a reset after
+/// all.
 const LINGER_TIMEOUT: Duration = Duration::from_secs(2);
 const LINGER_MAX_BYTES: usize = 1024 * 1024;
 /// How long a keep-alive connection may sit idle waiting for the next request.
@@ -315,23 +316,26 @@ async fn serve_tls_connection(
         }
     };
 
-    let result = handle_connection(
-        &mut stream,
-        Some(peer_addr.ip()),
-        false,
-        hooks,
-        server_context,
-    )
-    .await;
+    serve_then_close_notify(&mut stream, peer_addr.ip(), hooks, server_context).await
+}
+
+/// Generic over the stream so a test can stall the close.
+async fn serve_then_close_notify<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    peer_ip: IpAddr,
+    hooks: ServerHooks,
+    server_context: Arc<ServerContext>,
+) -> io::Result<()> {
+    let result = handle_connection(stream, Some(peer_ip), false, hooks, server_context).await;
     // Best effort close_notify: it tells the peer the stream ended on purpose,
     // but the peer is often gone by the time we get here.
-    let _ = stream.shutdown().await;
+    shutdown_within_linger(stream).await;
     result
 }
 
-/// Client-side disconnects (reset/abort/broken pipe) are normal on the public
-/// internet; log them at info so they do not become Sentry issues via error!.
-/// rustls also reports a missing TLS close_notify as UnexpectedEof; HTTP here
+/// Client-side disconnects (reset/abort/broken pipe/stalled) are normal on the
+/// public internet; log them at info so they do not become Sentry issues via
+/// error!. rustls also reports a missing TLS close_notify as UnexpectedEof; HTTP here
 /// is length-framed, so that is the same as a clean hangup. Other UnexpectedEof
 /// values (for example a file that shrinks under Content-Length) stay errors.
 fn is_benign_connection_error(error: &io::Error) -> bool {
@@ -340,7 +344,14 @@ fn is_benign_connection_error(error: &io::Error) -> bool {
         io::ErrorKind::ConnectionReset
             | io::ErrorKind::ConnectionAborted
             | io::ErrorKind::BrokenPipe
-    ) || is_tls_eof_without_close_notify(error)
+    ) || is_peer_write_stall(error)
+        || is_tls_eof_without_close_notify(error)
+}
+
+/// Excludes OS errors because a disk read can also report ETIMEDOUT, and that
+/// is our fault rather than the client's.
+fn is_peer_write_stall(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::TimedOut && error.raw_os_error().is_none()
 }
 
 fn is_tls_eof_without_close_notify(error: &io::Error) -> bool {
@@ -387,7 +398,7 @@ enum ConnectionEnd {
 /// write side first and draining what the peer still sends, bounded in time
 /// and bytes, lets the response arrive with a FIN.
 async fn lingering_close<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) {
-    if stream.shutdown().await.is_err() {
+    if !shutdown_within_linger(stream).await {
         return;
     }
     let mut sink = [0_u8; 4096];
@@ -401,6 +412,13 @@ async fn lingering_close<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) {
         }
     })
     .await;
+}
+
+/// A response that finished is already flushed, leaving only TLS's close_notify
+/// to send, and one that timed out isn't worth waiting for. Each call gets the
+/// whole bound. Returns whether the shutdown completed.
+async fn shutdown_within_linger<S: AsyncWrite + Unpin>(stream: &mut S) -> bool {
+    matches!(timeout(LINGER_TIMEOUT, stream.shutdown()).await, Ok(Ok(())))
 }
 
 async fn serve_requests<S: AsyncRead + AsyncWrite + Unpin>(
@@ -427,19 +445,11 @@ async fn serve_requests<S: AsyncRead + AsyncWrite + Unpin>(
                 return Ok(ConnectionEnd::PeerDone);
             }
             Err(ReadRequestError::Timeout) => {
-                stream
-                    .write_all(crate::http::Response::request_timeout().headers.as_slice())
-                    .await?;
+                write_response(stream, &mut Response::request_timeout()).await?;
                 return Ok(ConnectionEnd::ClosedByServer);
             }
             Err(ReadRequestError::TooLarge) => {
-                stream
-                    .write_all(
-                        crate::http::Response::payload_too_large()
-                            .headers
-                            .as_slice(),
-                    )
-                    .await?;
+                write_response(stream, &mut Response::payload_too_large()).await?;
                 return Ok(ConnectionEnd::ClosedByServer);
             }
             Err(ReadRequestError::BadFraming(framing)) => {
@@ -698,51 +708,52 @@ async fn write_response<S: AsyncWrite + Unpin>(
     stream: &mut S,
     response: &mut Response,
 ) -> io::Result<()> {
+    write_to_peer(stream, &response.headers).await?;
     if let Some(file_body) = response.file_body.as_ref() {
-        write_file_chunk(stream, &response.headers).await?;
         return write_file_body(stream, file_body).await;
     }
-    stream.write_all(&response.headers).await?;
     if let Some(frames) = response.stream_body.as_mut() {
         return write_stream_body(stream, frames).await;
     }
-    if !response.body.is_empty() {
-        stream.write_all(&response.body).await?;
-    }
-    Ok(())
+    write_to_peer(stream, &response.body).await
 }
 
 /// Forwards frames to the socket until the producing task drops its sender.
 /// Each frame is flushed on its own so a client waiting on server-sent events
-/// sees them as they are produced rather than when a write buffer fills.
+/// sees them as they are produced rather than when a write buffer fills. Only
+/// the writes are timed, since a stream may rightly go quiet between frames.
 async fn write_stream_body<S: AsyncWrite + Unpin>(
     stream: &mut S,
     frames: &mut mpsc::Receiver<Vec<u8>>,
 ) -> io::Result<()> {
     while let Some(frame) = frames.recv().await {
-        stream.write_all(&frame).await?;
-        stream.flush().await?;
+        write_to_peer(stream, &frame).await?;
     }
     Ok(())
 }
 
-const FILE_BODY_CHUNK_SIZE: usize = 256 * 1024;
+const RESPONSE_CHUNK_SIZE: usize = 256 * 1024;
 
-/// A peer that takes longer than this to accept the headers or one chunk of a
-/// file response is treated as gone. Without a limit, a client that stops
-/// reading holds the file open (and a download snapshot alive, see
-/// [`crate::download_snapshots`]) indefinitely.
-const FILE_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(60);
+/// A peer that takes longer than this to accept one chunk of a response is
+/// treated as gone. Without a limit, a client that stops reading holds its
+/// connection and the buffered response, or for a download the open file and a
+/// snapshot (see [`crate::download_snapshots`]), indefinitely.
+const PEER_WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 
-async fn write_file_chunk<S: AsyncWrite + Unpin>(stream: &mut S, chunk: &[u8]) -> io::Result<()> {
-    timeout(FILE_RESPONSE_WRITE_TIMEOUT, stream.write_all(chunk))
-        .await
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "peer stopped reading the file response",
-            )
-        })?
+/// Times each chunk rather than the whole of `bytes`, so a slow client can still
+/// receive a large response. The flush is inside the timeout because TLS can
+/// report a write as finished with ciphertext still buffered.
+async fn write_to_peer<S: AsyncWrite + Unpin>(stream: &mut S, bytes: &[u8]) -> io::Result<()> {
+    for chunk in bytes.chunks(RESPONSE_CHUNK_SIZE) {
+        let send = async {
+            stream.write_all(chunk).await?;
+            stream.flush().await
+        };
+        timeout(PEER_WRITE_TIMEOUT, send).await.map_err(|_| {
+            io::Error::new(io::ErrorKind::TimedOut, "peer stopped reading the response")
+        })??;
+    }
+    Ok(())
 }
 
 /// Copies `file_body` to the socket in chunks so large downloads never need to
@@ -758,9 +769,9 @@ async fn write_file_body<S: AsyncWrite + Unpin>(
         file.seek(SeekFrom::Start(file_body.offset)).await?;
     }
     let mut remaining = file_body.length;
-    let mut buffer = vec![0_u8; FILE_BODY_CHUNK_SIZE];
+    let mut buffer = vec![0_u8; RESPONSE_CHUNK_SIZE];
     while remaining > 0 {
-        let wanted = remaining.min(FILE_BODY_CHUNK_SIZE as u64) as usize;
+        let wanted = remaining.min(RESPONSE_CHUNK_SIZE as u64) as usize;
         let bytes_read = file.read(&mut buffer[..wanted]).await?;
         if bytes_read == 0 {
             return Err(io::Error::new(
@@ -771,7 +782,7 @@ async fn write_file_body<S: AsyncWrite + Unpin>(
                 ),
             ));
         }
-        write_file_chunk(stream, &buffer[..bytes_read]).await?;
+        write_to_peer(stream, &buffer[..bytes_read]).await?;
         remaining -= bytes_read as u64;
     }
     Ok(())
@@ -798,6 +809,10 @@ mod tests {
             "broken pipe"
         )));
         assert!(is_benign_connection_error(&io::Error::new(
+            io::ErrorKind::TimedOut,
+            "peer stopped reading the response"
+        )));
+        assert!(is_benign_connection_error(&io::Error::new(
             io::ErrorKind::UnexpectedEof,
             "peer closed connection without sending TLS close_notify"
         )));
@@ -806,6 +821,9 @@ mod tests {
             "unexpected eof"
         )));
         assert!(!is_benign_connection_error(&io::Error::other("disk full")));
+        assert!(!is_benign_connection_error(&io::Error::from_raw_os_error(
+            libc::ETIMEDOUT
+        )));
     }
 
     struct TestFile {
@@ -1430,7 +1448,7 @@ mod tests {
 
     #[tokio::test]
     async fn streams_a_body_larger_than_one_chunk() {
-        let contents: Vec<u8> = (0..FILE_BODY_CHUNK_SIZE * 2 + 17)
+        let contents: Vec<u8> = (0..RESPONSE_CHUNK_SIZE * 2 + 17)
             .map(|index| index as u8)
             .collect();
         let file = TestFile::new("whole", &contents);
@@ -1499,5 +1517,191 @@ mod tests {
         .await
         .expect_err("a stalled peer times out");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    /// Fails rather than hangs if nothing bounds the wait, because a paused
+    /// clock with no timer pending would otherwise never advance.
+    async fn assert_gives_up_on_the_peer(writing: impl Future<Output = io::Result<()>>) {
+        let error = timeout(PEER_WRITE_TIMEOUT * 4, writing)
+            .await
+            .expect("the write must be bounded")
+            .expect_err("a stalled peer times out");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gives_up_on_a_peer_that_stops_reading_an_in_memory_body() {
+        let (mut writer, _unread_peer) = tokio::io::duplex(1024);
+        let mut response = Response::new(b"HTTP/1.1 200 OK\r\n\r\n".to_vec(), vec![7_u8; 4096]);
+        assert_gives_up_on_the_peer(write_response(&mut writer, &mut response)).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gives_up_on_a_peer_that_never_reads_a_timeout_response() {
+        let (mut client, mut server) = tokio::io::duplex(16);
+        client.write_all(b"GET").await.expect("write");
+        let context = Arc::new(crate::server_context::ServerContext::new_in_memory(
+            "stalled-408",
+        ));
+        let serving = async {
+            handle_connection(&mut server, None, false, ServerHooks::default(), context).await
+        };
+        assert_gives_up_on_the_peer(serving).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gives_up_on_a_peer_that_never_reads_a_too_large_response() {
+        let (mut client, mut server) = tokio::io::duplex(64);
+        client
+            .write_all(b"POST /v2/x HTTP/1.1\r\nContent-Length: 999999999\r\n\r\n")
+            .await
+            .expect("write");
+        let context = Arc::new(crate::server_context::ServerContext::new_in_memory(
+            "stalled-413",
+        ));
+        let serving = async {
+            handle_connection(&mut server, None, false, ServerHooks::default(), context).await
+        };
+        assert_gives_up_on_the_peer(serving).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gives_up_on_a_stream_the_peer_stops_reading_but_not_on_a_quiet_one() {
+        let (mut writer, mut peer) = tokio::io::duplex(8);
+        let (frames, mut receiver) = mpsc::channel(1);
+        let producer = tokio::spawn(async move {
+            frames.send(b"first".to_vec()).await.expect("send");
+            tokio::time::sleep(PEER_WRITE_TIMEOUT * 2).await;
+            frames.send(vec![7_u8; 64]).await.expect("send");
+            // Keeps the stream open while the write above stalls.
+            tokio::time::sleep(PEER_WRITE_TIMEOUT * 10).await;
+        });
+
+        let mut first = [0_u8; 5];
+        let writing = write_stream_body(&mut writer, &mut receiver);
+        tokio::pin!(writing);
+        tokio::select! {
+            _ = &mut writing => panic!("a quiet stream must stay open"),
+            read = peer.read_exact(&mut first) => { read.expect("read"); }
+        }
+        assert_eq!(&first, b"first");
+        let quiet_since = tokio::time::Instant::now();
+        assert_gives_up_on_the_peer(writing).await;
+        assert!(quiet_since.elapsed() >= PEER_WRITE_TIMEOUT * 2);
+        producer.abort();
+    }
+
+    /// Reads end of stream and writes succeed, except for what is set to stall.
+    #[derive(Default)]
+    struct StallingStream {
+        stall_flush: bool,
+        stall_shutdown: bool,
+    }
+
+    impl StallingStream {
+        fn poll_unless(stalled: bool) -> std::task::Poll<io::Result<()>> {
+            if stalled {
+                std::task::Poll::Pending
+            } else {
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+    }
+
+    impl AsyncRead for StallingStream {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    impl AsyncWrite for StallingStream {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<io::Result<usize>> {
+            std::task::Poll::Ready(Ok(bytes.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            Self::poll_unless(self.stall_flush)
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            Self::poll_unless(self.stall_shutdown)
+        }
+    }
+
+    fn stalled_shutdown() -> StallingStream {
+        StallingStream {
+            stall_shutdown: true,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_shutdown_the_peer_never_completes_is_abandoned() {
+        timeout(LINGER_TIMEOUT * 2, lingering_close(&mut stalled_shutdown()))
+            .await
+            .expect("the shutdown must be bounded");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_close_notify_the_peer_never_accepts_is_abandoned() {
+        let context = Arc::new(crate::server_context::ServerContext::new_in_memory(
+            "stalled-close-notify",
+        ));
+        let mut stream = stalled_shutdown();
+        let serving = serve_then_close_notify(
+            &mut stream,
+            "198.51.100.1".parse().unwrap(),
+            ServerHooks::default(),
+            context,
+        );
+        timeout(LINGER_TIMEOUT * 2, serving)
+            .await
+            .expect("the close must be bounded")
+            .expect("the peer hung up cleanly");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gives_up_on_a_flush_the_peer_never_accepts() {
+        let mut stream = StallingStream {
+            stall_flush: true,
+            ..Default::default()
+        };
+        assert_gives_up_on_the_peer(write_to_peer(&mut stream, b"response")).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_client_slower_than_the_timeout_overall_still_gets_the_whole_body() {
+        let chunks = 3;
+        let body = vec![7_u8; RESPONSE_CHUNK_SIZE * chunks];
+        let (mut writer, mut peer) = tokio::io::duplex(1024);
+        let reader = tokio::spawn(async move {
+            let mut chunk = vec![0_u8; RESPONSE_CHUNK_SIZE];
+            for _ in 0..chunks {
+                tokio::time::sleep(PEER_WRITE_TIMEOUT * 2 / 3).await;
+                peer.read_exact(&mut chunk).await.expect("read");
+            }
+        });
+        let started = tokio::time::Instant::now();
+
+        write_to_peer(&mut writer, &body)
+            .await
+            .expect("each chunk arrives within the timeout");
+
+        assert!(started.elapsed() > PEER_WRITE_TIMEOUT);
+        reader.await.expect("reader");
     }
 }
