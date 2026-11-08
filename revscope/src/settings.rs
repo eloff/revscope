@@ -53,9 +53,7 @@ pub(crate) fn save_settings(
     request: SaveSettingsRequest,
 ) -> Result<SettingsResponse, AuthError> {
     for integration in &request.integrations {
-        if integrations::find(&integration.integration_type).is_none() {
-            return Err(AuthError::InvalidRequest("unknown integration type"));
-        }
+        validate_integration(integration)?;
     }
 
     let timezone = timezone_to_save(request.timezone.as_deref());
@@ -402,6 +400,23 @@ fn normalize_optional(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Runs before any write, because the integrations are saved one by one after
+/// the other settings and a refusal partway would leave the form half applied.
+fn validate_integration(input: &IntegrationInput) -> Result<(), AuthError> {
+    if integrations::find(&input.integration_type).is_none() {
+        return Err(AuthError::InvalidRequest("unknown integration type"));
+    }
+    if input.integration_type == integrations::SHOPIFY
+        && let Some(domain) = normalize_optional(input.external_account_id.as_deref())
+        && crate::integration::myshopify_host(&domain).is_none()
+    {
+        return Err(AuthError::InvalidRequest(
+            crate::integration::INVALID_SHOP_DOMAIN,
+        ));
+    }
+    Ok(())
+}
+
 fn validate_payment_success_path(value: Option<&str>) -> Result<Option<String>, AuthError> {
     let Some(path) = normalize_optional(value) else {
         return Ok(None);
@@ -416,7 +431,8 @@ fn validate_custom_domain(value: Option<&str>) -> Result<Option<String>, AuthErr
     let Some(raw) = normalize_optional(value) else {
         return Ok(None);
     };
-    let host = hostname_from_input(&raw)?;
+    let host =
+        hostname_from_input(&raw).ok_or(AuthError::InvalidRequest("invalid custom domain"))?;
     if host.len() > MAX_CUSTOM_DOMAIN_LEN || !is_dns_hostname(&host) {
         return Err(AuthError::InvalidRequest("invalid custom domain"));
     }
@@ -428,35 +444,33 @@ fn validate_custom_domain(value: Option<&str>) -> Result<Option<String>, AuthErr
     Ok(Some(host))
 }
 
-/// Accepts a bare hostname or a URL; SNI and ACME need the hostname only.
-fn hostname_from_input(value: &str) -> Result<String, AuthError> {
+/// The lowercased hostname of a bare hostname or URL, or `None` if it has a
+/// non-default port or, when bare, anything after the hostname.
+pub(crate) fn hostname_from_input(value: &str) -> Option<String> {
     let host = if value.contains("://") || value.starts_with("//") {
         let parsed = if value.starts_with("//") {
             url::Url::parse(&format!("https:{value}"))
         } else {
             url::Url::parse(value)
         }
-        .map_err(|_| AuthError::InvalidRequest("invalid custom domain"))?;
+        .ok()?;
         if parsed.port().is_some() {
-            return Err(AuthError::InvalidRequest("invalid custom domain"));
+            return None;
         }
-        parsed
-            .host_str()
-            .ok_or(AuthError::InvalidRequest("invalid custom domain"))?
-            .to_string()
+        parsed.host_str()?.to_string()
     } else if value.contains('/')
         || value.contains('?')
         || value.contains('#')
         || value.contains(':')
     {
-        return Err(AuthError::InvalidRequest("invalid custom domain"));
+        return None;
     } else {
         value.to_string()
     };
-    Ok(host.trim_end_matches('.').to_ascii_lowercase())
+    Some(host.trim_end_matches('.').to_ascii_lowercase())
 }
 
-fn is_dns_hostname(host: &str) -> bool {
+pub(crate) fn is_dns_hostname(host: &str) -> bool {
     if host.parse::<std::net::Ipv4Addr>().is_ok() {
         return false;
     }
@@ -552,6 +566,34 @@ mod tests {
         )
         .await
         .expect("delete account");
+    }
+
+    fn integration(integration_type: &str, account: Option<&str>) -> IntegrationInput {
+        IntegrationInput {
+            integration_type: integration_type.to_string(),
+            external_account_id: account.map(str::to_string),
+            api_key: None,
+            secret: None,
+        }
+    }
+
+    #[test]
+    fn a_shopify_integration_needs_a_myshopify_domain() {
+        for domain in [Some("a.myshopify.com"), Some("  "), None] {
+            assert!(validate_integration(&integration(integrations::SHOPIFY, domain)).is_ok());
+        }
+        assert!(matches!(
+            validate_integration(&integration(integrations::SHOPIFY, Some("evil.example"))),
+            Err(AuthError::InvalidRequest(
+                crate::integration::INVALID_SHOP_DOMAIN
+            ))
+        ));
+    }
+
+    #[test]
+    fn other_integrations_keep_their_own_account_ids() {
+        assert!(validate_integration(&integration("stripe", Some("acct_1"))).is_ok());
+        assert!(validate_integration(&integration("nonsense", None)).is_err());
     }
 
     #[test]

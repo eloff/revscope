@@ -3,7 +3,6 @@ use std::sync::Arc;
 use log::info;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use url::Url;
 
 use super::attribution;
 use super::schedule::{
@@ -18,11 +17,18 @@ use super::store::{
 use super::sync::{SyncCounts, SyncError, SyncKind, SyncResult, serialize_metadata};
 use crate::db::{ProjectCache, ProjectConnection, open_main_database_read};
 use crate::server_context::ServerContext;
-use crate::util::{rfc3339_to_unix, unix_to_rfc3339};
+use crate::settings::{hostname_from_input, is_dns_hostname};
+use crate::util::{rfc3339_to_unix, truncate_chars, unix_to_rfc3339};
 
 const PROVIDER: &str = "shopify";
 const SHOPIFY_API_VERSION: &str = "2026-07";
 const SHOPIFY_PAGE_LIMIT: i32 = 100;
+const MYSHOPIFY_SUFFIX: &str = ".myshopify.com";
+/// Long enough for Shopify's error JSON, short enough to show in the settings page.
+const MAX_ERROR_BODY_CHARS: usize = 1000;
+
+pub(crate) const INVALID_SHOP_DOMAIN: &str =
+    "Shop domain must be the store's myshopify.com domain, like example.myshopify.com";
 
 const ORDERS_QUERY: &str = r#"
 query RevScopeOrders($first: Int!, $after: String, $query: String) {
@@ -460,9 +466,7 @@ impl ShopifyClient {
         let status = response.status();
         let text = response.text().await?;
         if !status.is_success() {
-            return Err(SyncError::Shopify(format!(
-                "Shopify GraphQL request failed with {status}: {text}"
-            )));
+            return Err(SyncError::Shopify(request_failed_message(status, &text)));
         }
         let response: GraphqlResponse<T> = serde_json::from_str(&text)?;
         if let Some(errors) = response.errors
@@ -484,19 +488,32 @@ fn shopify_graphql_endpoint(shop_domain: &str) -> SyncResult<String> {
 }
 
 fn normalize_shop_domain(shop_domain: &str) -> SyncResult<String> {
-    let value = shop_domain.trim().trim_end_matches('/');
-    if value.is_empty() {
+    if shop_domain.trim().is_empty() {
         return Err(SyncError::Shopify(
             "Shopify integration has no shop domain".to_string(),
         ));
     }
-    if let Ok(url) = Url::parse(value) {
-        return url
-            .host_str()
-            .map(str::to_string)
-            .ok_or_else(|| SyncError::Shopify("Shopify shop URL must include a host".to_string()));
-    }
-    Ok(value.to_string())
+    myshopify_host(shop_domain).ok_or_else(|| SyncError::Shopify(INVALID_SHOP_DOMAIN.to_string()))
+}
+
+/// The `<shop>.myshopify.com` host of a domain or URL, or `None` for any other
+/// host. Syncs send the Admin token here from inside our network, so a
+/// customer-chosen host must not be reachable, including through rows saved
+/// before this check existed.
+pub(crate) fn myshopify_host(value: &str) -> Option<String> {
+    let host = hostname_from_input(value.trim().trim_end_matches('/'))?;
+    let shop = host.strip_suffix(MYSHOPIFY_SUFFIX)?;
+    (is_dns_hostname(&host) && !shop.contains('.')).then_some(host)
+}
+
+fn request_failed_message(status: reqwest::StatusCode, body: &str) -> String {
+    let clipped = truncate_chars(body, MAX_ERROR_BODY_CHARS);
+    let ellipsis = if clipped.len() < body.len() {
+        "…"
+    } else {
+        ""
+    };
+    format!("Shopify GraphQL request failed with {status}: {clipped}{ellipsis}")
 }
 
 #[derive(Serialize)]
@@ -1044,6 +1061,85 @@ mod tests {
         assert_eq!(
             shopify_graphql_endpoint("https://example.myshopify.com/").unwrap(),
             "https://example.myshopify.com/admin/api/2026-07/graphql.json"
+        );
+    }
+
+    #[test]
+    fn accepts_a_myshopify_domain_however_it_is_entered() {
+        for value in [
+            "example.myshopify.com",
+            " Example.MyShopify.com/ ",
+            "example.myshopify.com.",
+            "https://example.myshopify.com/admin",
+            "//example.myshopify.com",
+        ] {
+            assert_eq!(
+                myshopify_host(value).as_deref(),
+                Some("example.myshopify.com"),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_every_host_but_a_single_shop_on_myshopify_com() {
+        for value in [
+            "evil.example",
+            "169.254.169.254",
+            "127.0.0.1:8443",
+            "[::1]:8443",
+            "https://localhost:8443",
+            "myshopify.com",
+            ".myshopify.com",
+            "evilmyshopify.com",
+            "a.b.myshopify.com",
+            "example.myshopify.com.evil.example",
+            "https://admin.shopify.com/store/example",
+            "example.myshopify.com:8443",
+            "https://example.myshopify.com:8443",
+            // Each ends in the suffix, but the host is evil.example.
+            "evil.example/x.myshopify.com",
+            "evil.example?.myshopify.com",
+            "evil.example#.myshopify.com",
+            "https://evil.example/x.myshopify.com",
+            "https://evil.example#.myshopify.com",
+            "https://evil.example\\.myshopify.com",
+            "https://example.myshopify.com@evil.example",
+            "example.myshopify.com@evil.example",
+        ] {
+            assert_eq!(myshopify_host(value), None, "{value}");
+            assert!(shopify_graphql_endpoint(value).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn an_empty_shop_domain_says_so() {
+        let error = shopify_graphql_endpoint("  ").unwrap_err().to_string();
+        assert!(error.contains("no shop domain"), "{error}");
+    }
+
+    #[test]
+    fn a_failed_request_keeps_a_short_body_whole() {
+        assert_eq!(
+            request_failed_message(reqwest::StatusCode::UNAUTHORIZED, "bad token"),
+            "Shopify GraphQL request failed with 401 Unauthorized: bad token"
+        );
+        let exact = "a".repeat(MAX_ERROR_BODY_CHARS);
+        assert!(
+            request_failed_message(reqwest::StatusCode::UNAUTHORIZED, &exact).ends_with(&exact)
+        );
+    }
+
+    #[test]
+    fn a_failed_request_clips_a_long_body_on_a_character_boundary() {
+        let body = "é".repeat(MAX_ERROR_BODY_CHARS + 500);
+        let message = request_failed_message(reqwest::StatusCode::BAD_GATEWAY, &body);
+        assert_eq!(
+            message,
+            format!(
+                "Shopify GraphQL request failed with 502 Bad Gateway: {}…",
+                "é".repeat(MAX_ERROR_BODY_CHARS)
+            )
         );
     }
 }

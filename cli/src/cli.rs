@@ -273,7 +273,7 @@ pub struct StripeArgs {
 
 #[derive(Debug, Args)]
 pub struct ShopifyArgs {
-    /// The store's myshopify.com domain or full admin URL.
+    /// The store's myshopify.com domain, not a custom domain.
     #[arg(long, value_parser = literal)]
     pub shop: Option<String>,
     /// An admin access token, or `-` for stdin. Requires read_orders and

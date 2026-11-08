@@ -73,7 +73,7 @@ pub const INTEGRATIONS: &[Integration] = &[
                 column: Column::ExternalAccountId,
                 label: "Shop domain",
                 example: Some("example.myshopify.com"),
-                help: Some("Use the myshopify.com domain or full Shopify admin URL for the store."),
+                help: Some("Use the store's myshopify.com domain, not a custom domain."),
             },
             Field {
                 column: Column::ApiKey,

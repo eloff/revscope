@@ -12,6 +12,7 @@ mod store;
 mod stripe;
 mod sync;
 
+pub(crate) use shopify::{INVALID_SHOP_DOMAIN, myshopify_host};
 pub use sync::start_integration_sync_task;
 pub(crate) use sync::{ensure_project_cached, sleep_or_shutdown};
 

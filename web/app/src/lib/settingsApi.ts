@@ -65,7 +65,7 @@ export const INTEGRATION_META: Record<IntegrationType, IntegrationTypeMeta> = {
         column: "external_account_id",
         label: "Shop domain",
         placeholder: "example.myshopify.com",
-        help: "Use the myshopify.com domain or full Shopify admin URL for the store.",
+        help: "Use the store's myshopify.com domain, not a custom domain.",
         secret: false,
       },
       {

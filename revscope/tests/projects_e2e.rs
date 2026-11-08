@@ -312,6 +312,47 @@ async fn a_download_token_for_a_deleted_project_answers_not_found() -> io::Resul
     Ok(())
 }
 
+#[tokio::test]
+async fn a_refused_shop_domain_saves_none_of_the_form() -> io::Result<()> {
+    let server = TestServer::spawn("projects-shop-domain").await?;
+    let account = signup(&server, "projshop", "growth").await?;
+    let cookie = [("Cookie", account.cookie.as_str())];
+    let settings = format!("{}/settings", project_path(&account.project_id));
+    let save = |shop: &str| {
+        json!({
+            "timezone": "Asia/Tokyo",
+            "integrations": [
+                { "integration_type": "shopify", "external_account_id": shop, "api_key": null, "secret": null },
+            ],
+        })
+        .to_string()
+    };
+    let stored =
+        async || -> io::Result<Value> { Ok(server.get_query(&settings, &cookie).await?.json()) };
+    let before = stored().await?;
+    assert_ne!(before["timezone"], json!("Asia/Tokyo"));
+
+    let refused = server
+        .post_json(&settings, &save("evil.example"), &cookie)
+        .await?;
+    assert_eq!(refused.status_code(), 400, "{}", refused.body_str());
+    assert!(
+        refused.body_str().contains("myshopify.com"),
+        "{}",
+        refused.body_str()
+    );
+    assert_eq!(stored().await?, before);
+
+    let saved = server
+        .post_json(&settings, &save("a.myshopify.com"), &cookie)
+        .await?;
+    assert_eq!(saved.status_code(), 200, "{}", saved.body_str());
+    assert_eq!(stored().await?["timezone"], json!("Asia/Tokyo"));
+
+    delete_account(&server, &account.account_name).await;
+    Ok(())
+}
+
 async fn delete(
     server: &TestServer,
     project_id: &str,
