@@ -3,10 +3,13 @@
 #
 # For the maintainer, in place of a pull request. Lands the branch of the worktree this script is
 # in, along with the private repos' worktrees inside it, all with everything committed. Each repo
-# with commits of its own is squashed into one commit on its origin/main, replacing them (the old
-# tips are printed, and stay in the reflog). check.sh runs on the result, then the private repos
-# push to main, then this one, with a sign-off. Last, the worktrees and branches are deleted
+# with commits of its own is squashed into one signed commit on its origin/main, replacing them
+# (the old tips are printed, and stay in the reflog). check.sh runs on the result, then the private
+# repos push to main, then this one, with a sign-off. Last, the worktrees and branches are deleted
 # (--keep leaves them), unless one changed meanwhile.
+#
+# Signing uses git's own settings (user.signingkey, and gpg.format for an SSH key). GitHub only
+# counts the signature if that key is on the account and the committer's email is verified there.
 #
 # The message (-m or -F) is for this repo's commit, which defaults to its own commit's when it has
 # one. A private repo always uses its first commit's message, since any later ones are usually
@@ -20,7 +23,8 @@ declare -A count main_was landed_at
 trap 'rm -f "${msgs[@]}"' EXIT
 
 # Refuses, before anything is changed, a worktree at $1 that can't land: one with uncommitted
-# changes, not on its own branch, or whose main checkout's main has commits origin/main lacks.
+# changes, not on its own branch, whose main checkout's main has commits origin/main lacks, or
+# whose repo can't sign commits.
 preflight() {
   local dir=$1 main branch base
   main=$(main_checkout "$dir")
@@ -36,6 +40,9 @@ preflight() {
   ahead=$(git -C "$main" rev-list --count origin/main..main)
   [ "$ahead" = 0 ] || die "local main in $main has $ahead commit(s) that aren't on origin/main. Don't push, drop or rebase them: stop and tell the maintainer, who decides whether they land."
   main_was[$dir]=$(git -C "$main" rev-parse main)
+  # Signing a throwaway commit also catches a key that's configured but not in the agent.
+  git -C "$dir" commit-tree -S -m "land.sh signing check" "HEAD^{tree}" >/dev/null ||
+    die "git couldn't make a signed commit in $dir, for the reason above. If that's the key, set user.signingkey (and gpg.format ssh for an SSH key), and make sure the key is available."
 }
 
 # Writes to $3 the squashed commit's message for the worktree at $1, the public repo's when $2 is set.
@@ -76,18 +83,37 @@ squash() {
   message_for "$dir" "$public" "$msg"
   tree=$(git -C "$dir" merge-tree --write-tree origin/main HEAD) ||
     die "$dir conflicts with origin/main. Run git rebase origin/main there, resolve, commit, and run this again."
-  commit=$(git -C "$dir" commit-tree "$tree" -p origin/main -F "$msg")
+  # commit-tree ignores commit.gpgsign, so this has to ask.
+  commit=$(git -C "$dir" commit-tree -S "$tree" -p origin/main -F "$msg") ||
+    die "git couldn't make the signed squashed commit in $dir, for the reason above. Nothing was pushed, and a repo already squashed can land as it is. Fix that, and run this again."
   old=$(git -C "$dir" rev-parse HEAD)
   git -C "$dir" reset -q --hard "$commit"
   echo "$dir: squashed ${count[$dir]} commit(s) into $(git -C "$dir" rev-parse --short HEAD) (the old tip was $old)"
 }
 
+# Prints the output $1 of a successful push, minus the two rule bypasses every landing makes by
+# pushing straight to main. Any other bypass still shows, under its heading.
+show_push_output() {
+  local shown
+  # -a because grep would otherwise drop everything after an invalid byte, hiding any other bypass.
+  shown=$(grep -aEv '^remote: - (Changes must be made through a pull request\.|Cannot update this protected ref\.) *$' <<<"$1" || true)
+  grep -aq '^remote: - ' <<<"$shown" ||
+    shown=$(grep -aEv '^remote: Bypassed rule violations for refs/heads/main: *$' <<<"$shown" || true)
+  if grep -aEvq '^$|^remote: *$' <<<"$shown"; then
+    printf '%s\n' "$shown" >&2
+  fi
+}
+
 # Pushes the squashed branch of the worktree at $1 as main, and brings its main checkout's main along.
 publish() {
-  local dir=$1 main
+  local dir=$1 main output
   main=$(main_checkout "$dir")
-  git -C "$dir" push -q origin "${landed_at[$dir]}:refs/heads/main" ||
+  output=$(git -C "$dir" push -q origin "${landed_at[$dir]}:refs/heads/main" 2>&1) || {
+    # Unfiltered, since GitHub words a refusal with the same lines it reports for a bypass.
+    printf '%s\n' "$output" >&2
     die "the push from $dir was refused, probably because main moved. Its branch is now the squashed commit. Run this again."
+  }
+  show_push_output "$output"
   echo "$dir: landed $(git -C "$dir" rev-parse --short "${landed_at[$dir]}") on origin/main"
   if [ "$(git -C "$main" symbolic-ref -q HEAD)" = refs/heads/main ]; then
     git -C "$main" merge -q --ff-only origin/main ||

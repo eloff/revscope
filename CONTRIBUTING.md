@@ -136,6 +136,27 @@ Deploy any server changes the release depends on first. Then bump the version in
   it.
 - Sign off every commit (`git commit -s`); see [License](#license).
 
+## Signing commits
+
+This is separate from the sign-off above. A sign-off is a line in the commit
+message, while a signature proves who made the commit. `main` requires verified
+signatures, so maintainers landing with `scripts/land.sh` need a signing key,
+and the script stops before changing anything if git can't sign. To set up an
+SSH key:
+
+```sh
+ssh-keygen -t ed25519 -f ~/.ssh/git-signing -C "git signing"
+ssh-add ~/.ssh/git-signing
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/git-signing.pub
+gh auth refresh -h github.com -s admin:ssh_signing_key
+gh ssh-key add ~/.ssh/git-signing.pub --type signing --title "git signing"
+```
+
+GitHub marks a commit as verified only if the committer email is verified on
+your account, so check that for each `user.email` you commit with, including
+any set for a single repository.
+
 ## License
 
 RevScope is distributed under the [Functional Source License, Version 1.1,
