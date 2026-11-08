@@ -2,7 +2,6 @@
 //! campaigns) a batch refers to, caching their ids for the batch.
 
 use compact_str::CompactString;
-use fxhash::FxHashMap;
 use rusqlite::OptionalExtension;
 use rusqlite::params;
 
@@ -10,10 +9,11 @@ use crate::crawlers::upsert_useragent;
 use crate::db::ProjectConnection;
 use crate::ingest::attribution::LandingCampaignTuple;
 use crate::ingest::error::PersistError;
+use crate::untrusted_keys::UntrustedKeyMap;
 
 pub(super) fn resolve_cached_path_id(
     conn: &ProjectConnection,
-    cache: &mut FxHashMap<(CompactString, CompactString), i64>,
+    cache: &mut UntrustedKeyMap<(CompactString, CompactString), i64>,
     path: &CompactString,
     hostname: &CompactString,
 ) -> Result<i64, PersistError> {
@@ -29,7 +29,7 @@ pub(super) fn resolve_cached_path_id(
 
 pub(super) fn resolve_cached_referrer_id(
     conn: &ProjectConnection,
-    cache: &mut FxHashMap<CompactString, i64>,
+    cache: &mut UntrustedKeyMap<CompactString, i64>,
     referrer: &str,
 ) -> Result<i64, PersistError> {
     if let Some(&referrer_id) = cache.get(referrer) {
@@ -43,7 +43,7 @@ pub(super) fn resolve_cached_referrer_id(
 
 pub(super) fn resolve_cached_useragent_id(
     conn: &ProjectConnection,
-    cache: &mut FxHashMap<CompactString, i64>,
+    cache: &mut UntrustedKeyMap<CompactString, i64>,
     useragent: &str,
 ) -> Result<i64, PersistError> {
     if let Some(&useragent_id) = cache.get(useragent) {
@@ -56,7 +56,7 @@ pub(super) fn resolve_cached_useragent_id(
 
 pub(super) fn resolve_cached_event_name_id(
     conn: &ProjectConnection,
-    cache: &mut FxHashMap<CompactString, i64>,
+    cache: &mut UntrustedKeyMap<CompactString, i64>,
     event_name: &CompactString,
 ) -> Result<i64, PersistError> {
     if let Some(&event_name_id) = cache.get(event_name) {

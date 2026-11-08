@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use fxhash::FxHashSet;
 use rusqlite::params_from_iter;
 use rusqlite::types::{FromSql, FromSqlResult, ValueRef};
 use serde::Serialize;
@@ -11,6 +10,7 @@ use crate::comparison;
 use crate::db::{ProjectConnection, SqlCompactStr};
 use crate::segment_filter::SegmentFilters;
 use crate::timezone::Buckets;
+use crate::untrusted_keys::UntrustedKeySet;
 
 use super::buckets::{NANOS_PER_SECOND, OverviewBucket};
 
@@ -75,7 +75,7 @@ struct PeriodRevenue {
     /// A converting buyer is identified by their attributed landing when
     /// available, otherwise by their customer key (`provider_customer_id`,
     /// `customer_email`, or `order_email`).
-    buyers: FxHashSet<CustomerId>,
+    buyers: UntrustedKeySet<CustomerId>,
 }
 
 impl PeriodRevenue {

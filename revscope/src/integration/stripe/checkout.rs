@@ -1,14 +1,13 @@
 //! Copying attribution metadata from Stripe Checkout sessions onto the
 //! payments and subscriptions they created.
 
-use std::collections::HashMap;
-
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Map, Value};
 
 use crate::db::ProjectConnection;
 use crate::integration::attribution;
 use crate::integration::sync::{SyncCounts, SyncResult};
+use crate::untrusted_keys::UntrustedKeyMap;
 
 use super::records::{expandable_id, expandable_invoice_id};
 
@@ -97,9 +96,9 @@ pub(super) fn enrich_from_checkout_session(
 /// set (e.g. from a Payment Link), so attribution can match it like other
 /// metadata values.
 pub(super) fn checkout_enrichment_metadata(
-    session_metadata: Option<&HashMap<String, String>>,
+    session_metadata: Option<&UntrustedKeyMap<String, String>>,
     client_reference_id: Option<&str>,
-) -> Option<HashMap<String, String>> {
+) -> Option<UntrustedKeyMap<String, String>> {
     let mut metadata = session_metadata.cloned().unwrap_or_default();
     if let Some(client_reference_id) = client_reference_id
         .map(str::trim)
@@ -121,7 +120,7 @@ pub(super) fn update_payment_checkout_by_provider_payment_id(
     conn: &ProjectConnection,
     provider_payment_id: &str,
     checkout_id: &str,
-    checkout_metadata: Option<&HashMap<String, String>>,
+    checkout_metadata: Option<&UntrustedKeyMap<String, String>>,
     counts: &mut SyncCounts,
 ) -> SyncResult<bool> {
     let Some(row) = conn
@@ -143,7 +142,7 @@ pub(super) fn update_payment_checkouts_by_invoice_id(
     conn: &ProjectConnection,
     invoice_id: &str,
     checkout_id: &str,
-    checkout_metadata: Option<&HashMap<String, String>>,
+    checkout_metadata: Option<&UntrustedKeyMap<String, String>>,
     counts: &mut SyncCounts,
 ) -> SyncResult<Vec<CheckoutPaymentRow>> {
     let rows = conn.with_query(
@@ -173,7 +172,7 @@ pub(super) fn update_payment_checkout(
     conn: &ProjectConnection,
     row: &CheckoutPaymentRow,
     checkout_id: &str,
-    checkout_metadata: Option<&HashMap<String, String>>,
+    checkout_metadata: Option<&UntrustedKeyMap<String, String>>,
     counts: &mut SyncCounts,
 ) -> SyncResult<bool> {
     let metadata = merge_checkout_metadata(row.metadata.as_deref(), checkout_metadata)?;
@@ -195,7 +194,7 @@ pub(super) fn update_subscription_checkout_by_provider_subscription_id(
     conn: &ProjectConnection,
     provider_subscription_id: &str,
     checkout_id: &str,
-    checkout_metadata: Option<&HashMap<String, String>>,
+    checkout_metadata: Option<&UntrustedKeyMap<String, String>>,
     counts: &mut SyncCounts,
 ) -> SyncResult<Option<i64>> {
     let Some(row) = conn
@@ -245,7 +244,7 @@ pub(super) fn checkout_payment_row(
 
 pub(super) fn merge_checkout_metadata(
     existing: Option<&str>,
-    checkout_metadata: Option<&HashMap<String, String>>,
+    checkout_metadata: Option<&UntrustedKeyMap<String, String>>,
 ) -> SyncResult<Option<String>> {
     let Some(checkout_metadata) = checkout_metadata.filter(|metadata| !metadata.is_empty()) else {
         return Ok(existing.map(ToOwned::to_owned));

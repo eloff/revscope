@@ -19,6 +19,7 @@ use serde_json::Value;
 use crate::crawlers::{upsert_crawler_path, upsert_tracker_crawler_view};
 use crate::db::ProjectConnection;
 use crate::sentry_report::report_error;
+use crate::untrusted_keys::UntrustedKeyMap;
 use crate::util::nanoseconds_since_epoch;
 
 use super::batch::{BatchData, BatchRow};
@@ -250,11 +251,13 @@ fn flush_batch_body(conn: &ProjectConnection, data: &BatchData) -> Result<(), Fl
     }
 
     // Memoized id resolution for repeated paths/referrers/events/useragents in the batch.
-    let mut path_ids: FxHashMap<(CompactString, CompactString), i64> = FxHashMap::default();
-    let mut referrer_ids: FxHashMap<CompactString, i64> = FxHashMap::default();
-    let mut event_name_ids: FxHashMap<CompactString, i64> = FxHashMap::default();
-    let mut useragent_ids: FxHashMap<CompactString, i64> = FxHashMap::default();
-    let mut crawler_path_ids: FxHashMap<(CompactString, CompactString), i64> = FxHashMap::default();
+    let mut path_ids: UntrustedKeyMap<(CompactString, CompactString), i64> =
+        UntrustedKeyMap::default();
+    let mut referrer_ids: UntrustedKeyMap<CompactString, i64> = UntrustedKeyMap::default();
+    let mut event_name_ids: UntrustedKeyMap<CompactString, i64> = UntrustedKeyMap::default();
+    let mut useragent_ids: UntrustedKeyMap<CompactString, i64> = UntrustedKeyMap::default();
+    let mut crawler_path_ids: UntrustedKeyMap<(CompactString, CompactString), i64> =
+        UntrustedKeyMap::default();
     // visitor_timestamp_id -> last pageview timestamp_id within this flush,
     // seeded from the database the first time a visitor is seen.
     let mut last_pageview_by_visitor: FxHashMap<i64, i64> = FxHashMap::default();

@@ -3,7 +3,6 @@
 
 pub mod signup;
 
-use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -11,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use fxhash::FxHashMap;
 use revscope::server_context::ServerContext;
 use revscope::{ServerHooks, bind_listener, flush_all_ingest, run_listener};
 use rusqlite::Connection as RawConnection;
@@ -58,7 +58,7 @@ pub struct TestServer {
     shutdown: Arc<Notify>,
     /// Raw connections that keep shared-cache in-memory DBs alive. Kept outside
     /// the project DB pool so they cannot block `BEGIN IMMEDIATE` writes.
-    anchors: HashMap<String, RawConnection>,
+    anchors: FxHashMap<String, RawConnection>,
     data_dir: Option<PathBuf>,
 }
 
@@ -167,7 +167,7 @@ impl TestServer {
             addr,
             context,
             shutdown,
-            anchors: HashMap::new(),
+            anchors: FxHashMap::default(),
             data_dir,
         };
         // Keep shared-memory DBs alive even if the pool cache expires.
@@ -332,7 +332,7 @@ fn push_request_headers(request: &mut String, headers: &[(&str, &str)]) {
 #[derive(Debug, Clone)]
 pub struct HttpResponse {
     pub status_line: String,
-    pub headers: HashMap<String, String>,
+    pub headers: FxHashMap<String, String>,
     pub set_cookies: Vec<String>,
     pub body: Vec<u8>,
     pub raw: Vec<u8>,
@@ -754,7 +754,7 @@ fn parse_http_response(raw: Vec<u8>) -> HttpResponse {
     let header_text = String::from_utf8_lossy(header_bytes);
     let mut lines = header_text.split("\r\n");
     let status_line = lines.next().unwrap_or("").to_string();
-    let mut headers = HashMap::new();
+    let mut headers = FxHashMap::default();
     let mut set_cookies = Vec::new();
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {

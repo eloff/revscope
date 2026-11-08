@@ -9,6 +9,7 @@ use crate::db::ProjectConnection;
 use crate::ingest::error::PersistError;
 use crate::ingest::rows::{LandingContextRow, LandingPageView, PageView, ScreenDimensions};
 use crate::referrer::ReferrerType;
+use crate::untrusted_keys::UntrustedKeyMap;
 
 use super::lookups::resolve_cached_path_id;
 use super::sessions::{resolve_current_session, upsert_user_session};
@@ -40,7 +41,7 @@ pub(super) fn pageview_previous(
 pub(super) fn flush_pageview(
     conn: &ProjectConnection,
     page: &PageView,
-    path_ids: &mut FxHashMap<(CompactString, CompactString), i64>,
+    path_ids: &mut UntrustedKeyMap<(CompactString, CompactString), i64>,
     last_pageview_by_visitor: &mut FxHashMap<i64, i64>,
     engagement_by_page: &mut FxHashMap<i64, EngagementAccum>,
 ) -> Result<Option<i64>, PersistError> {

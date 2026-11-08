@@ -3,7 +3,6 @@
 use std::cmp::Ordering;
 use std::hash::Hash;
 
-use fxhash::FxHashMap;
 use serde::Serialize;
 
 use crate::comparison::Change;
@@ -13,6 +12,7 @@ use crate::metrics::{
     self, WilsonInterval, conversion_rate_wilson_interval, conversion_rate_wilson_lower_bound,
 };
 use crate::query_params::{SortDirection, paginate};
+use crate::untrusted_keys::UntrustedKeyMap;
 
 /// City rows returned per page.
 pub(crate) const CITIES_PAGE_SIZE: i64 = 200;
@@ -238,7 +238,7 @@ pub(super) struct CityKey {
 }
 
 /// Counts per value of one dimension, in one window.
-pub(super) type DimensionCounts<K> = FxHashMap<K, Counts>;
+pub(super) type DimensionCounts<K> = UntrustedKeyMap<K, Counts>;
 
 /// Computes the shared per-row metrics for a current-period dimension value,
 /// comparing against the matched previous-period counts (when present).

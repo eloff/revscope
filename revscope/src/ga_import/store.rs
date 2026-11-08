@@ -10,6 +10,7 @@ use crate::ingest::{
 };
 use crate::referrer::SourceGroup;
 use crate::timezone::ProjectTimezone;
+use crate::untrusted_keys::UntrustedKeyMap;
 use crate::util::NANOS_PER_SECOND;
 
 use super::api::ReportRow;
@@ -142,9 +143,9 @@ pub(super) fn write_chunk(
 /// Ids resolved so far in this chunk, since the same page recurs on every day of it.
 #[derive(Default)]
 struct Lookups {
-    paths: FxHashMap<(String, String), i64>,
-    referrers: FxHashMap<String, i64>,
-    events: FxHashMap<String, i64>,
+    paths: UntrustedKeyMap<(String, String), i64>,
+    referrers: UntrustedKeyMap<String, i64>,
+    events: UntrustedKeyMap<String, i64>,
 }
 
 impl Lookups {

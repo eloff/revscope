@@ -1,0 +1,4 @@
+disallowed-types = [
+  { path = "std::collections::HashMap", reason = "use fxhash::FxHashMap, or crate::untrusted_keys::UntrustedKeyMap when outsiders choose the keys" },
+  { path = "std::collections::HashSet", reason = "use fxhash::FxHashSet, or crate::untrusted_keys::UntrustedKeySet when outsiders choose the keys" },
+]

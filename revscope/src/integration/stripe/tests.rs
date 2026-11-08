@@ -1,9 +1,8 @@
-use std::collections::HashMap;
-
 use serde_json::Value;
 
 use crate::metrics::{monthly_amount, months_per_period};
 use crate::test_utils::open_migrated_db;
+use crate::untrusted_keys::UntrustedKeyMap;
 
 use super::checkout::{
     checkout_enrichment_metadata, update_payment_checkout_by_provider_payment_id,
@@ -221,10 +220,13 @@ fn a_fixed_coupon_needs_an_amount_in_the_subscription_currency() {
     );
 
     let with_eur = stripe_shared::Coupon {
-        currency_options: Some(HashMap::from([(
-            stripe_types::Currency::EUR,
-            stripe_shared::CouponCurrencyOption { amount_off: 900 },
-        )])),
+        currency_options: Some(
+            [(
+                stripe_types::Currency::EUR,
+                stripe_shared::CouponCurrencyOption { amount_off: 900 },
+            )]
+            .into(),
+        ),
         ..coupon
     };
 
@@ -249,7 +251,7 @@ fn checkout_enrichment_sets_payment_checkout_id_and_merges_metadata() {
     )
     .expect("insert payment");
 
-    let mut checkout_metadata = HashMap::new();
+    let mut checkout_metadata = UntrustedKeyMap::new();
     checkout_metadata.insert("checkout_key".to_string(), "checkout_value".to_string());
     checkout_metadata.insert("shared".to_string(), "checkout".to_string());
     let mut counts = SyncCounts::default();
@@ -296,7 +298,7 @@ fn checkout_enrichment_sets_payment_checkout_id_and_merges_metadata() {
 
 #[test]
 fn checkout_enrichment_metadata_includes_client_reference_id() {
-    let mut session_metadata = HashMap::new();
+    let mut session_metadata = UntrustedKeyMap::new();
     session_metadata.insert("plan".to_string(), "pro".to_string());
 
     let merged = checkout_enrichment_metadata(Some(&session_metadata), Some("  visitor_abc  "))

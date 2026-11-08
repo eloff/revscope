@@ -1,13 +1,12 @@
 //! A subscription's recurring price after discounts, and the payment intents
 //! and coupons fetched to work it out.
 
-use std::collections::HashMap;
-
 use fxhash::FxHashMap;
 use log::warn;
 
 use crate::integration::sync::SyncResult;
 use crate::metrics::months_per_period;
+use crate::untrusted_keys::UntrustedKeyMap;
 use crate::util::unix_seconds;
 
 use super::STRIPE_PAGE_LIMIT;
@@ -26,13 +25,14 @@ pub(super) struct StripePlan<'a> {
 }
 
 /// Payment intent metadata keyed by payment intent id, with `None` for one we
-/// couldn't read.
+/// couldn't read. The metadata map is the type the Stripe crate returns.
 ///
 /// Stripe caps expansion at four levels, one short of
 /// `data.payments.data.payment.payment_intent` on the invoice list. The invoice
 /// payment list reaches the same object in three
 /// (`data.payment.payment_intent`).
-pub(super) type PaymentIntentMetadataCache = FxHashMap<String, Option<HashMap<String, String>>>;
+pub(super) type PaymentIntentMetadataCache =
+    FxHashMap<String, Option<UntrustedKeyMap<String, String>>>;
 
 /// Loads payment intent metadata for invoice payments created in the sync
 /// window into `payment_intents`.

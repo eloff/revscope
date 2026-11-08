@@ -1,3 +1,4 @@
+use fxhash::FxHashSet;
 use rand::{
     Rng, RngCore, SeedableRng,
     distributions::{Distribution, weighted::WeightedIndex},
@@ -17,7 +18,6 @@ use rusqlite::params;
 use serde_json::Value;
 use serde_json::json;
 use std::{
-    collections::HashSet,
     error::Error,
     path::{Path, PathBuf},
     sync::Arc,
@@ -434,7 +434,8 @@ fn run(
             .map(|_| FirstPagesDay::default())
             .collect();
         let mut month_all_pages: Vec<i64> = Vec::with_capacity(visitor_target * 3);
-        let mut generated_timestamp_ids = HashSet::with_capacity(visitor_target * 3);
+        let mut generated_timestamp_ids =
+            FxHashSet::with_capacity_and_hasher(visitor_target * 3, Default::default());
 
         let mut visitor_idx = 0_usize;
         for (day_idx, day_visitors) in day_visitor_counts.iter().enumerate() {
@@ -1079,7 +1080,7 @@ fn run(
     populate_crawler_views(&conn, &crawler_path_ids, start_ts, now, &mut rng)?;
 
     println!("generate: inserting home funnel checkout drop-offs…");
-    let mut dropoff_timestamp_ids = HashSet::new();
+    let mut dropoff_timestamp_ids = FxHashSet::default();
     insert_home_funnel_checkout_dropoffs(
         &conn,
         &path_ids,
@@ -1741,7 +1742,7 @@ fn build_search_term_path_ids(
         3
     };
     let mut chosen = vec![primary_path_id];
-    let mut seen: HashSet<i64> = HashSet::from([primary_path_id]);
+    let mut seen: FxHashSet<i64> = FxHashSet::from_iter([primary_path_id]);
     let mut attempts = 0;
 
     while chosen.len() < target_count && attempts < SEARCH_PATH_INDICES.len() * 4 {
@@ -1767,7 +1768,7 @@ fn build_search_term_combos_with_alpha(
     rng: &mut StdRng,
 ) -> Vec<SearchTermCombo> {
     let mut query_specs = Vec::with_capacity(SEARCH_QUERY_COUNT);
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: FxHashSet<String> = FxHashSet::default();
     for seed in SEARCH_QUERY_SEEDS {
         if query_specs.len() >= SEARCH_QUERY_COUNT {
             break;
@@ -2857,7 +2858,7 @@ fn maybe_emit_outbound_click(
     event_name_ids: &[i64],
     page_timestamp_id: i64,
     page_duration_seconds: i64,
-    generated_timestamp_ids: &mut HashSet<i64>,
+    generated_timestamp_ids: &mut FxHashSet<i64>,
     rng: &mut StdRng,
 ) -> Result<(), Box<dyn Error>> {
     if !rng.gen_bool(OUTBOUND_CLICK_PROB) {
@@ -2891,7 +2892,7 @@ fn maybe_emit_outbound_click_for_path(
     path_idx: usize,
     page_timestamp_id: i64,
     page_duration_seconds: i64,
-    generated_timestamp_ids: &mut HashSet<i64>,
+    generated_timestamp_ids: &mut FxHashSet<i64>,
     rng: &mut StdRng,
 ) -> Result<(), Box<dyn Error>> {
     if !path_eligible_for_outbound_click(path_idx) {
@@ -3219,7 +3220,7 @@ fn insert_funnel_event(
     page_timestamp_id: i64,
     page_duration_seconds: i64,
     max_timestamp_id: Option<i64>,
-    generated_timestamp_ids: &mut HashSet<i64>,
+    generated_timestamp_ids: &mut FxHashSet<i64>,
     rng: &mut StdRng,
 ) -> Result<(), Box<dyn Error>> {
     let Some(event_timestamp_id) = make_event_timestamp_id(
@@ -3252,7 +3253,7 @@ fn insert_sequential_funnel_event(
     page_duration_seconds: i64,
     max_timestamp_id: Option<i64>,
     cursor: &mut i64,
-    generated_timestamp_ids: &mut HashSet<i64>,
+    generated_timestamp_ids: &mut FxHashSet<i64>,
     rng: &mut StdRng,
 ) -> Result<(), Box<dyn Error>> {
     let page_end = page_timestamp_id + page_duration_seconds.max(2) * NANOS_PER_SECOND - 1;
@@ -3291,7 +3292,7 @@ fn emit_home_funnel_events(
     home_page_timestamp_id: i64,
     home_duration_seconds: i64,
     complete_all: bool,
-    generated_timestamp_ids: &mut HashSet<i64>,
+    generated_timestamp_ids: &mut FxHashSet<i64>,
     rng: &mut StdRng,
 ) -> Result<(), Box<dyn Error>> {
     let mut page_duration = home_duration_seconds.max(10);
@@ -3320,7 +3321,7 @@ fn emit_home_funnel_events_on_pages(
     pages: &[(usize, i64, i64)],
     events_through: usize,
     max_timestamp_id: Option<i64>,
-    generated_timestamp_ids: &mut HashSet<i64>,
+    generated_timestamp_ids: &mut FxHashSet<i64>,
     rng: &mut StdRng,
 ) -> Result<(), Box<dyn Error>> {
     let last_event_step = events_through.min(HOME_FUNNEL_EVENT_INDICES.len() - 1);
@@ -3370,7 +3371,7 @@ fn insert_checkout_before_purchase(
     event_name_ids: &[i64],
     visitor_timestamp_id: i64,
     paid_at: i64,
-    generated_timestamp_ids: &mut HashSet<i64>,
+    generated_timestamp_ids: &mut FxHashSet<i64>,
     rng: &mut StdRng,
 ) -> Result<(), Box<dyn Error>> {
     insert_home_funnel_checkout_journey(
@@ -3392,7 +3393,7 @@ fn insert_home_funnel_checkout_journey(
     visitor_timestamp_id: i64,
     journey_end_at: i64,
     events_through: usize,
-    generated_timestamp_ids: &mut HashSet<i64>,
+    generated_timestamp_ids: &mut FxHashSet<i64>,
     rng: &mut StdRng,
 ) -> Result<(), Box<dyn Error>> {
     let journey_end_nanos = journey_end_at.saturating_mul(NANOS_PER_SECOND);
@@ -3492,7 +3493,7 @@ fn pick_unconverted_home_landing(
     home_path_id: i64,
     min_visitor_timestamp_id: i64,
     max_last_page_at: i64,
-    exclude: &HashSet<i64>,
+    exclude: &FxHashSet<i64>,
     rng: &mut StdRng,
 ) -> Result<Option<i64>, Box<dyn Error>> {
     let mut candidates = Vec::new();
@@ -3534,14 +3535,14 @@ fn insert_home_funnel_checkout_dropoffs(
     path_ids: &[i64],
     event_name_ids: &[i64],
     now: i64,
-    generated_timestamp_ids: &mut HashSet<i64>,
+    generated_timestamp_ids: &mut FxHashSet<i64>,
     rng: &mut StdRng,
 ) -> Result<(), Box<dyn Error>> {
     // Keep drop-offs inside a typical "last 30 days" dashboard window.
     let min_visitor_timestamp_id = (now - 30 * DAY_SECONDS) * NANOS_PER_SECOND;
     // Leave room after the session's last page for the checkout path chain.
     let max_last_page_at = now - 1_800;
-    let mut used = HashSet::new();
+    let mut used = FxHashSet::default();
     let dropoffs = [
         HOME_FUNNEL_COMPLETED_SIGNUP_STEP,
         HOME_FUNNEL_STARTED_CHECKOUT_STEP,
@@ -3669,7 +3670,7 @@ fn emit_cancel_flow_opened(
     visitor_timestamp_id: i64,
     last_paid_at: i64,
     canceled_at: i64,
-    generated_timestamp_ids: &mut HashSet<i64>,
+    generated_timestamp_ids: &mut FxHashSet<i64>,
     rng: &mut StdRng,
 ) -> Result<(), Box<dyn Error>> {
     let earliest = last_paid_at.saturating_add(MIN_CANCEL_FLOW_AFTER_PAYMENT_SECONDS);
@@ -3777,7 +3778,7 @@ fn generate_post_conversion_activity(
     paid_at: i64,
     activity_end: i64,
     is_subscription: bool,
-    generated_timestamp_ids: &mut HashSet<i64>,
+    generated_timestamp_ids: &mut FxHashSet<i64>,
     rng: &mut StdRng,
 ) -> Result<(), Box<dyn Error>> {
     if paid_at >= activity_end || !rng.gen_bool(POST_CONVERSION_RETURN_PROB) {
@@ -4013,7 +4014,7 @@ fn apply_pageview_duration_cap(
 
 fn make_unique_timestamp_id(
     timestamp_seconds: i64,
-    seen: &mut HashSet<i64>,
+    seen: &mut FxHashSet<i64>,
     rng: &mut StdRng,
 ) -> i64 {
     loop {
@@ -4029,7 +4030,7 @@ fn make_event_timestamp_id(
     page_timestamp_id: i64,
     duration_seconds: i64,
     max_timestamp_cap: Option<i64>,
-    seen: &mut HashSet<i64>,
+    seen: &mut FxHashSet<i64>,
     rng: &mut StdRng,
 ) -> Option<i64> {
     let min_timestamp_id = page_timestamp_id + NANOS_PER_SECOND + 1;

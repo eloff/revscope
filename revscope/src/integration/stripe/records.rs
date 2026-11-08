@@ -1,7 +1,5 @@
 //! Storing Stripe objects as RevScope payments and subscriptions.
 
-use std::collections::HashMap;
-
 use crate::db::ProjectConnection;
 use crate::integration::store::{
     PaymentStatus, PaymentType, PaymentUpsert, PlanInterval, Reported, SubscriptionPlan,
@@ -9,6 +7,7 @@ use crate::integration::store::{
     upsert_payment, upsert_subscription,
 };
 use crate::integration::sync::{SyncCounts, SyncResult, serialize_metadata};
+use crate::untrusted_keys::UntrustedKeyMap;
 
 use super::PROVIDER;
 use super::plan::{CouponCache, PaymentIntentMetadataCache, subscription_plan};
@@ -285,7 +284,7 @@ pub(super) fn invoice_payment_intent(
 /// the object rather than its id.
 pub(super) fn expanded_payment_intent_metadata(
     payment_intent: Option<&stripe_types::Expandable<stripe_shared::PaymentIntent>>,
-) -> Option<&HashMap<String, String>> {
+) -> Option<&UntrustedKeyMap<String, String>> {
     payment_intent
         .and_then(|payment_intent| payment_intent.as_object())
         .map(|payment_intent| &payment_intent.metadata)
@@ -296,7 +295,7 @@ pub(super) fn expanded_payment_intent_metadata(
 pub(super) fn invoice_payment_intent_metadata<'a>(
     invoice: &'a stripe_billing::Invoice,
     payment_intents: &'a PaymentIntentMetadataCache,
-) -> Option<&'a HashMap<String, String>> {
+) -> Option<&'a UntrustedKeyMap<String, String>> {
     let payment_intent = invoice_payment_intent(invoice)?;
     if let Some(metadata) = expanded_payment_intent_metadata(Some(payment_intent)) {
         return Some(metadata);
@@ -307,8 +306,8 @@ pub(super) fn invoice_payment_intent_metadata<'a>(
 }
 
 pub(super) fn payment_metadata(
-    primary: Option<&HashMap<String, String>>,
-    payment_intent_metadata: Option<&HashMap<String, String>>,
+    primary: Option<&UntrustedKeyMap<String, String>>,
+    payment_intent_metadata: Option<&UntrustedKeyMap<String, String>>,
 ) -> SyncResult<Option<String>> {
     match (primary, payment_intent_metadata) {
         (None, None) => Ok(None),

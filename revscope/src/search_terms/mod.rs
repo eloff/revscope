@@ -11,8 +11,6 @@ mod tests;
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use fxhash::FxHashMap;
-
 use crate::auth::AuthError;
 use crate::authorize::AuthorizedProject;
 use crate::comparison;
@@ -20,6 +18,7 @@ use crate::db::{ProjectConnection, open_project_database_read};
 use crate::query_params::{SortDirection, SortedPage, cmp_f64, paginate, parse_report_query};
 use crate::segment_filter::{SegmentFilters, parse_segment_filters};
 use crate::server_context::ServerContext;
+use crate::untrusted_keys::UntrustedKeyMap;
 use crate::util::seconds_since_epoch;
 
 use fetch::{attach_cannibalized_clicks, attach_landing_paths, fetch_search_terms_metrics};
@@ -138,7 +137,7 @@ fn build_search_terms_response_at(
         attach_landing_paths(conn, &mut page_terms, query.start, query.end)?;
     }
 
-    let previous_by_query: FxHashMap<&str, &RawTerm> = previous
+    let previous_by_query: UntrustedKeyMap<&str, &RawTerm> = previous
         .terms
         .iter()
         .map(|term| (term.query.as_str(), term))

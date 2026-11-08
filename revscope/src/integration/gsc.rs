@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use std::time::Duration;
 
-use fxhash::FxHashMap;
 use log::{info, warn};
 use reqwest::StatusCode;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
@@ -19,6 +18,7 @@ use crate::db::{
     ProjectCache, ProjectConnection, open_main_database_read, open_main_database_write,
 };
 use crate::server_context::ServerContext;
+use crate::untrusted_keys::UntrustedKeyMap;
 use crate::util::unix_seconds;
 
 const GSC_FULL_SYNC_INTERVAL_SECS: i64 = 24 * 60 * 60;
@@ -323,8 +323,8 @@ async fn fetch_day_snapshot(
         date: format_date(date),
         data_state,
     };
-    let mut daily: FxHashMap<String, DailyAggregate> = FxHashMap::default();
-    let mut paths: FxHashMap<(String, String, String), i64> = FxHashMap::default();
+    let mut daily: UntrustedKeyMap<String, DailyAggregate> = UntrustedKeyMap::default();
+    let mut paths: UntrustedKeyMap<(String, String, String), i64> = UntrustedKeyMap::default();
 
     for row in request.rows(&["query"]).await? {
         let Some(query) = row.keys.first().and_then(|key| normalize_query(key)) else {
@@ -582,7 +582,7 @@ fn write_day_in_transaction(
     counts: &mut SyncCounts,
 ) -> SyncResult<()> {
     let day = date_to_unix_utc_midnight(date);
-    let mut query_ids = FxHashMap::default();
+    let mut query_ids = UntrustedKeyMap::default();
     write_daily_rows(conn, day, snapshot.daily, &mut query_ids, counts)?;
     write_path_rows(conn, day, snapshot.paths, &mut query_ids, counts)?;
     Ok(())
@@ -594,8 +594,8 @@ fn write_day_in_transaction(
 fn write_daily_rows(
     conn: &ProjectConnection,
     day: i64,
-    mut fetched: FxHashMap<String, DailyAggregate>,
-    query_ids: &mut FxHashMap<String, i64>,
+    mut fetched: UntrustedKeyMap<String, DailyAggregate>,
+    query_ids: &mut UntrustedKeyMap<String, i64>,
     counts: &mut SyncCounts,
 ) -> SyncResult<()> {
     let stored = conn.with_query(
@@ -688,8 +688,8 @@ fn write_daily_rows(
 fn write_path_rows(
     conn: &ProjectConnection,
     day: i64,
-    mut fetched: FxHashMap<(String, String, String), i64>,
-    query_ids: &mut FxHashMap<String, i64>,
+    mut fetched: UntrustedKeyMap<(String, String, String), i64>,
+    query_ids: &mut UntrustedKeyMap<String, i64>,
     counts: &mut SyncCounts,
 ) -> SyncResult<()> {
     let stored = conn.with_query(
@@ -717,7 +717,7 @@ fn write_path_rows(
         },
     )?;
 
-    let mut path_ids = FxHashMap::default();
+    let mut path_ids = UntrustedKeyMap::default();
     for (key, query_id, path_id, current_clicks) in stored {
         query_ids.insert(key.0.clone(), query_id);
         path_ids.insert((key.1.clone(), key.2.clone()), path_id);
@@ -760,7 +760,7 @@ fn write_path_rows(
 
 fn search_query_id(
     conn: &ProjectConnection,
-    cache: &mut FxHashMap<String, i64>,
+    cache: &mut UntrustedKeyMap<String, i64>,
     query: &str,
 ) -> SyncResult<i64> {
     if let Some(id) = cache.get(query) {
@@ -783,7 +783,7 @@ fn search_query_id(
 
 fn path_id(
     conn: &ProjectConnection,
-    cache: &mut FxHashMap<(String, String), i64>,
+    cache: &mut UntrustedKeyMap<(String, String), i64>,
     hostname: &str,
     path: &str,
 ) -> SyncResult<i64> {
@@ -954,9 +954,9 @@ impl From<&DailyAggregate> for DailyRow {
 
 struct GscDaySnapshot {
     /// `query -> totals` for one report day.
-    daily: FxHashMap<String, DailyAggregate>,
+    daily: UntrustedKeyMap<String, DailyAggregate>,
     /// `(query, hostname, path) -> clicks` for one report day.
-    paths: FxHashMap<(String, String, String), i64>,
+    paths: UntrustedKeyMap<(String, String, String), i64>,
 }
 
 struct GscPagePath {

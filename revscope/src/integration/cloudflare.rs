@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use fxhash::{FxHashMap, FxHashSet};
+use fxhash::FxHashMap;
 use log::{info, warn};
 use reqwest::StatusCode;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
@@ -20,6 +20,7 @@ use crate::db::{
     open_project_database_write_for,
 };
 use crate::server_context::ServerContext;
+use crate::untrusted_keys::{UntrustedKeyMap, UntrustedKeySet};
 use crate::util::{rfc3339_to_unix, unix_seconds, unix_to_rfc3339};
 
 const CLOUDFLARE_FULL_SYNC_INTERVAL_SECS: i64 = 8 * 60 * 60;
@@ -139,7 +140,8 @@ async fn sync_integration(
     let datetime_start = format_hour(window_start)?;
     let datetime_end = format_hour(window_end)?;
 
-    let mut groups: FxHashMap<(i64, String, String, String), i64> = FxHashMap::default();
+    let mut groups: UntrustedKeyMap<(i64, String, String, String), i64> =
+        UntrustedKeyMap::default();
     for zone in &zones {
         for token in cloudflare_patterns() {
             if server_context.shutdown_requested() {
@@ -208,7 +210,7 @@ async fn sync_integration(
 
 fn write_groups(
     conn: &ProjectConnection,
-    groups: FxHashMap<(i64, String, String, String), i64>,
+    groups: UntrustedKeyMap<(i64, String, String, String), i64>,
 ) -> SyncResult<SyncCounts> {
     let mut counts = SyncCounts::default();
     for ((hour, useragent, hostname, path), estimated_count) in groups {
@@ -234,7 +236,7 @@ fn apex_domains_from_paths(conn: &ProjectConnection) -> SyncResult<Vec<String>> 
          WHERE deleted_at IS NULL AND hostname != ''",
     )?;
     let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-    let mut apexes = FxHashSet::default();
+    let mut apexes = UntrustedKeySet::default();
     for hostname in rows {
         if let Some(apex) = apex_domain(&hostname?) {
             apexes.insert(apex);
@@ -774,7 +776,8 @@ mod tests {
     fn write_groups_upserts_crawler_paths_without_touching_paths() {
         let conn = open_migrated_db();
         let hour = 1_788_000_000;
-        let mut groups: FxHashMap<(i64, String, String, String), i64> = FxHashMap::default();
+        let mut groups: UntrustedKeyMap<(i64, String, String, String), i64> =
+            UntrustedKeyMap::default();
         groups.insert(
             (
                 hour,
@@ -812,7 +815,8 @@ mod tests {
 
     #[test]
     fn overlapping_token_groups_keep_the_max() {
-        let mut groups: FxHashMap<(i64, String, String, String), i64> = FxHashMap::default();
+        let mut groups: UntrustedKeyMap<(i64, String, String, String), i64> =
+            UntrustedKeyMap::default();
         let key = (
             1_788_000_000_i64,
             "mozilla/5.0 compatible; applebot-extended/0.1".into(),

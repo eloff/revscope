@@ -28,6 +28,7 @@ use crate::landing_labels::{browser_family_name, device_name, os_name};
 use crate::page_revenue::page_revenue_select;
 use crate::referrer::SourceGroup;
 use crate::segment_filter::{LandingAttribute, LandingFacts, SegmentFilters, SourceFilter};
+use crate::untrusted_keys::{UntrustedKeyMap, UntrustedKeySet};
 use crate::util::NANOS_PER_SECOND;
 
 /// Rows kept per breakdown, by visitors and again by revenue; a panel lists
@@ -111,7 +112,7 @@ const NO_VALUE: u32 = u32::MAX;
 /// Distinct values of one dimension, numbered so sessions can store ids.
 #[derive(Default)]
 struct Interner {
-    ids: FxHashMap<String, u32>,
+    ids: UntrustedKeyMap<String, u32>,
     values: Vec<String>,
 }
 
@@ -246,9 +247,9 @@ pub(crate) fn build_overview_breakdowns(
         )
         .map_err(map_row_error)?;
 
-    let selected: [Option<FxHashSet<String>>; LANDING_DIMENSIONS.len()] =
-        LANDING_DIMENSIONS.map(|dimension| {
-            let values: FxHashSet<String> = match dimension {
+    let selected: [Option<UntrustedKeySet<String>>; LANDING_DIMENSIONS.len()] = LANDING_DIMENSIONS
+        .map(|dimension| {
+            let values: UntrustedKeySet<String> = match dimension {
                 LandingDimension::Source => segments.sources.iter().map(|s| s.param()).collect(),
                 LandingDimension::Country => segments.countries.iter().cloned().collect(),
                 LandingDimension::LandingPage => {
@@ -261,7 +262,7 @@ pub(crate) fn build_overview_breakdowns(
             };
             (!values.is_empty()).then_some(values)
         });
-    let selected_pages: Option<FxHashSet<i64>> =
+    let selected_pages: Option<UntrustedKeySet<i64>> =
         (!segments.pages.is_empty()).then(|| segments.pages.iter().copied().collect());
 
     let events_only = segments.events_only();
@@ -465,7 +466,7 @@ pub(crate) fn build_overview_breakdowns(
     let with_hostname = paths
         .values()
         .map(|(hostname, _)| hostname.as_str())
-        .collect::<FxHashSet<&str>>()
+        .collect::<UntrustedKeySet<&str>>()
         .len()
         > 1;
 

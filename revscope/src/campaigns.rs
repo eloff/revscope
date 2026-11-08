@@ -21,6 +21,7 @@ use crate::query_params::parse_date_range_query;
 use crate::segment_filter::{SegmentDimension, SegmentFilters, parse_segment_filters};
 use crate::server_context::ServerContext;
 use crate::timezone::{self, ProjectTimezone};
+use crate::untrusted_keys::UntrustedKeyMap;
 use crate::util::{NANOS_PER_SECOND, nanoseconds_since_epoch, seconds_since_epoch};
 
 const MAX_NAME_LEN: usize = 80;
@@ -168,12 +169,12 @@ struct Counts {
 
 #[derive(Default)]
 struct Breakdowns {
-    referrers: FxHashMap<String, i64>,
+    referrers: UntrustedKeyMap<String, i64>,
     paths: FxHashMap<i64, i64>,
-    countries: FxHashMap<String, i64>,
-    devices: FxHashMap<String, i64>,
-    contents: FxHashMap<String, i64>,
-    terms: FxHashMap<String, i64>,
+    countries: UntrustedKeyMap<String, i64>,
+    devices: UntrustedKeyMap<String, i64>,
+    contents: UntrustedKeyMap<String, i64>,
+    terms: UntrustedKeyMap<String, i64>,
 }
 
 struct CatalogRow {
@@ -716,7 +717,7 @@ fn suggest_metadata(
     .map_err(map_row_error)
 }
 
-fn top_labels(counts: &FxHashMap<String, i64>) -> Vec<CampaignCount> {
+fn top_labels(counts: &UntrustedKeyMap<String, i64>) -> Vec<CampaignCount> {
     let mut ranked: Vec<(&String, &i64)> = counts.iter().filter(|(_, count)| **count > 0).collect();
     ranked.sort_by(|left, right| right.1.cmp(left.1).then(left.0.cmp(right.0)));
     ranked.truncate(TOP_BREAKDOWN);

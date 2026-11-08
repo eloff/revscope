@@ -11,6 +11,7 @@ use super::rows::{
 };
 use super::timestamp::NANOS_PER_MILLI;
 use crate::db::ClientPageId;
+use crate::untrusted_keys::UntrustedKeyMap;
 
 /// How long an event whose pageview has not arrived yet survives a flush. The
 /// tracker can send an event while the pageview request it belongs to is still
@@ -44,18 +45,19 @@ pub(crate) struct BatchData {
     pub(super) orphan_events: Vec<OrphanEvent>,
     /// Hourly crawler hits keyed by (hour, useragent, hostname, path).
     #[serde(skip)]
-    pub(super) crawler_views: FxHashMap<CrawlerViewKey, i64>,
+    pub(super) crawler_views: UntrustedKeyMap<CrawlerViewKey, i64>,
     /// client page id (12-byte blob) -> queued pageview. Supplements
     /// `client_page_ids_map` for pageviews not yet flushed.
     #[serde(skip)]
-    pub(super) pageview_idx_by_client_id: FxHashMap<ClientPageId, PageviewRef>,
+    pub(super) pageview_idx_by_client_id: UntrustedKeyMap<ClientPageId, PageviewRef>,
     /// pageview timestamp id (a.k.a. server page id) -> queued pageview.
     #[serde(skip)]
     pub(super) pageview_idx_by_ts: FxHashMap<i64, PageviewRef>,
     /// user hash -> visitor_timestamp_id, supplementing `user_sessions` for
-    /// cookieless attribution within the batch.
+    /// cookieless attribution within the batch. The hash is unkeyed, so a sender
+    /// could grind user agents for values that collide under FxHash.
     #[serde(skip)]
-    pub(super) visitor_by_user_hash: FxHashMap<u128, i64>,
+    pub(super) visitor_by_user_hash: UntrustedKeyMap<u128, i64>,
     /// Highest timestamp id already written for this project, per type. Read
     /// lazily and dropped on flush so it always covers the rows on disk;
     /// backdated ids stay above it and therefore cannot collide with them.
@@ -172,10 +174,10 @@ impl BatchData {
         self.context_updates = Vec::new();
         self.forgets = Vec::new();
         self.orphan_events = Vec::new();
-        self.crawler_views = FxHashMap::default();
-        self.pageview_idx_by_client_id = FxHashMap::default();
+        self.crawler_views = UntrustedKeyMap::default();
+        self.pageview_idx_by_client_id = UntrustedKeyMap::default();
         self.pageview_idx_by_ts = FxHashMap::default();
-        self.visitor_by_user_hash = FxHashMap::default();
+        self.visitor_by_user_hash = UntrustedKeyMap::default();
         self.queued_pageview_ts = FxHashSet::default();
         self.queued_event_ts = FxHashSet::default();
         self.db_max_pageview_ts = None;
