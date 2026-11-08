@@ -14,6 +14,10 @@ const REDACTED_JSON_KEYS: &[&str] = &[
     "token",
     "id_token",
     "session_id",
+    "api_key",
+    "secret",
+    "service_account_json",
+    "oauth_code",
 ];
 
 /// At most one Sentry-bound `error!` per key within this window.
@@ -153,6 +157,9 @@ fn redact_json(value: &mut Value) {
 
 #[cfg(test)]
 mod tests {
+    use revscope_api::ga_import::ConnectRequest;
+    use revscope_api::settings::{IntegrationInput, SaveSettingsRequest};
+
     use super::*;
 
     #[test]
@@ -215,5 +222,55 @@ mod tests {
         assert_eq!(map["body"]["nested"]["token"], "redacted");
         assert_eq!(map["body"]["id_token"], "redacted");
         assert_eq!(map["body"]["ok"], 1);
+    }
+
+    #[test]
+    fn http_context_redacts_integration_credentials_from_saved_settings() {
+        let body = serde_json::to_vec(&SaveSettingsRequest {
+            integrations: vec![
+                IntegrationInput {
+                    integration_type: "stripe".into(),
+                    external_account_id: Some("acct_1".into()),
+                    api_key: Some("sk_live_customer".into()),
+                    secret: None,
+                },
+                IntegrationInput {
+                    integration_type: "google_search_console".into(),
+                    external_account_id: None,
+                    api_key: None,
+                    secret: Some("-----BEGIN PRIVATE KEY-----".into()),
+                },
+            ],
+            ..Default::default()
+        })
+        .expect("serialize settings");
+
+        let map = http_context_map("POST", "/v2/session/projects/1/settings", 500, &body);
+
+        let integrations = &map["body"]["integrations"];
+        assert_eq!(integrations[0]["api_key"], "redacted");
+        assert_eq!(integrations[0]["integration_type"], "stripe");
+        assert_eq!(integrations[0]["external_account_id"], "acct_1");
+        assert_eq!(integrations[1]["secret"], "redacted");
+    }
+
+    #[test]
+    fn http_context_redacts_google_analytics_connect_credentials() {
+        let service_account = serde_json::to_vec(&ConnectRequest::ServiceAccount {
+            service_account_json: r#"{"private_key":"-----BEGIN PRIVATE KEY-----"}"#.into(),
+        })
+        .expect("serialize service account");
+        let oauth = serde_json::to_vec(&ConnectRequest::OAuth {
+            oauth_code: "4/0google".into(),
+            oauth_state: "state".into(),
+        })
+        .expect("serialize oauth");
+        let path = "/v2/session/projects/1/ga-imports/connect";
+
+        let map = http_context_map("POST", path, 500, &service_account);
+        assert_eq!(map["body"]["service_account_json"], "redacted");
+
+        let map = http_context_map("POST", path, 500, &oauth);
+        assert_eq!(map["body"]["oauth_code"], "redacted");
     }
 }
