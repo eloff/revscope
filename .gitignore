@@ -12,6 +12,10 @@ node_modules/
 /scripts/*
 !/scripts/download-maxmind.sh
 !/scripts/update-ip-ranges.mjs
+!/scripts/lib.sh
+!/scripts/worktree-new.sh
+!/scripts/check.sh
+!/scripts/land.sh
 *.env
 .env.*
 !.env.example

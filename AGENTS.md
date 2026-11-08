@@ -1,6 +1,8 @@
 ## Workflow
 
-When a task is done, run the checks in CONTRIBUTING.md for every part you touched and commit with `git commit -s` (CI rejects commits without sign-off). Then run the harden skill (`.agents/skills/harden/SKILL.md`), committing with `-s` after each round once the checks pass. Open a pull request as described in CONTRIBUTING.md.
+Do each task in its own worktree. `scripts/worktree-new.sh <branch>` creates `../revscope-<branch>` on a new branch from origin/main, with the web dependencies installed and your local `.env` files linked in.
+
+When a task is done, make `scripts/check.sh` pass and commit with `git commit -s` (CI rejects commits without sign-off). It runs the checks in CONTRIBUTING.md for each part you changed, except the `e2e/` tests, which need a running target. Then run the harden skill (`.agents/skills/harden/SKILL.md`), committing with `-s` after each round once the checks pass. Open a pull request as described in CONTRIBUTING.md.
 
 ## Code
 
