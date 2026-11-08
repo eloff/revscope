@@ -14,7 +14,7 @@ import {
   Show,
   untrack,
 } from "solid-js";
-import revscopeLogo from "../../assets/revscope-logo.webp";
+import revscopeLogo from "../../assets/revscope-logo.svg";
 import {
   clampRangeToMaxDays,
   DATE_SHORTCUT_OPTIONS,
