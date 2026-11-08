@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::{Semaphore, watch};
 
 use dashmap::DashMap;
 use dashmap::DashSet;
@@ -12,7 +13,7 @@ use instant_acme::{
     LetsEncrypt, NewAccount, NewOrder, Order, OrderStatus, Problem, RetryPolicy,
 };
 use log::{error, info, warn};
-use parking_lot::{Condvar, Mutex, RwLock};
+use parking_lot::RwLock;
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 
@@ -72,10 +73,16 @@ const RENEWAL_RETRY_INTERVAL: Duration = Duration::from_secs(15 * 60);
 /// Let's Encrypt pauses a hostname after 1,152 consecutive failed validations,
 /// and this pace stays under that for the whole [`RENEW_BEFORE_EXPIRY`] window.
 const PLATFORM_RENEWAL_RETRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
-/// How long a TLS handshake may block waiting for an in-flight HTTP-01 order.
+/// How long a TLS handshake may wait for an in-flight HTTP-01 order.
 /// Kept under typical browser TLS timeouts; the settings save already starts
 /// issuance so this is the remainder, not a full order from a cold start.
 const ISSUANCE_WAIT: Duration = Duration::from_secs(25);
+/// How many handshakes may wait for certificates at once, across all orders.
+/// Nothing watches a waiting client's socket, so without a limit a client could
+/// send a ClientHello and hang up, over and over, and fill every connection slot
+/// without keeping a socket open. This only protects a connection cap larger than
+/// itself, as the default is.
+const MAX_WAITING_HANDSHAKES: usize = 1024;
 /// How long to poll Let's Encrypt for one order to become ready, and again for
 /// the certificate after finalize. Handshake waiters use [`ISSUANCE_WAIT`] and
 /// return sooner; this is the background order, not the first connection.
@@ -225,6 +232,8 @@ pub(crate) struct AcmeState {
     /// In-flight ACME orders, keyed by [`PLATFORM_ORDER_KEY`] or the custom
     /// hostname, so concurrent handshakes wait on one order.
     in_flight: DashMap<String, Arc<IssuanceWaiter>>,
+    /// Places for handshakes to wait on an order, [`MAX_WAITING_HANDSHAKES`] in all.
+    handshake_waits: Semaphore,
     /// Last failed order per key, so a broken CNAME cannot retry on every
     /// handshake.
     last_failure: DashMap<String, Instant>,
@@ -238,6 +247,7 @@ impl AcmeState {
             certificates: Arc::new(CertificateStore::new()),
             custom_domains: DashSet::new(),
             in_flight: DashMap::new(),
+            handshake_waits: Semaphore::new(MAX_WAITING_HANDSHAKES),
             last_failure: DashMap::new(),
             config: RwLock::new(None),
         }
@@ -313,58 +323,63 @@ impl AcmeState {
         }
     }
 
-    /// Picks the certificate for this handshake. Missing SNI uses the first
-    /// platform domain. If the name is allowed but the certificate is not
-    /// installed yet, blocks up to [`ISSUANCE_WAIT`] while HTTP-01 completes.
-    pub(crate) fn resolve_sni(
-        &self,
-        server_context: &Arc<ServerContext>,
-        server_name: Option<&str>,
-    ) -> Option<Arc<CertifiedKey>> {
-        let name = match server_name
+    /// The hostname a handshake is for. Missing SNI uses the first platform
+    /// domain.
+    fn handshake_name(&self, server_name: Option<&str>) -> Option<String> {
+        match server_name
             .map(normalize_sni)
             .filter(|name| !name.is_empty())
         {
-            Some(name) => name,
-            None => self.platform_domains().into_iter().next()?,
-        };
-        if let Some(key) = self.certificates.certified_key(&name) {
-            return Some(key);
+            Some(name) => Some(name),
+            None => self.platform_domains().into_iter().next(),
         }
-        if !self.is_allowed(&name) {
-            return None;
-        }
-        wait_for_certificate(server_context, &name)
+    }
+
+    /// Picks the certificate for this handshake. rustls calls this on a runtime
+    /// worker, so it only looks one up; [`wait_for_handshake_certificate`] does
+    /// any waiting first.
+    pub(crate) fn resolve_sni(&self, server_name: Option<&str>) -> Option<Arc<CertifiedKey>> {
+        self.certificates
+            .certified_key(&self.handshake_name(server_name)?)
+    }
+
+    /// Records a running order for `name`, without contacting an ACME server.
+    #[cfg(test)]
+    pub(crate) fn start_test_order(&self, name: &str) -> Arc<IssuanceWaiter> {
+        self.custom_domains.insert(name.to_string());
+        let waiter = Arc::new(IssuanceWaiter::new());
+        self.in_flight.insert(name.to_string(), waiter.clone());
+        waiter
     }
 }
 
-/// Waiter a handshake parks on while an ACME order for that name is running.
-struct IssuanceWaiter {
-    finished: Mutex<bool>,
-    condvar: Condvar,
+/// Lets handshakes wait while an ACME order for their name is running.
+pub(crate) struct IssuanceWaiter {
+    finished: watch::Sender<bool>,
 }
 
 impl IssuanceWaiter {
     fn new() -> Self {
         Self {
-            finished: Mutex::new(false),
-            condvar: Condvar::new(),
+            finished: watch::Sender::new(false),
         }
     }
 
-    fn wait_timeout(&self, timeout: Duration) -> bool {
-        let mut finished = self.finished.lock();
-        if *finished {
-            return true;
-        }
-        self.condvar.wait_for(&mut finished, timeout);
-        *finished
+    async fn wait_timeout(&self, timeout: Duration) -> bool {
+        let mut finished = self.finished.subscribe();
+        matches!(
+            tokio::time::timeout(timeout, finished.wait_for(|finished| *finished)).await,
+            Ok(Ok(_))
+        )
     }
 
-    fn finish(&self) {
-        let mut finished = self.finished.lock();
-        *finished = true;
-        self.condvar.notify_all();
+    pub(crate) fn finish(&self) {
+        self.finished.send_replace(true);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_waiters(&self) -> bool {
+        self.finished.receiver_count() > 0
     }
 }
 
@@ -384,7 +399,7 @@ impl ResolvesServerCert for SniCertificateResolver {
     fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         self.server_context
             .acme
-            .resolve_sni(&self.server_context, client_hello.server_name())
+            .resolve_sni(client_hello.server_name())
     }
 }
 
@@ -442,25 +457,37 @@ pub(crate) fn request_issuance(server_context: Arc<ServerContext>, domain: &str)
     let _ = order_if_missing(&server_context, domain);
 }
 
-fn wait_for_certificate(
+/// If the handshake's name is allowed but has no certificate yet, starts or
+/// joins its order and waits up to [`ISSUANCE_WAIT`] for HTTP-01 to complete,
+/// unless [`MAX_WAITING_HANDSHAKES`] are already waiting.
+/// This has to run before rustls takes over, because its certificate resolver
+/// is synchronous and waiting there would stall a runtime worker.
+pub(crate) async fn wait_for_handshake_certificate(
     server_context: &Arc<ServerContext>,
-    name: &str,
-) -> Option<Arc<CertifiedKey>> {
-    if let Some(key) = server_context.acme.certificates.certified_key(name) {
-        return Some(key);
+    server_name: Option<&str>,
+) {
+    let acme = &server_context.acme;
+    let Some(name) = acme.handshake_name(server_name) else {
+        return;
+    };
+    if acme.certificates.certified_key(&name).is_some() || !acme.is_allowed(&name) {
+        return;
     }
-    let order_key = server_context.acme.order_key(name);
-    if let Some(failed_at) = server_context.acme.last_failure.get(&order_key)
-        && server_context.acme.in_flight.get(&order_key).is_none()
+    let order_key = acme.order_key(&name);
+    if let Some(failed_at) = acme.last_failure.get(&order_key)
+        && acme.in_flight.get(&order_key).is_none()
         && failed_at.elapsed() < RENEWAL_RETRY_INTERVAL
     {
-        return None;
+        return;
     }
-    let Some(waiter) = order_if_missing(server_context, name) else {
-        return server_context.acme.certificates.certified_key(name);
+    let Some(waiter) = order_if_missing(server_context, &name) else {
+        return;
     };
-    waiter.wait_timeout(ISSUANCE_WAIT);
-    server_context.acme.certificates.certified_key(name)
+    let Ok(_place) = acme.handshake_waits.try_acquire() else {
+        info!("too many handshakes are waiting for certificates; not waiting for {name}");
+        return;
+    };
+    waiter.wait_timeout(ISSUANCE_WAIT).await;
 }
 
 /// For callers that only need a certificate to exist. Renewal must replace an
@@ -1250,7 +1277,7 @@ mod tests {
         assert!(server_context.acme.last_failure.contains_key(order_key));
         let served = server_context
             .acme
-            .resolve_sni(&server_context, Some(names[0]))
+            .resolve_sni(Some(names[0]))
             .expect("the current certificate stays in service");
         assert_eq!(served.cert, current.cert);
     }
@@ -1603,17 +1630,17 @@ mod tests {
 
         let api = server_context
             .acme
-            .resolve_sni(&server_context, Some("api.revscope.co"))
+            .resolve_sni(Some("api.revscope.co"))
             .expect("api sni");
         let custom = server_context
             .acme
-            .resolve_sni(&server_context, Some("assets.example.com"))
+            .resolve_sni(Some("assets.example.com"))
             .expect("custom sni");
         assert_ne!(api.cert, custom.cert);
         assert!(
             server_context
                 .acme
-                .resolve_sni(&server_context, Some("unknown.example.com"))
+                .resolve_sni(Some("unknown.example.com"))
                 .is_none()
         );
     }
@@ -1643,7 +1670,7 @@ mod tests {
 
         let resolved = server_context
             .acme
-            .resolve_sni(&server_context, None)
+            .resolve_sni(None)
             .expect("default certificate");
         let expected = server_context
             .acme
@@ -1656,12 +1683,7 @@ mod tests {
     #[test]
     fn missing_sni_has_no_default_before_acme_is_configured() {
         let server_context = test_context();
-        assert!(
-            server_context
-                .acme
-                .resolve_sni(&server_context, None)
-                .is_none()
-        );
+        assert!(server_context.acme.resolve_sni(None).is_none());
     }
 
     #[test]
@@ -1711,23 +1733,18 @@ mod tests {
         assert_eq!(state.order_key("assets.example.org"), "assets.example.org");
     }
 
-    #[test]
-    fn waits_for_an_in_flight_certificate_up_to_the_time_limit() {
+    #[tokio::test]
+    async fn waits_for_an_in_flight_certificate() {
         let server_context = test_context();
-        server_context
-            .acme
-            .custom_domains
-            .insert("assets.example.com".to_string());
-        let waiter = Arc::new(IssuanceWaiter::new());
-        server_context
-            .acme
-            .in_flight
-            .insert("assets.example.com".to_string(), waiter.clone());
+        let waiter = server_context.acme.start_test_order("assets.example.com");
 
         let installer = {
             let server_context = server_context.clone();
             let waiter = waiter.clone();
-            std::thread::spawn(move || {
+            tokio::spawn(async move {
+                while !waiter.has_waiters() {
+                    tokio::task::yield_now().await;
+                }
                 let (pem, key) = self_signed(&["assets.example.com"]);
                 server_context
                     .acme
@@ -1738,17 +1755,174 @@ mod tests {
             })
         };
 
-        let resolved = server_context
+        wait_for_handshake_certificate(&server_context, Some("assets.example.com")).await;
+        tokio::time::timeout(Duration::from_secs(5), installer)
+            .await
+            .expect("the handshake should have waited on the order")
+            .expect("installer");
+        assert!(
+            server_context
+                .acme
+                .resolve_sni(Some("assets.example.com"))
+                .is_some(),
+            "handshake should receive the new cert"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_handshake_without_sni_waits_on_the_platform_order() {
+        let server_context = test_context();
+        server_context
             .acme
-            .resolve_sni(&server_context, Some("assets.example.com"));
-        installer.join().expect("installer");
-        assert!(resolved.is_some(), "handshake should receive the new cert");
+            .set_config(test_config(&["eu1.revscope.co"]));
+        server_context.acme.in_flight.insert(
+            PLATFORM_ORDER_KEY.to_string(),
+            Arc::new(IssuanceWaiter::new()),
+        );
+        let started = tokio::time::Instant::now();
+
+        wait_for_handshake_certificate(&server_context, None).await;
+
+        assert_eq!(started.elapsed(), ISSUANCE_WAIT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_the_handshakes_past_the_limit_skip_the_wait() {
+        let server_context = test_context();
+        let _order = server_context.acme.start_test_order("assets.example.com");
+        let waiting = u32::try_from(MAX_WAITING_HANDSHAKES).expect("limit fits");
+        let _others = server_context
+            .acme
+            .handshake_waits
+            .try_acquire_many(waiting - 1)
+            .expect("places are free");
+
+        let started = tokio::time::Instant::now();
+        wait_for_handshake_certificate(&server_context, Some("assets.example.com")).await;
+        assert_eq!(started.elapsed(), ISSUANCE_WAIT);
+
+        let _last = server_context
+            .acme
+            .handshake_waits
+            .try_acquire()
+            .expect("one place is left");
+        let started = tokio::time::Instant::now();
+        wait_for_handshake_certificate(&server_context, Some("assets.example.com")).await;
+        assert_eq!(started.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn a_waiting_handshake_holds_its_place_until_cancelled() {
+        let server_context = test_context();
+        let order = server_context.acme.start_test_order("assets.example.com");
+        let handshake = {
+            let server_context = server_context.clone();
+            tokio::spawn(async move {
+                wait_for_handshake_certificate(&server_context, Some("assets.example.com")).await;
+            })
+        };
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !order.has_waiters() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the handshake should wait on the order");
+        assert_eq!(
+            server_context.acme.handshake_waits.available_permits(),
+            MAX_WAITING_HANDSHAKES - 1
+        );
+
+        handshake.abort();
+        let _ = handshake.await;
+        assert_eq!(
+            server_context.acme.handshake_waits.available_permits(),
+            MAX_WAITING_HANDSHAKES
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_handshake_past_the_limit_still_starts_the_order() {
+        let server_context = test_context();
+        server_context
+            .acme
+            .set_config(test_config(&["eu1.revscope.co"]));
+        server_context
+            .acme
+            .custom_domains
+            .insert("assets.example.com".to_string());
+        let waiting = u32::try_from(MAX_WAITING_HANDSHAKES).expect("limit fits");
+        let _others = server_context
+            .acme
+            .handshake_waits
+            .try_acquire_many(waiting)
+            .expect("places are free");
+
+        wait_for_handshake_certificate(&server_context, Some("assets.example.com")).await;
+
+        assert!(
+            server_context
+                .acme
+                .in_flight
+                .contains_key("assets.example.com")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_handshake_for_an_unknown_name_starts_no_order() {
+        let server_context = test_context();
+        server_context
+            .acme
+            .set_config(test_config(&["eu1.revscope.co"]));
+
+        wait_for_handshake_certificate(&server_context, Some("unknown.example.com")).await;
+
+        assert!(server_context.acme.in_flight.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_handshake_during_the_cooldown_starts_no_order() {
+        let server_context = test_context();
+        server_context
+            .acme
+            .set_config(test_config(&["eu1.revscope.co"]));
+        server_context
+            .acme
+            .custom_domains
+            .insert("assets.example.com".to_string());
+        server_context
+            .acme
+            .last_failure
+            .insert("assets.example.com".to_string(), Instant::now());
+
+        wait_for_handshake_certificate(&server_context, Some("assets.example.com")).await;
+
+        assert!(server_context.acme.in_flight.is_empty());
     }
 
     #[test]
-    fn issuance_waiter_times_out_when_the_order_never_finishes() {
+    fn resolving_a_missing_certificate_neither_waits_nor_orders() {
+        let server_context = test_context();
+        server_context
+            .acme
+            .set_config(test_config(&["eu1.revscope.co"]));
+
+        assert!(server_context.acme.resolve_sni(None).is_none());
+        assert!(server_context.acme.in_flight.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn issuance_waiter_times_out_when_the_order_never_finishes() {
         let waiter = IssuanceWaiter::new();
-        assert!(!waiter.wait_timeout(Duration::from_millis(20)));
+        assert!(!waiter.wait_timeout(ISSUANCE_WAIT).await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn issuance_waiter_returns_at_once_after_the_order_finished() {
+        let waiter = IssuanceWaiter::new();
+        waiter.finish();
+        assert!(waiter.wait_timeout(Duration::ZERO).await);
     }
 
     #[test]

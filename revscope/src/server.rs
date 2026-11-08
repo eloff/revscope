@@ -5,13 +5,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use log::{error, info, warn};
+use rustls::ServerConfig;
+use rustls::server::Acceptor;
 use socket2::{Domain, Socket, Type};
 use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, mpsc};
 use tokio::time::timeout;
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::LazyConfigAcceptor;
+use tokio_rustls::server::TlsStream;
 
 use crate::db::default_server_context;
 use crate::http::{
@@ -113,15 +116,13 @@ pub async fn run_tls_listener(
     shutdown: Arc<Notify>,
     server_context: Arc<ServerContext>,
 ) -> io::Result<()> {
-    let acceptor = TlsAcceptor::from(crate::tls::server_config(crate::acme::sni_resolver(
-        server_context.clone(),
-    )));
-    accept_loop(listener, Some(acceptor), hooks, shutdown, server_context).await
+    let tls_config = crate::tls::server_config(crate::acme::sni_resolver(server_context.clone()));
+    accept_loop(listener, Some(tls_config), hooks, shutdown, server_context).await
 }
 
 async fn accept_loop(
     listener: TcpListener,
-    tls_acceptor: Option<TlsAcceptor>,
+    tls_config: Option<Arc<ServerConfig>>,
     hooks: ServerHooks,
     shutdown: Arc<Notify>,
     server_context: Arc<ServerContext>,
@@ -176,12 +177,12 @@ async fn accept_loop(
                 };
                 let connection_hooks = hooks.clone();
                 let connection_context = server_context.clone();
-                let connection_acceptor = tls_acceptor.clone();
+                let connection_tls_config = tls_config.clone();
                 crate::task::spawn(server_context.clone(), async move {
                     let _connection_slot = connection_slot;
-                    let result = match connection_acceptor {
-                        Some(acceptor) => serve_tls_connection(
-                            acceptor,
+                    let result = match connection_tls_config {
+                        Some(tls_config) => serve_tls_connection(
+                            tls_config,
                             stream,
                             peer_addr,
                             connection_hooks,
@@ -275,10 +276,24 @@ fn classify_accept_error(error: &io::Error) -> AcceptError {
     AcceptError::Fatal
 }
 
+/// Reads the ClientHello before committing to rustls, so a handshake for a
+/// certificate still being issued waits on this task rather than in rustls's
+/// synchronous resolver.
+async fn accept_tls(
+    tls_config: Arc<ServerConfig>,
+    stream: TcpStream,
+    server_context: &Arc<ServerContext>,
+) -> io::Result<TlsStream<TcpStream>> {
+    let handshake = LazyConfigAcceptor::new(Acceptor::default(), stream).await?;
+    let server_name = handshake.client_hello().server_name().map(str::to_owned);
+    crate::acme::wait_for_handshake_certificate(server_context, server_name.as_deref()).await;
+    handshake.into_stream(tls_config).await
+}
+
 /// Completes the TLS handshake, then hands the decrypted stream to the same
 /// request loop the plain listener uses.
 async fn serve_tls_connection(
-    acceptor: TlsAcceptor,
+    tls_config: Arc<ServerConfig>,
     stream: TcpStream,
     peer_addr: SocketAddr,
     hooks: ServerHooks,
@@ -287,7 +302,8 @@ async fn serve_tls_connection(
     // A failed handshake is routine on port 443 (port scans, clients that
     // reject our certificate, connections opened before the first certificate
     // is issued), so it is logged rather than reported as a server error.
-    let mut stream = match timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+    let handshake = accept_tls(tls_config, stream, &server_context);
+    let mut stream = match timeout(TLS_HANDSHAKE_TIMEOUT, handshake).await {
         Ok(Ok(stream)) => stream,
         Ok(Err(error)) => {
             info!("TLS handshake from {peer_addr} failed: {error}");
@@ -912,6 +928,48 @@ mod tests {
             .connect(server_name, stream)
             .await
             .expect("tls handshake")
+    }
+
+    /// With one runtime worker, the certificate can only arrive if the waiting
+    /// handshake leaves that worker free.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_handshake_waiting_for_a_certificate_leaves_the_worker_free() {
+        let (leaf_pem, leaf_key_pem, authority) = test_certificate_chain();
+        let server_context = Arc::new(crate::server_context::ServerContext::new_in_memory(
+            "tls-waits-without-blocking",
+        ));
+        let order = server_context.acme.start_test_order("localhost");
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let shutdown = Arc::new(Notify::new());
+        let server = tokio::spawn(run_tls_listener(
+            listener,
+            ServerHooks::default(),
+            shutdown.clone(),
+            server_context.clone(),
+        ));
+        let client = tokio::spawn(tls_connect(addr, authority));
+
+        timeout(Duration::from_secs(5), async {
+            while !order.has_waiters() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the handshake should wait for the order");
+        server_context
+            .acme
+            .certificates()
+            .install_pem(&["localhost".to_string()], &leaf_pem, &leaf_key_pem)
+            .expect("install certificate");
+        order.finish();
+
+        timeout(Duration::from_secs(5), client)
+            .await
+            .expect("the handshake should finish once the certificate exists")
+            .expect("client task");
+        shutdown.notify_waiters();
+        server.await.expect("server task").expect("server result");
     }
 
     async fn https_request(
