@@ -38,6 +38,16 @@ describe("SignupForm", () => {
     expect(screen.getByLabelText("Email")).toHaveValue("ada@example.com");
   });
 
+  it("returns to the page that sent it here", async () => {
+    const assign = stubLocation("/signup", "?next=%2Foauth%2Fauthorize%3Fscope%3Dcli");
+    mockApi("post", SIGNUP, testSession());
+    render(() => <SignupForm />);
+    await fillIn("Ada", "ada@example.com", "correctHorse9!");
+    submit();
+
+    await vi.waitFor(() => expect(assign).toHaveBeenCalledWith("/oauth/authorize?scope=cli"));
+  });
+
   it("creates the account, saves the session and opens the dashboard", async () => {
     const assign = stubLocation("/signup");
     const calls = mockApi("post", SIGNUP, testSession());

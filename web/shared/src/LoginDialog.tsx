@@ -39,15 +39,16 @@ import {
   title,
 } from "./LoginDialog.css";
 import { readLastLoginMethod } from "./lastLoginMethod";
-import { appPath, SELF_HOSTED, signupPath } from "./links";
+import { appPath, returnPathFrom, SELF_HOSTED, signupHref } from "./links";
 import SocialSignIn from "./SocialSignIn";
 
 type LoginDialogProps = {
   triggerLabel?: string;
   triggerClass?: string;
   /**
-   * Where to go once logged in. Defaults to the dashboard; the MCP consent page
-   * points it back at itself so the flow it was in the middle of continues.
+   * Where to go once logged in, or signed up through the Sign up link. Defaults
+   * to the page's `next`, then the dashboard; the OAuth consent page points it back
+   * at itself so the flow it was in the middle of continues.
    */
   redirectTo?: string;
   /**
@@ -172,11 +173,12 @@ export default function LoginDialog(props: LoginDialogProps) {
       .catch(() => setSignupOpen(false));
   });
 
-  const signupHref = () => {
-    const trimmedEmail = email().trim();
-    const signup = signupPath();
-    return trimmedEmail ? `${signup}?email=${encodeURIComponent(trimmedEmail)}` : signup;
-  };
+  // Without a page of its own to return to, the dialog honours the page's `next`,
+  // so a signup page that was given one still goes back there, however it's left.
+  const returnTo = () =>
+    props.redirectTo ??
+    (typeof window === "undefined" ? null : returnPathFrom(window.location.search));
+  const destination = () => returnTo() ?? appPath("/dashboard");
 
   const onIdTokenSignIn = async (signIn: IdTokenSignIn) => {
     setErrorMessage("");
@@ -184,7 +186,7 @@ export default function LoginDialog(props: LoginDialogProps) {
     setIsSubmitting(true);
     try {
       await signInWithIdToken(signIn);
-      window.location.assign(props.redirectTo ?? appPath("/dashboard"));
+      window.location.assign(destination());
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Unable to log in.");
     } finally {
@@ -252,7 +254,7 @@ export default function LoginDialog(props: LoginDialogProps) {
       }
       saveAuthSession(session);
       writeRememberedEmail(rememberMe() ? trimmedEmail : null);
-      window.location.assign(props.redirectTo ?? appPath("/dashboard"));
+      window.location.assign(destination());
     } catch {
       setErrorMessage("Unable to reach the server.");
     } finally {
@@ -352,7 +354,10 @@ export default function LoginDialog(props: LoginDialogProps) {
                     {submitLabel()}
                   </button>
                   <Show when={signupOpen()}>
-                    <a href={signupHref()} class={secondaryButton}>
+                    <a
+                      href={signupHref(email().trim(), returnTo() ?? undefined)}
+                      class={secondaryButton}
+                    >
                       Sign up
                     </a>
                   </Show>

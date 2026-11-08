@@ -135,6 +135,25 @@ describe("LoginDialog", () => {
     expect(localStorage.getItem(REMEMBERED_EMAIL_KEY)).toBe("ada@example.com");
   });
 
+  it("keeps the page's own next on the Sign up link", async () => {
+    stubLocation("/signup", "?next=%2Foauth%2Fauthorize%3Fx%3D1");
+    const { user } = await renderDialog();
+    await openDialog(user);
+    expect(screen.getByRole("link", { name: "Sign up" })).toHaveAttribute(
+      "href",
+      "/signup?next=%2Foauth%2Fauthorize%3Fx%3D1",
+    );
+  });
+
+  it("sends Sign up on with the page to return to", async () => {
+    const { user } = await renderDialog({ redirectTo: "/oauth/authorize?x=1" });
+    await openDialog(user);
+    expect(screen.getByRole("link", { name: "Sign up" })).toHaveAttribute(
+      "href",
+      "/signup?next=%2Foauth%2Fauthorize%3Fx%3D1",
+    );
+  });
+
   it("prefills a remembered email with remember me checked", async () => {
     localStorage.setItem(REMEMBERED_EMAIL_KEY, "ada@example.com");
     const { user } = await renderDialog();

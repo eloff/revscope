@@ -186,8 +186,8 @@ export default function OAuthAuthorize() {
     <div class={card}>
       <Show when={requestRead() && !request()}>
         <p class={statusMessage}>
-          This page completes a connection started by an MCP client. Open it from your client rather
-          than directly.
+          This page completes a sign-in started by the RevScope CLI or an MCP client. Start it from
+          there rather than opening this page directly.
         </p>
       </Show>
 
@@ -198,7 +198,12 @@ export default function OAuthAuthorize() {
             fallback={
               <>
                 <p class={statusMessage}>
-                  Log in to connect your RevScope account to this MCP client.
+                  <Show
+                    when={forCli()}
+                    fallback={<>Log in to connect your RevScope account to this MCP client.</>}
+                  >
+                    Log in to finish signing in to the RevScope CLI.
+                  </Show>
                 </p>
                 <div class={actionRow}>
                   <LoginDialog

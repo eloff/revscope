@@ -707,12 +707,17 @@ async fn the_free_plan_is_held_to_one_project_and_names_are_checked() -> io::Res
     listed.assert_ok();
     assert_eq!(listed.json()["projects"][0]["name"], json!(account.project));
 
+    // The name isn't the one the website would give.
+    let second_name = unique_slug("second");
     let second = cli
         .run(&[
+            "--json",
             "projects",
             "create",
             "--website",
-            &format!("https://{}.example", unique_slug("second")),
+            &format!("https://{}.example", unique_slug("site")),
+            "--project-name",
+            &second_name,
         ])
         .await;
     // Without the billing module, signups get a complimentary plan with no such limit.
@@ -720,6 +725,7 @@ async fn the_free_plan_is_held_to_one_project_and_names_are_checked() -> io::Res
         second.assert_exit(4);
     } else {
         second.assert_ok();
+        assert_eq!(second.json()["name"], json!(second_name));
     }
 
     cli.run(&["--project", &account.project, "tables"])

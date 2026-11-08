@@ -154,9 +154,13 @@ pub enum ProjectsCommand {
 
 #[derive(Debug, Args)]
 pub struct CreateProjectArgs {
-    /// The website to track, such as `https://blog.example.com`.
+    /// The project's website, such as `https://blog.example.com`. Required, but only used
+    /// to derive the project's name when `--project-name` isn't given.
     #[arg(long, value_parser = non_blank)]
     pub website: String,
+    /// The project's name. Defaults to one derived from the website.
+    #[arg(long)]
+    pub project_name: Option<String>,
     /// IANA time zone for the dashboards. Defaults to UTC.
     #[arg(long)]
     pub timezone: Option<String>,

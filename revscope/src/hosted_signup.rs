@@ -20,7 +20,7 @@ use crate::db::project::{delete_project_database, parse_uuid_key};
 use crate::db::{insert_project, open_main_database_write, remove_project_database};
 use crate::projects::{
     PROJECT_NAME_TAKEN, claim_project_name, is_project_name_retired, is_project_name_taken,
-    normalize_website, signup_project_name,
+    new_project_name, normalize_website,
 };
 use crate::server_context::ServerContext;
 
@@ -62,7 +62,7 @@ fn validated_account(account: &NewAccountRequest) -> Result<ValidatedAccount, Au
             "Website must include a domain (e.g. mywebsite.com).",
         ));
     }
-    let project_name = signup_project_name(&account_name, account.project_name.as_deref())?;
+    let project_name = new_project_name(&account_name, account.project_name.as_deref())?;
     let terms = signup_terms(account)?;
     Ok(ValidatedAccount {
         account_name,

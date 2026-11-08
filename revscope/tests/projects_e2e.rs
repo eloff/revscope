@@ -74,6 +74,30 @@ async fn a_growth_account_adds_projects_and_deletes_all_but_the_last() -> io::Re
         .await?;
     assert_eq!(duplicate.status_code(), 409, "{}", duplicate.body_str());
 
+    // A chosen name gets past that, and is checked like signup's.
+    let invalid = server
+        .post_json(
+            CREATE_PATH,
+            &json!({ "website": website, "project_name": "Not-Valid" }).to_string(),
+            &cookie,
+        )
+        .await?;
+    assert_eq!(invalid.status_code(), 400, "{}", invalid.body_str());
+    let chosen_name = format!("{new_name}_two");
+    let chosen = server
+        .post_json(
+            CREATE_PATH,
+            &json!({ "website": website, "project_name": format!(" {chosen_name} ") }).to_string(),
+            &cookie,
+        )
+        .await?;
+    assert_eq!(chosen.status_code(), 200, "{}", chosen.body_str());
+    let chosen: Value = chosen.json();
+    assert_eq!(chosen["name"], json!(chosen_name));
+    let chosen_id = chosen["id"].as_str().expect("id");
+    let removed = delete(&server, chosen_id, &chosen_name, &account.cookie).await?;
+    assert_eq!(removed.status_code(), 200, "{}", removed.body_str());
+
     // The new project ingests and reads like the first.
     let hit = TrackHit::pageview(&new_name, "/", &page_id(1));
     let ingest = server

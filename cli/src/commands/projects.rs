@@ -24,11 +24,12 @@ pub fn list(context: &Context) -> Result<Report> {
 pub fn create(context: &Context, args: &CreateProjectArgs) -> Result<Report> {
     let body = CreateProjectRequest {
         website: args.website.clone(),
+        project_name: args.project_name.clone(),
         timezone: args.timezone.clone(),
     };
     let created: CreateProjectResponse = context.client.post(paths::PROJECTS, &body)?;
     // Only for the warning, so a failure here must not read as the create failing.
-    let note = match &args.timezone {
+    let timezone = match &args.timezone {
         None => None,
         Some(_) => context
             .client
@@ -36,7 +37,25 @@ pub fn create(context: &Context, args: &CreateProjectArgs) -> Result<Report> {
             .ok()
             .and_then(|saved| timezone_note(args.timezone.as_deref(), Some(&saved.timezone))),
     };
+    let note = [
+        name_note(args.project_name.as_deref(), &created.name),
+        timezone,
+    ]
+    .into_iter()
+    .flatten()
+    .reduce(|first, second| format!("{first}\n{second}"));
     Report::of(&Created { created, note })
+}
+
+/// Servers older than `--project-name` ignore it and name the project after the
+/// website, so the name asked for may not be the one made.
+fn name_note(requested: Option<&str>, created: &str) -> Option<String> {
+    let requested = requested.map(str::trim).filter(|name| !name.is_empty())?;
+    (requested != created).then(|| {
+        format!(
+            "Warning: the server named the project `{created}`, not `{requested}`, because it is too old for `--project-name`."
+        )
+    })
 }
 
 #[derive(Serialize)]
@@ -84,5 +103,21 @@ impl Render for Created {
             out.push_str(note);
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::name_note;
+
+    #[test]
+    fn a_name_the_server_ignored_is_pointed_out() {
+        assert_eq!(name_note(None, "blogexamplecom"), None);
+        assert_eq!(name_note(Some("  "), "blogexamplecom"), None);
+        assert_eq!(name_note(Some(" my_blog "), "my_blog"), None);
+        assert!(
+            name_note(Some("my_blog"), "blogexamplecom")
+                .is_some_and(|note| note.contains("`blogexamplecom`, not `my_blog`"))
+        );
     }
 }

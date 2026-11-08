@@ -48,7 +48,7 @@ revscope query "SELECT p.path, COUNT(*) AS views
 | `logout` | Revokes the credential on the server and forgets it here. |
 | `whoami` | Shows the signed-in user and their projects. |
 | `password-reset` | Emails a link for setting the account's password. |
-| `projects list`, `create` | Lists projects, or adds one. The free plan allows one. |
+| `projects list`, `create` | Lists projects, or adds one, named after its website or `--project-name`. The free plan allows one. |
 | `settings show`, `set` | Time zone, payment success path, and custom domain. |
 | `install snippet` | Prints the tracker snippet, pointing at this project's server. |
 | `install status` | Recent events, including those not saved yet, and integration sync status. |

@@ -93,11 +93,11 @@ pub(crate) fn check_new_project_name(name: &str) -> Result<(), AuthError> {
     Ok(())
 }
 
-/// The name a signup's first project gets: the one the signup form sent, which
-/// the user may have edited, or else the one its website becomes. A sent name
-/// is only trimmed, not reduced, so the project is named exactly what the form
-/// showed; a blank one counts as not sent.
-pub(crate) fn signup_project_name(
+/// The name a new project gets: the one the request sent, which the user may
+/// have edited, or else the one its website becomes. A sent name is only
+/// trimmed, not reduced, so the project is named exactly what the form showed;
+/// a blank one counts as not sent.
+pub(crate) fn new_project_name(
     website: &str,
     requested: Option<&str>,
 ) -> Result<String, AuthError> {
@@ -461,25 +461,25 @@ mod tests {
     }
 
     #[test]
-    fn a_signup_project_name_is_the_one_sent_or_else_the_websites() {
+    fn a_new_project_name_is_the_one_sent_or_else_the_websites() {
         assert_eq!(
-            signup_project_name("https://Shop.Example.com/", None).unwrap(),
+            new_project_name("https://Shop.Example.com/", None).unwrap(),
             "shopexamplecom"
         );
         assert_eq!(
-            signup_project_name("shop.example.com", Some("  ")).unwrap(),
+            new_project_name("shop.example.com", Some("  ")).unwrap(),
             "shopexamplecom"
         );
         assert_eq!(
-            signup_project_name("shop.example.com", Some(" my_shop ")).unwrap(),
+            new_project_name("shop.example.com", Some(" my_shop ")).unwrap(),
             "my_shop"
         );
         // A sent name isn't reduced into a valid one.
-        assert!(signup_project_name("shop.example.com", Some("My-Shop")).is_err());
-        assert!(signup_project_name("shop.example.com", Some("ab")).is_err());
-        assert!(signup_project_name("a.b", None).is_err());
-        assert!(signup_project_name("shop.example.com", Some("demo")).is_err());
-        assert!(signup_project_name("demo", None).is_err());
+        assert!(new_project_name("shop.example.com", Some("My-Shop")).is_err());
+        assert!(new_project_name("shop.example.com", Some("ab")).is_err());
+        assert!(new_project_name("a.b", None).is_err());
+        assert!(new_project_name("shop.example.com", Some("demo")).is_err());
+        assert!(new_project_name("demo", None).is_err());
     }
 
     #[test]

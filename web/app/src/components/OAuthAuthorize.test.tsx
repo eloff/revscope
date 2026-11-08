@@ -25,7 +25,7 @@ describe("OAuthAuthorize", () => {
   it("explains a visit without an authorization request", async () => {
     stubLocation("/oauth/authorize");
     render(() => <OAuthAuthorize />);
-    expect(await screen.findByText(/Open it from your client/)).toBeInTheDocument();
+    expect(await screen.findByText(/Start it from there/)).toBeInTheDocument();
   });
 
   it("asks a signed-out user to log in and come back here", async () => {
@@ -35,6 +35,22 @@ describe("OAuthAuthorize", () => {
     expect(await screen.findByText(/Log in to connect/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Log in" })).toBeInTheDocument();
     expect(calls).toHaveLength(0);
+  });
+
+  it("asks a signed-out CLI user to log in to the CLI, not to an MCP client", async () => {
+    stubLocation("/oauth/authorize", `${REQUEST}&scope=cli`);
+    render(() => <OAuthAuthorize />);
+    expect(await screen.findByText(/finish signing in to the RevScope CLI/)).toBeInTheDocument();
+    expect(screen.queryByText(/MCP client/)).toBeNull();
+  });
+
+  it("signs up without losing the request, so signup can come back to it", async () => {
+    stubLocation("/oauth/authorize", `${REQUEST}&scope=cli`);
+    render(() => <OAuthAuthorize />);
+    await userEvent.click(await screen.findByRole("button", { name: "Log in" }));
+    const href = (await screen.findByRole("link", { name: "Sign up" })).getAttribute("href") ?? "";
+    const next = new URLSearchParams(href.split("?")[1]).get("next");
+    expect(next).toBe(`/oauth/authorize${REQUEST}&scope=cli`);
   });
 
   it("asks to log in again, without a stale error, when the session has died", async () => {

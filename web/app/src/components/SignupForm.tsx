@@ -23,7 +23,7 @@ import {
 import { browserTimezone } from "@revscope/web-shared/browserTimezone";
 import { type IdTokenSignIn, signInWithIdToken } from "@revscope/web-shared/idTokenSignIn";
 import { openLoginDialog } from "@revscope/web-shared/LoginDialog";
-import { appPath } from "@revscope/web-shared/links";
+import { appPath, returnPathFrom } from "@revscope/web-shared/links";
 import ProjectNameFields, { createProjectNameState } from "@revscope/web-shared/ProjectNameFields";
 import { normalizeWebsite, validateProjectName } from "@revscope/web-shared/projectName";
 import SocialSignIn from "@revscope/web-shared/SocialSignIn";
@@ -66,7 +66,7 @@ export default function SignupForm() {
     setIsSubmitting(true);
     try {
       await signInWithIdToken(signIn, accountFields());
-      window.location.assign(appPath("/dashboard"));
+      window.location.assign(returnPathFrom(window.location.search) ?? appPath("/dashboard"));
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Unable to sign up.");
     } finally {
@@ -115,7 +115,7 @@ export default function SignupForm() {
         return;
       }
       saveAuthSession(session);
-      window.location.assign(appPath("/dashboard"));
+      window.location.assign(returnPathFrom(window.location.search) ?? appPath("/dashboard"));
     } catch {
       setErrorMessage("Unable to reach the server.");
     } finally {

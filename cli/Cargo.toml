@@ -1,6 +1,6 @@
 [package]
 name = "revscope-cli"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "FSL-1.1-ALv2"
 description = "Command line client for RevScope: sign up, install the tracker, connect integrations, and query analytics."

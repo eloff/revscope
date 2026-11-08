@@ -211,10 +211,8 @@ async fn self_hosted_signup(
     if !crate::self_hosted::signup_is_open(&conn).await? {
         return Err(AuthError::Forbidden(crate::self_hosted::SIGNUP_CLOSED));
     }
-    let project_name = crate::projects::signup_project_name(
-        &account.account_name,
-        account.project_name.as_deref(),
-    )?;
+    let project_name =
+        crate::projects::new_project_name(&account.account_name, account.project_name.as_deref())?;
 
     crate::self_hosted::lock_signup(&conn).await?;
     let result = async {

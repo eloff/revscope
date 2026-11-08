@@ -1,7 +1,7 @@
 //! `POST /v2/session/projects` — adds a project to the signed-in account.
 //!
-//! The project is named after the website the way signup names the first one,
-//! and that name becomes its ingest path, so it is unique across every account.
+//! The project gets the name sent, or else one derived from the website, the
+//! way signup names the first one. That name becomes its ingest path, so it is unique across every account.
 //! Accounts on plans sold as "1 website" are held to the one they signed up with.
 
 use std::sync::Arc;
@@ -13,8 +13,8 @@ use crate::authorize::AdminAccount;
 use crate::db::project::parse_uuid_key;
 use crate::db::{insert_project, open_main_database_write};
 use crate::projects::{
-    PROJECT_NAME_TAKEN, check_new_project_name, claim_project_name, is_project_name_taken,
-    lock_account_projects, plan_allows_multiple_projects, project_name_from_website,
+    PROJECT_NAME_TAKEN, claim_project_name, is_project_name_taken, lock_account_projects,
+    new_project_name, plan_allows_multiple_projects,
 };
 use crate::server_context::ServerContext;
 use crate::user_access::lock_account_as_admin;
@@ -29,8 +29,7 @@ pub(crate) fn create_project(
     request: CreateProjectRequest,
 ) -> Result<CreateProjectResponse, AuthError> {
     let user = admin.user();
-    let name = project_name_from_website(&request.website);
-    check_new_project_name(&name)?;
+    let name = new_project_name(&request.website, request.project_name.as_deref())?;
     let timezone = timezone_for_signup(request.timezone.as_deref());
 
     let project_id = block_on(async {
