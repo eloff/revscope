@@ -96,6 +96,7 @@ pub(crate) fn save_settings(
             }
             if let Some(custom_domain) = custom_domain {
                 let previous = load_custom_domain(&conn, project_key).await?;
+                let account_id = load_account_id(&conn, project_key).await?;
                 conn.execute(
                     "INSERT INTO project_settings (project_id, custom_domain) VALUES ($1, $2)
                      ON CONFLICT (project_id) DO UPDATE SET custom_domain = EXCLUDED.custom_domain",
@@ -103,9 +104,11 @@ pub(crate) fn save_settings(
                 )
                 .await
                 .map_err(map_custom_domain_error)?;
-                server_context
-                    .acme
-                    .replace_custom_domain(previous.as_deref(), custom_domain.as_deref());
+                server_context.acme.replace_custom_domain(
+                    previous.as_deref(),
+                    custom_domain.as_deref(),
+                    &account_id,
+                );
                 if let Some(domain) = custom_domain.as_deref() {
                     crate::acme::request_issuance(server_context.clone(), domain);
                 }
@@ -155,6 +158,17 @@ async fn load_custom_domain(
         .await
         .map_err(AuthError::from)?;
     Ok(row.and_then(|row| row.get(0)))
+}
+
+async fn load_account_id(conn: &Connection, project_id: i32) -> Result<String, AuthError> {
+    let row = conn
+        .query_one(
+            "SELECT account_id::text FROM projects WHERE id = $1",
+            &[&project_id],
+        )
+        .await
+        .map_err(AuthError::from)?;
+    Ok(row.get(0))
 }
 
 async fn load_payment_success_path(

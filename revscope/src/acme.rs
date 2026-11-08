@@ -1,5 +1,6 @@
 use std::fmt;
 use std::io;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -7,7 +8,6 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{Semaphore, watch};
 
 use dashmap::DashMap;
-use dashmap::DashSet;
 use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, Challenge, ChallengeType, Identifier,
     LetsEncrypt, NewAccount, NewOrder, Order, OrderStatus, Problem, RetryPolicy,
@@ -19,6 +19,10 @@ use rustls::sign::CertifiedKey;
 
 use crate::db::open_main_database_read;
 use crate::http::Response;
+use crate::rate_limit::{
+    CERTIFICATE_DNS_CHECKS_PER_ACCOUNT, CERTIFICATE_ORDERS_PER_ACCOUNT,
+    CERTIFICATE_ORDERS_PER_DEPLOYMENT, RateLimiter,
+};
 use crate::server_context::ServerContext;
 use crate::tls::{CertificateError, CertificateStore};
 use crate::util::split_list;
@@ -48,6 +52,7 @@ const CUSTOM_CACHE_DIR: &str = "custom";
 /// untrusted certificates.
 const STAGING_CACHE_DIR: &str = "staging";
 const PLATFORM_ORDER_KEY: &str = "platform";
+const DEPLOYMENT_BUDGET_KEY: &str = "deployment";
 
 /// Hostnames certified when `REVSCOPE_TLS_DOMAINS` is unset: the hosted
 /// service's, where `eu1` is the CNAME target customers point at. A self-hosted
@@ -74,8 +79,8 @@ const RENEWAL_RETRY_INTERVAL: Duration = Duration::from_secs(15 * 60);
 /// and this pace stays under that for the whole [`RENEW_BEFORE_EXPIRY`] window.
 const PLATFORM_RENEWAL_RETRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// How long a TLS handshake may wait for an in-flight HTTP-01 order.
-/// Kept under typical browser TLS timeouts; the settings save already starts
-/// issuance so this is the remainder, not a full order from a cold start.
+/// Kept under typical browser TLS timeouts. A settings save starts issuance when
+/// the domain already points here, and then this is only the remainder of the order.
 const ISSUANCE_WAIT: Duration = Duration::from_secs(25);
 /// How many handshakes may wait for certificates at once, across all orders.
 /// Nothing watches a waiting client's socket, so without a limit a client could
@@ -91,6 +96,17 @@ const ORDER_WAIT: Duration = Duration::from_secs(5 * 60);
 /// stalled connection would otherwise keep the order in flight until a restart,
 /// and every later check would join it instead of retrying.
 const ORDER_DEADLINE: Duration = Duration::from_secs(15 * 60);
+/// How long to wait for DNS when checking that a custom domain points here.
+const DNS_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+/// Concurrent system DNS lookups for those checks. Each holds a thread of the
+/// pool API handlers run on, so this stays far below that pool's 512. Checks wait
+/// for a place rather than give up, or a renewal pass would lose most of its
+/// domains for [`RENEWAL_CHECK_INTERVAL`].
+const MAX_DNS_LOOKUPS: usize = 32;
+/// How soon a save or handshake may retry a custom domain whose order was held
+/// back. That costs nothing at Let's Encrypt, so someone who has just added their
+/// CNAME shouldn't wait out [`RENEWAL_RETRY_INTERVAL`].
+const HELD_BACK_RECHECK_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Everything needed to obtain certificates for this deployment. Absent when
 /// the deployment terminates TLS elsewhere, which leaves the HTTPS listener off.
@@ -227,8 +243,15 @@ pub(crate) struct AcmeState {
     /// Only populated while an order is in flight.
     challenges: DashMap<String, String>,
     certificates: Arc<CertificateStore>,
-    /// Customer CNAME hostnames currently stored in `project_settings`.
-    custom_domains: DashSet<String>,
+    /// Customer CNAME hostnames currently stored in `project_settings`, each
+    /// with the account that owns its project.
+    custom_domains: DashMap<String, String>,
+    /// Budgeted custom-domain orders per account, so one account can't use up
+    /// [`Self::deployment_orders`].
+    account_orders: RateLimiter,
+    /// Budgeted custom-domain orders in total, because Let's Encrypt's new-order
+    /// limit covers this whole deployment.
+    deployment_orders: RateLimiter,
     /// In-flight ACME orders, keyed by [`PLATFORM_ORDER_KEY`] or the custom
     /// hostname, so concurrent handshakes wait on one order.
     in_flight: DashMap<String, Arc<IssuanceWaiter>>,
@@ -237,7 +260,18 @@ pub(crate) struct AcmeState {
     /// Last failed order per key, so a broken CNAME cannot retry on every
     /// handshake.
     last_failure: DashMap<String, Instant>,
+    /// When each custom domain's order last stopped before reaching the ACME
+    /// server. Separate from [`Self::last_failure`] because these cost nothing
+    /// there, and a held-back renewal hasn't had its first attempt yet.
+    held_back: DashMap<String, Instant>,
+    /// Places for [`MAX_DNS_LOOKUPS`] lookups to run.
+    dns_lookups: Arc<Semaphore>,
+    /// DNS checks that an account can bring about at will, so that it can't keep
+    /// every lookup place busy and delay other customers' orders.
+    account_dns_checks: RateLimiter,
     config: RwLock<Option<AcmeConfig>>,
+    #[cfg(test)]
+    test_addresses: DashMap<String, Vec<IpAddr>>,
 }
 
 impl AcmeState {
@@ -245,11 +279,18 @@ impl AcmeState {
         Self {
             challenges: DashMap::new(),
             certificates: Arc::new(CertificateStore::new()),
-            custom_domains: DashSet::new(),
+            custom_domains: DashMap::new(),
+            account_orders: RateLimiter::new(CERTIFICATE_ORDERS_PER_ACCOUNT),
+            deployment_orders: RateLimiter::new(CERTIFICATE_ORDERS_PER_DEPLOYMENT),
             in_flight: DashMap::new(),
             handshake_waits: Semaphore::new(MAX_WAITING_HANDSHAKES),
             last_failure: DashMap::new(),
+            held_back: DashMap::new(),
+            dns_lookups: Arc::new(Semaphore::new(MAX_DNS_LOOKUPS)),
+            account_dns_checks: RateLimiter::new(CERTIFICATE_DNS_CHECKS_PER_ACCOUNT),
             config: RwLock::new(None),
+            #[cfg(test)]
+            test_addresses: DashMap::new(),
         }
     }
 
@@ -261,19 +302,28 @@ impl AcmeState {
         *self.config.write() = Some(config);
     }
 
-    pub(crate) fn replace_custom_domain(&self, previous: Option<&str>, next: Option<&str>) {
+    pub(crate) fn replace_custom_domain(
+        &self,
+        previous: Option<&str>,
+        next: Option<&str>,
+        account_id: &str,
+    ) {
         if let Some(previous) = previous {
             self.custom_domains.remove(previous);
+            if next != Some(previous) {
+                self.held_back.remove(previous);
+            }
         }
         if let Some(next) = next {
-            self.custom_domains.insert(next.to_string());
+            self.custom_domains
+                .insert(next.to_string(), account_id.to_string());
         }
     }
 
-    pub(crate) fn set_custom_domains(&self, domains: impl IntoIterator<Item = String>) {
+    pub(crate) fn set_custom_domains(&self, domains: impl IntoIterator<Item = (String, String)>) {
         self.custom_domains.clear();
-        for domain in domains {
-            self.custom_domains.insert(domain);
+        for (domain, account_id) in domains {
+            self.custom_domains.insert(domain, account_id);
         }
     }
 
@@ -296,7 +346,7 @@ impl AcmeState {
     }
 
     fn is_allowed(&self, name: &str) -> bool {
-        self.is_platform_domain(name) || self.custom_domains.contains(name)
+        self.is_platform_domain(name) || self.custom_domains.contains_key(name)
     }
 
     fn order_key(&self, name: &str) -> String {
@@ -343,10 +393,90 @@ impl AcmeState {
             .certified_key(&self.handshake_name(server_name)?)
     }
 
+    /// Only for a domain still saved, so that cycling through hostnames can't
+    /// grow this map.
+    fn hold_back(&self, domain: &str) {
+        if self.custom_domains.contains_key(domain) {
+            self.held_back.insert(domain.to_string(), Instant::now());
+        }
+    }
+
+    fn held_back_within(&self, domain: &str, interval: Duration) -> bool {
+        self.held_back
+            .get(domain)
+            .is_some_and(|held_back_at| held_back_at.elapsed() < interval)
+    }
+
+    /// Charges the account first, so an account over its limit can't drain the
+    /// shared budget.
+    fn spend_order_budget(&self, account_id: &str) -> Result<(), AcmeError> {
+        self.account_orders
+            .check(account_id)
+            .map_err(|_| AcmeError::OrderLimit)?;
+        self.deployment_orders
+            .check(DEPLOYMENT_BUDGET_KEY)
+            .map_err(|_| {
+                self.account_orders.refund(account_id);
+                AcmeError::OrderLimit
+            })
+    }
+
+    async fn resolve(&self, name: &str) -> Result<Vec<IpAddr>, AcmeError> {
+        let place = self
+            .dns_lookups
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| AcmeError::DomainNotReady("DNS checks are shut down".to_string()))?;
+        #[cfg(test)]
+        if let Some(addresses) = self.test_addresses.get(name) {
+            return Ok(addresses.clone());
+        }
+        let host = (name.to_string(), 80);
+        // The system resolver can't be cancelled, so the thread keeps its place
+        // until the lookup returns, even after the timeout below gives up on it.
+        let lookup = tokio::task::spawn_blocking(move || {
+            let _place = place;
+            host.to_socket_addrs()
+                .map(|addresses| addresses.collect::<Vec<_>>())
+        });
+        let addresses = tokio::time::timeout(DNS_CHECK_TIMEOUT, lookup)
+            .await
+            .map_err(|_| AcmeError::DomainNotReady(format!("timed out resolving {name}")))?
+            .map_err(|error| {
+                AcmeError::DomainNotReady(format!("unable to resolve {name}: {error}"))
+            })?
+            .map_err(|error| {
+                AcmeError::DomainNotReady(format!("unable to resolve {name}: {error}"))
+            })?;
+        Ok(addresses.iter().map(|address| address.ip()).collect())
+    }
+
+    /// Compares addresses rather than reading the CNAME so that a chain of
+    /// CNAMEs works, and because what HTTP-01 needs is to reach this server.
+    async fn check_points_here(&self, domain: &str, target: &str) -> Result<(), AcmeError> {
+        let (domain_addresses, target_addresses) =
+            tokio::join!(self.resolve(domain), self.resolve(target));
+        let (domain_addresses, target_addresses) = (domain_addresses?, target_addresses?);
+        let points_here = domain_addresses.iter().any(|address| {
+            target_addresses
+                .iter()
+                .any(|target| target.to_canonical() == address.to_canonical())
+        });
+        if points_here {
+            Ok(())
+        } else {
+            Err(AcmeError::DomainNotReady(format!(
+                "it does not resolve to the same address as {target}"
+            )))
+        }
+    }
+
     /// Records a running order for `name`, without contacting an ACME server.
     #[cfg(test)]
     pub(crate) fn start_test_order(&self, name: &str) -> Arc<IssuanceWaiter> {
-        self.custom_domains.insert(name.to_string());
+        self.custom_domains
+            .insert(name.to_string(), "test-account".to_string());
         let waiter = Arc::new(IssuanceWaiter::new());
         self.in_flight.insert(name.to_string(), waiter.clone());
         waiter
@@ -448,8 +578,8 @@ pub fn start_acme_task(server_context: Arc<ServerContext>, config: AcmeConfig) {
 }
 
 /// Starts an ACME order for `domain` if one is not already running. Used when
-/// a project saves a custom domain so the first visitor does not have to wait
-/// out the whole issuance.
+/// a project saves a custom domain, so that if its DNS is already in place the
+/// first visitor does not have to wait out the whole issuance.
 pub(crate) fn request_issuance(server_context: Arc<ServerContext>, domain: &str) {
     if server_context.acme.config.read().is_none() {
         return;
@@ -518,6 +648,12 @@ fn start_or_join_order(
         return Some(waiter.clone());
     }
     let config = server_context.acme.config.read().clone()?;
+    if server_context
+        .acme
+        .held_back_within(&order_key, HELD_BACK_RECHECK_INTERVAL)
+    {
+        return None;
+    }
     if let Some(failed_at) = server_context.acme.last_failure.get(&order_key)
         && failed_at.elapsed() < RENEWAL_RETRY_INTERVAL
     {
@@ -556,7 +692,7 @@ async fn run_order(
         }
         outcome = tokio::time::timeout(
             ORDER_DEADLINE,
-            provision_certificate(&server_context, &config, &domains, &cache_subdir),
+            order_certificate(&server_context, &config, &order_key, &domains, &cache_subdir),
         ) => outcome.unwrap_or(Err(AcmeError::Timeout)),
     };
     match outcome {
@@ -572,20 +708,23 @@ async fn run_order(
             // Without a certificate, the next handshake may start a new order
             // rather than fail. A renewal has no one waiting, and each order that
             // finishes late counts toward Let's Encrypt's weekly duplicate limit.
-            let renewing = domains.iter().any(|domain| {
-                server_context
-                    .acme
-                    .certificates
-                    .certified_key(domain)
-                    .is_some()
-            });
-            if renewing {
+            if has_installed_certificate(&server_context, &domains) {
                 server_context
                     .acme
                     .last_failure
                     .insert(order_key.clone(), Instant::now());
             }
             warn!("ACME order for {names} timed out; will retry");
+            finish_order(&server_context, &order_key, false);
+        }
+        Err(AcmeError::DomainNotReady(reason)) => {
+            server_context.acme.hold_back(&order_key);
+            info!("not ordering a certificate for {names}: {reason}");
+            finish_order(&server_context, &order_key, false);
+        }
+        Err(AcmeError::OrderLimit) => {
+            server_context.acme.hold_back(&order_key);
+            warn!("not ordering a certificate for {names}: over the certificate order limit");
             finish_order(&server_context, &order_key, false);
         }
         Err(error) => {
@@ -599,6 +738,71 @@ async fn run_order(
     }
 }
 
+fn has_installed_certificate(server_context: &ServerContext, domains: &[String]) -> bool {
+    domains.iter().any(|domain| {
+        server_context
+            .acme
+            .certificates
+            .certified_key(domain)
+            .is_some()
+    })
+}
+
+async fn order_certificate(
+    server_context: &ServerContext,
+    config: &AcmeConfig,
+    order_key: &str,
+    domains: &[String],
+    cache_subdir: &Path,
+) -> Result<SystemTime, AcmeError> {
+    if order_key != PLATFORM_ORDER_KEY {
+        admit_custom_domain_order(server_context, config, order_key, domains).await?;
+        server_context.acme.held_back.remove(order_key);
+    }
+    provision_certificate(server_context, config, domains, cache_subdir).await
+}
+
+/// Runs for every custom-domain order, because a handshake or the renewal task
+/// can order a saved domain just as a settings save can. DNS is checked first
+/// so that a domain not pointed here yet doesn't spend its account's budget.
+async fn admit_custom_domain_order(
+    server_context: &ServerContext,
+    config: &AcmeConfig,
+    domain: &str,
+    domains: &[String],
+) -> Result<(), AcmeError> {
+    let acme = &server_context.acme;
+    let target = config.platform_domains.first().ok_or_else(|| {
+        AcmeError::DomainNotReady("no platform hostname is configured".to_string())
+    })?;
+    let no_longer_saved =
+        || AcmeError::DomainNotReady("it is no longer a custom domain".to_string());
+    let account_id = acme
+        .custom_domains
+        .get(domain)
+        .map(|entry| entry.value().clone())
+        .ok_or_else(no_longer_saved)?;
+    // A renewal's first attempt comes up once per certificate until a restart, and
+    // refusing it risks an outage. Its retries are charged, since a customer can
+    // make every attempt fail on purpose, such as with a CAA record.
+    let charged = !has_installed_certificate(server_context, domains)
+        || acme.last_failure.contains_key(domain);
+    if charged && acme.account_dns_checks.check(&account_id).is_err() {
+        return Err(AcmeError::DomainNotReady(
+            "its account has run too many DNS checks".to_string(),
+        ));
+    }
+    acme.check_points_here(domain, target).await?;
+    // The check can wait a while for a place, and the domain may have gone since.
+    if !acme.custom_domains.contains_key(domain) {
+        return Err(no_longer_saved());
+    }
+    if charged {
+        acme.spend_order_budget(&account_id)?;
+    }
+    Ok(())
+}
+
 fn finish_order(server_context: &ServerContext, order_key: &str, _succeeded: bool) {
     if let Some((_, waiter)) = server_context.acme.in_flight.remove(order_key) {
         waiter.finish();
@@ -608,7 +812,12 @@ fn finish_order(server_context: &ServerContext, order_key: &str, _succeeded: boo
 async fn renewal_loop(server_context: Arc<ServerContext>) {
     loop {
         match load_custom_domains(server_context.clone()).await {
-            Ok(domains) => server_context.acme.set_custom_domains(domains),
+            Ok(domains) => {
+                server_context.acme.set_custom_domains(domains);
+                let acme = &server_context.acme;
+                acme.held_back
+                    .retain(|domain, _| acme.custom_domains.contains_key(domain));
+            }
             Err(error) => warn!("unable to refresh custom ACME domains: {error}"),
         }
 
@@ -674,11 +883,13 @@ fn waiting_to_retry(server_context: &ServerContext, name: &str) -> bool {
     } else {
         RENEWAL_CHECK_INTERVAL
     };
+    let order_key = server_context.acme.order_key(name);
     server_context
         .acme
         .last_failure
-        .get(&server_context.acme.order_key(name))
+        .get(&order_key)
         .is_some_and(|failed_at| failed_at.elapsed() < wait)
+        || server_context.acme.held_back_within(&order_key, wait)
 }
 
 fn missing_allowed_names(server_context: &ServerContext) -> Vec<String> {
@@ -981,20 +1192,26 @@ fn load_cached_certificate(
     )?))
 }
 
-async fn load_custom_domains(server_context: Arc<ServerContext>) -> Result<Vec<String>, AcmeError> {
+/// The saved custom domains, each with the account that owns its project.
+async fn load_custom_domains(
+    server_context: Arc<ServerContext>,
+) -> Result<Vec<(String, String)>, AcmeError> {
     let conn = open_main_database_read(server_context)
         .await
         .map_err(|error| AcmeError::Database(error.to_string()))?;
     let rows = conn
         .query(
-            "SELECT custom_domain FROM project_settings WHERE custom_domain IS NOT NULL",
+            "SELECT s.custom_domain, p.account_id::text
+             FROM project_settings s
+             JOIN projects p ON p.id = s.project_id
+             WHERE s.custom_domain IS NOT NULL",
             &[],
         )
         .await
         .map_err(|error| AcmeError::Database(error.to_string()))?;
     Ok(rows
         .iter()
-        .filter_map(|row| row.get::<_, Option<String>>(0))
+        .filter_map(|row| Some((row.get::<_, Option<String>>(0)?, row.get(1))))
         .collect())
 }
 
@@ -1040,12 +1257,17 @@ async fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), AcmeErro
 #[derive(Debug)]
 pub(crate) enum AcmeError {
     Acme(instant_acme::Error),
+    /// The account or the deployment has no custom-domain orders left for now.
+    OrderLimit,
     Authorization(String),
     /// The cached certificate or key is not valid PEM text.
     CachedPemNotUtf8,
     Certificate(CertificateError),
     Credentials(serde_json::Error),
     Database(String),
+    /// A custom domain isn't ready to order for, or that couldn't be established,
+    /// so no request was sent to the ACME server.
+    DomainNotReady(String),
     Io(io::Error),
     /// The ACME server offered no HTTP-01 challenge for an identifier, which
     /// happens for wildcard names (they require DNS-01).
@@ -1062,6 +1284,7 @@ impl fmt::Display for AcmeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Acme(error) => write!(formatter, "{error}"),
+            Self::OrderLimit => write!(formatter, "over the certificate order limit"),
             Self::Authorization(status) => {
                 write!(formatter, "unusable authorization status: {status}")
             }
@@ -1069,6 +1292,7 @@ impl fmt::Display for AcmeError {
             Self::Certificate(error) => write!(formatter, "{error}"),
             Self::Credentials(error) => write!(formatter, "invalid account credentials: {error}"),
             Self::Database(error) => write!(formatter, "{error}"),
+            Self::DomainNotReady(reason) => write!(formatter, "{reason}"),
             Self::Io(error) => write!(formatter, "{error}"),
             Self::NoHttpChallenge => {
                 write!(formatter, "no http-01 challenge offered for an identifier")
@@ -1099,6 +1323,523 @@ mod tests {
     use super::*;
 
     const DAY_SECS: u64 = 24 * 60 * 60;
+    const TEST_ACCOUNT: &str = "test-account";
+    const SERVER_ADDRESS: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 1));
+    const OTHER_ADDRESS: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 9));
+
+    fn set_addresses(server_context: &ServerContext, name: &str, addresses: &[IpAddr]) {
+        server_context
+            .acme
+            .test_addresses
+            .insert(name.to_string(), addresses.to_vec());
+    }
+
+    /// Makes `domain` a saved custom domain that resolves where the platform does.
+    fn point_at_platform(server_context: &ServerContext, domain: &str) {
+        server_context
+            .acme
+            .custom_domains
+            .insert(domain.to_string(), TEST_ACCOUNT.to_string());
+        set_addresses(server_context, "eu1.revscope.co", &[SERVER_ADDRESS]);
+        set_addresses(server_context, domain, &[SERVER_ADDRESS]);
+    }
+
+    fn remaining_orders(server_context: &ServerContext, account: &str) -> u32 {
+        let mut remaining = 0;
+        while server_context.acme.account_orders.check(account).is_ok() {
+            remaining += 1;
+        }
+        remaining
+    }
+
+    /// A fake ACME server that only records whether anything connected.
+    async fn configure_listening_acme_server(
+        server_context: &ServerContext,
+    ) -> tokio::net::TcpListener {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake ACME server");
+        let mut config = test_config(&["eu1.revscope.co"]);
+        config.directory_url = format!(
+            "https://{}/directory",
+            listener.local_addr().expect("listener address")
+        );
+        server_context.acme.set_config(config);
+        listener
+    }
+
+    async fn wait_for_orders_to_finish(server_context: &ServerContext) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !server_context.acme.in_flight.is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("order should finish");
+    }
+
+    /// Moves a held-back order past the wait before a handshake may retry it.
+    fn backdate_hold(server_context: &ServerContext, domain: &str) {
+        let mut held_back_at = server_context
+            .acme
+            .held_back
+            .get_mut(domain)
+            .expect("order was held back");
+        *held_back_at = held_back_at
+            .checked_sub(HELD_BACK_RECHECK_INTERVAL + Duration::from_secs(1))
+            .expect("system has been up longer than the recheck interval");
+    }
+
+    async fn assert_no_connection(listener: &tokio::net::TcpListener) {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err(),
+            "the ACME server must not be contacted"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_domain_not_pointed_here_never_reaches_the_acme_server() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        set_addresses(&server_context, "assets.example.com", &[OTHER_ADDRESS]);
+        let fresh_budget = remaining_orders(&server_context, "another-account");
+
+        request_issuance(server_context.clone(), "assets.example.com");
+        wait_for_orders_to_finish(&server_context).await;
+
+        assert_no_connection(&listener).await;
+        assert_eq!(
+            remaining_orders(&server_context, TEST_ACCOUNT),
+            fresh_budget,
+            "a failed DNS check must not spend the account's orders"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_domain_with_no_addresses_never_reaches_the_acme_server() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        set_addresses(&server_context, "assets.example.com", &[]);
+
+        request_issuance(server_context.clone(), "assets.example.com");
+        wait_for_orders_to_finish(&server_context).await;
+
+        assert_no_connection(&listener).await;
+    }
+
+    #[tokio::test]
+    async fn a_domain_not_pointed_here_is_rechecked_soon() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        set_addresses(&server_context, "assets.example.com", &[OTHER_ADDRESS]);
+
+        request_issuance(server_context.clone(), "assets.example.com");
+        wait_for_orders_to_finish(&server_context).await;
+
+        assert!(start_or_join_order(&server_context, "assets.example.com").is_none());
+        assert!(waiting_to_retry(&server_context, "assets.example.com"));
+
+        backdate_hold(&server_context, "assets.example.com");
+        set_addresses(&server_context, "assets.example.com", &[SERVER_ADDRESS]);
+
+        assert!(start_or_join_order(&server_context, "assets.example.com").is_some());
+        tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("the recheck should let the order reach the ACME server")
+            .expect("accept ACME connection");
+    }
+
+    #[tokio::test]
+    async fn a_domain_pointed_here_orders_and_spends_one_of_its_accounts_orders() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        let fresh_budget = remaining_orders(&server_context, "another-account");
+
+        request_issuance(server_context.clone(), "assets.example.com");
+        tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("the order should contact the ACME server")
+            .expect("accept ACME connection");
+
+        assert_eq!(
+            remaining_orders(&server_context, TEST_ACCOUNT),
+            fresh_budget - 1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_domain_sharing_one_of_several_addresses_counts_as_pointed_here() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        let mapped = IpAddr::V6(std::net::Ipv4Addr::new(203, 0, 113, 1).to_ipv6_mapped());
+        set_addresses(
+            &server_context,
+            "assets.example.com",
+            &[OTHER_ADDRESS, mapped],
+        );
+
+        request_issuance(server_context.clone(), "assets.example.com");
+
+        tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("the order should contact the ACME server")
+            .expect("accept ACME connection");
+    }
+
+    #[tokio::test]
+    async fn an_account_over_its_limit_cannot_order_but_others_can() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        remaining_orders(&server_context, TEST_ACCOUNT);
+
+        request_issuance(server_context.clone(), "assets.example.com");
+        wait_for_orders_to_finish(&server_context).await;
+
+        assert_no_connection(&listener).await;
+        assert!(start_or_join_order(&server_context, "assets.example.com").is_none());
+
+        point_at_platform(&server_context, "other.example.org");
+        server_context.acme.custom_domains.insert(
+            "other.example.org".to_string(),
+            "another-account".to_string(),
+        );
+        request_issuance(server_context.clone(), "other.example.org");
+        tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("another account's order should contact the ACME server")
+            .expect("accept ACME connection");
+    }
+
+    #[tokio::test]
+    async fn a_renewal_ignores_an_exhausted_account_limit() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        install_expiring_in(&server_context, &["eu1.revscope.co"], 60);
+        install_expiring_in(&server_context, &["assets.example.com"], 7);
+        remaining_orders(&server_context, TEST_ACCOUNT);
+
+        assert!(start_due_orders(&server_context));
+
+        tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("the renewal should contact the ACME server")
+            .expect("accept ACME connection");
+    }
+
+    #[tokio::test]
+    async fn a_renewal_is_held_back_when_the_domain_no_longer_points_here() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        set_addresses(&server_context, "assets.example.com", &[OTHER_ADDRESS]);
+        install_expiring_in(&server_context, &["eu1.revscope.co"], 60);
+        install_expiring_in(&server_context, &["assets.example.com"], 7);
+
+        assert!(start_due_orders(&server_context));
+        wait_for_orders_to_finish(&server_context).await;
+
+        assert_no_connection(&listener).await;
+    }
+
+    #[tokio::test]
+    async fn the_deployment_limit_stops_orders_and_does_not_charge_the_account() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        let fresh_budget = remaining_orders(&server_context, "another-account");
+        while server_context
+            .acme
+            .deployment_orders
+            .check(DEPLOYMENT_BUDGET_KEY)
+            .is_ok()
+        {}
+
+        request_issuance(server_context.clone(), "assets.example.com");
+        wait_for_orders_to_finish(&server_context).await;
+
+        assert_no_connection(&listener).await;
+        assert_eq!(
+            remaining_orders(&server_context, TEST_ACCOUNT),
+            fresh_budget
+        );
+    }
+
+    #[tokio::test]
+    async fn an_account_over_its_limit_does_not_spend_the_deployment_limit() {
+        let server_context = test_context();
+        let _listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        remaining_orders(&server_context, TEST_ACCOUNT);
+
+        request_issuance(server_context.clone(), "assets.example.com");
+        wait_for_orders_to_finish(&server_context).await;
+
+        let mut remaining = 0;
+        while server_context
+            .acme
+            .deployment_orders
+            .check(DEPLOYMENT_BUDGET_KEY)
+            .is_ok()
+        {
+            remaining += 1;
+        }
+        let fresh = RateLimiter::new(CERTIFICATE_ORDERS_PER_DEPLOYMENT);
+        let mut fresh_remaining = 0;
+        while fresh.check(DEPLOYMENT_BUDGET_KEY).is_ok() {
+            fresh_remaining += 1;
+        }
+        assert_eq!(remaining, fresh_remaining);
+    }
+
+    #[tokio::test]
+    async fn a_renewal_retry_spends_the_account_limit() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        install_expiring_in(&server_context, &["assets.example.com"], 7);
+        remaining_orders(&server_context, TEST_ACCOUNT);
+        let past_the_short_cooldown = Instant::now()
+            .checked_sub(RENEWAL_RETRY_INTERVAL + Duration::from_secs(1))
+            .expect("system has been up longer than the cooldown");
+        server_context
+            .acme
+            .last_failure
+            .insert("assets.example.com".to_string(), past_the_short_cooldown);
+
+        assert!(start_or_join_order(&server_context, "assets.example.com").is_some());
+        wait_for_orders_to_finish(&server_context).await;
+
+        assert_no_connection(&listener).await;
+    }
+
+    #[tokio::test]
+    async fn a_held_back_renewal_still_gets_its_uncharged_first_attempt() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        set_addresses(&server_context, "assets.example.com", &[OTHER_ADDRESS]);
+        install_expiring_in(&server_context, &["eu1.revscope.co"], 60);
+        install_expiring_in(&server_context, &["assets.example.com"], 7);
+        remaining_orders(&server_context, TEST_ACCOUNT);
+        assert!(start_due_orders(&server_context));
+        wait_for_orders_to_finish(&server_context).await;
+        assert_no_connection(&listener).await;
+
+        backdate_hold(&server_context, "assets.example.com");
+        set_addresses(&server_context, "assets.example.com", &[SERVER_ADDRESS]);
+        assert!(start_or_join_order(&server_context, "assets.example.com").is_some());
+
+        tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("the renewal should contact the ACME server")
+            .expect("accept ACME connection");
+    }
+
+    #[tokio::test]
+    async fn replacing_a_domain_forgets_that_it_was_held_back() {
+        let server_context = test_context();
+        let _listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        set_addresses(&server_context, "assets.example.com", &[OTHER_ADDRESS]);
+        request_issuance(server_context.clone(), "assets.example.com");
+        wait_for_orders_to_finish(&server_context).await;
+        assert!(
+            server_context
+                .acme
+                .held_back
+                .contains_key("assets.example.com")
+        );
+
+        server_context.acme.replace_custom_domain(
+            Some("assets.example.com"),
+            Some("next.example.com"),
+            TEST_ACCOUNT,
+        );
+
+        assert!(server_context.acme.held_back.is_empty());
+    }
+
+    #[test]
+    fn a_domain_no_longer_saved_is_not_held_back() {
+        let server_context = test_context();
+        server_context.acme.hold_back("removed.example.com");
+        assert!(server_context.acme.held_back.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_dns_check_waits_for_a_lookup_place_and_then_orders() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        let all_places = server_context
+            .acme
+            .dns_lookups
+            .clone()
+            .try_acquire_many_owned(u32::try_from(MAX_DNS_LOOKUPS).expect("limit fits"))
+            .expect("places are free");
+
+        request_issuance(server_context.clone(), "assets.example.com");
+
+        assert_no_connection(&listener).await;
+        assert!(server_context.acme.held_back.is_empty());
+        assert!(!server_context.acme.in_flight.is_empty());
+
+        drop(all_places);
+        tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("the order should continue once a place is free")
+            .expect("accept ACME connection");
+    }
+
+    fn drain_dns_checks(server_context: &ServerContext, account: &str) {
+        while server_context
+            .acme
+            .account_dns_checks
+            .check(account)
+            .is_ok()
+        {}
+    }
+
+    #[tokio::test]
+    async fn an_account_over_its_dns_check_limit_is_held_back_without_spending_orders() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        drain_dns_checks(&server_context, TEST_ACCOUNT);
+        let fresh_budget = remaining_orders(&server_context, "another-account");
+
+        request_issuance(server_context.clone(), "assets.example.com");
+        wait_for_orders_to_finish(&server_context).await;
+
+        assert_no_connection(&listener).await;
+        assert!(
+            server_context
+                .acme
+                .held_back
+                .contains_key("assets.example.com")
+        );
+        assert_eq!(
+            remaining_orders(&server_context, TEST_ACCOUNT),
+            fresh_budget
+        );
+    }
+
+    #[tokio::test]
+    async fn a_first_renewal_attempt_ignores_the_dns_check_limit() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        install_expiring_in(&server_context, &["eu1.revscope.co"], 60);
+        install_expiring_in(&server_context, &["assets.example.com"], 7);
+        drain_dns_checks(&server_context, TEST_ACCOUNT);
+
+        assert!(start_due_orders(&server_context));
+
+        tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("the renewal should contact the ACME server")
+            .expect("accept ACME connection");
+    }
+
+    #[tokio::test]
+    async fn a_finished_lookup_gives_back_its_place() {
+        let state = AcmeState::new();
+        state
+            .resolve("localhost")
+            .await
+            .expect("localhost resolves");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state.dns_lookups.available_permits() < MAX_DNS_LOOKUPS {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the place should be released");
+    }
+
+    #[tokio::test]
+    async fn saving_the_same_domain_again_keeps_it_held_back() {
+        let server_context = test_context();
+        let _listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        set_addresses(&server_context, "assets.example.com", &[OTHER_ADDRESS]);
+        request_issuance(server_context.clone(), "assets.example.com");
+        wait_for_orders_to_finish(&server_context).await;
+
+        server_context.acme.replace_custom_domain(
+            Some("assets.example.com"),
+            Some("assets.example.com"),
+            TEST_ACCOUNT,
+        );
+
+        assert!(start_or_join_order(&server_context, "assets.example.com").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_resolver_error_holds_the_order_back() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        // A NUL makes the system lookup fail at once, without touching the network.
+        let unresolvable = "assets\0.example.com";
+        point_at_platform(&server_context, unresolvable);
+        server_context.acme.test_addresses.remove(unresolvable);
+
+        request_issuance(server_context.clone(), unresolvable);
+        wait_for_orders_to_finish(&server_context).await;
+
+        assert_no_connection(&listener).await;
+        assert!(server_context.acme.held_back.contains_key(unresolvable));
+    }
+
+    #[tokio::test]
+    async fn resolves_names_with_the_system_resolver() {
+        let addresses = AcmeState::new()
+            .resolve("localhost")
+            .await
+            .expect("localhost resolves");
+        assert!(addresses.iter().any(IpAddr::is_loopback), "{addresses:?}");
+    }
+
+    #[tokio::test]
+    async fn loads_each_custom_domain_with_its_owning_account() {
+        let (server_context, conn) = crate::test_utils::main_test_db("acme-domain-account").await;
+        let account_id = crate::test_utils::insert_test_account(&conn, "acme_domain_account").await;
+        let name = format!("p{}", account_id.replace('-', ""));
+        let project_id: i32 = conn
+            .query_one(
+                "INSERT INTO projects (account_id, name) VALUES ($1::text::uuid, $2) RETURNING id",
+                &[&account_id, &name],
+            )
+            .await
+            .expect("insert project")
+            .get(0);
+        let domain = format!("{name}.example.com");
+        conn.execute(
+            "INSERT INTO project_settings (project_id, custom_domain) VALUES ($1, $2)",
+            &[&project_id, &domain],
+        )
+        .await
+        .expect("save custom domain");
+
+        let domains = load_custom_domains(server_context).await.expect("load");
+
+        assert!(domains.contains(&(domain, account_id.clone())));
+        conn.execute(
+            "DELETE FROM accounts WHERE id = $1::text::uuid",
+            &[&account_id],
+        )
+        .await
+        .expect("delete account");
+    }
 
     fn test_context() -> Arc<ServerContext> {
         Arc::new(ServerContext::new_in_memory("acme-tests"))
@@ -1243,7 +1984,7 @@ mod tests {
         server_context.acme.set_config(config);
         for name in names {
             if !server_context.acme.is_platform_domain(name) {
-                server_context.acme.custom_domains.insert(name.to_string());
+                point_at_platform(&server_context, name);
             }
         }
         // A missing platform certificate would start its own order, which could
@@ -1486,7 +2227,7 @@ mod tests {
             server_context
                 .acme
                 .custom_domains
-                .insert(domain.to_string());
+                .insert(domain.to_string(), TEST_ACCOUNT.to_string());
             if let Some(days_left) = days_left {
                 install_expiring_in(&server_context, &[domain], days_left);
             }
@@ -1510,7 +2251,7 @@ mod tests {
         server_context
             .acme
             .custom_domains
-            .insert("assets.example.com".to_string());
+            .insert("assets.example.com".to_string(), TEST_ACCOUNT.to_string());
         install_expiring_in(&server_context, &["assets.example.com"], 7);
         server_context
             .acme
@@ -1530,7 +2271,7 @@ mod tests {
         server_context
             .acme
             .custom_domains
-            .insert("assets.example.com".to_string());
+            .insert("assets.example.com".to_string(), TEST_ACCOUNT.to_string());
         install_expiring_in(&server_context, &["assets.example.com"], 7);
 
         request_issuance(server_context.clone(), "assets.example.com");
@@ -1848,10 +2589,7 @@ mod tests {
         server_context
             .acme
             .set_config(test_config(&["eu1.revscope.co"]));
-        server_context
-            .acme
-            .custom_domains
-            .insert("assets.example.com".to_string());
+        point_at_platform(&server_context, "assets.example.com");
         let waiting = u32::try_from(MAX_WAITING_HANDSHAKES).expect("limit fits");
         let _others = server_context
             .acme
@@ -1890,7 +2628,7 @@ mod tests {
         server_context
             .acme
             .custom_domains
-            .insert("assets.example.com".to_string());
+            .insert("assets.example.com".to_string(), TEST_ACCOUNT.to_string());
         server_context
             .acme
             .last_failure

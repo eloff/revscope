@@ -1,4 +1,4 @@
-//! Token-bucket rate limits for unauthenticated routes. The auth routes (login,
+//! Token-bucket rate limits, mostly for unauthenticated routes. The auth routes (login,
 //! signup, forgot password) would otherwise let anyone guess passwords, spend
 //! server CPU on password hashing, or send reset emails without bound; tracker
 //! error reports and MCP client registration would let anyone write to the main
@@ -61,6 +61,16 @@ const ERROR_REPORT_PER_IP: Rate = Rate::new(30, 10);
 /// platform's own addresses, so this is generous. Registrations that never get
 /// a token are deleted after a day.
 const MCP_REGISTER_PER_IP: Rate = Rate::new(60, 10);
+/// A generous allowance for an account setting up its projects' domains, while
+/// keeping any one account far below Let's Encrypt's 300 new orders per 3 hours.
+pub(crate) const CERTIFICATE_ORDERS_PER_ACCOUNT: Rate = Rate::new(10, 60 * 60);
+/// DNS checks cost no certificate orders, so they need their own limit: a slow
+/// nameserver makes each one hold a lookup place for many seconds.
+pub(crate) const CERTIFICATE_DNS_CHECKS_PER_ACCOUNT: Rate = Rate::new(30, 60);
+/// Accounts are cheap to create, so the per-account limit alone can't protect
+/// Let's Encrypt's limit. This allows at most 160 orders in any 3 hours, which
+/// leaves the rest of the 300 for renewals and the platform certificate.
+pub(crate) const CERTIFICATE_ORDERS_PER_DEPLOYMENT: Rate = Rate::new(100, 3 * 60);
 
 #[derive(Clone, Copy)]
 struct Bucket {
