@@ -52,6 +52,9 @@ impl Rate {
 const LOGIN_PER_IP: Rate = Rate::new(20, 15);
 const LOGIN_PER_EMAIL: Rate = Rate::new(10, 60);
 const SIGNUP_PER_IP: Rate = Rate::new(5, 5 * 60);
+/// Every try is a call to Stripe or Polar, and only a typo needs a second one.
+#[cfg(feature = "billing")]
+const PROMO_CODE_PER_IP: Rate = Rate::new(10, 60);
 const FORGOT_PASSWORD_PER_IP: Rate = Rate::new(5, 2 * 60);
 const FORGOT_PASSWORD_PER_EMAIL: Rate = Rate::new(3, 10 * 60);
 /// The tracker only reports errors thrown by its own script, so a real visitor
@@ -159,6 +162,8 @@ pub(crate) struct AuthRateLimits {
     pub(crate) forgot_password_ip: RateLimiter,
     pub(crate) forgot_password_email: RateLimiter,
     pub(crate) invite_account: RateLimiter,
+    #[cfg(feature = "billing")]
+    pub(crate) promo_code_ip: RateLimiter,
 }
 
 impl AuthRateLimits {
@@ -170,6 +175,8 @@ impl AuthRateLimits {
             forgot_password_ip: RateLimiter::new(FORGOT_PASSWORD_PER_IP),
             forgot_password_email: RateLimiter::new(FORGOT_PASSWORD_PER_EMAIL),
             invite_account: RateLimiter::new(INVITES_PER_ACCOUNT),
+            #[cfg(feature = "billing")]
+            promo_code_ip: RateLimiter::new(PROMO_CODE_PER_IP),
         }
     }
 }

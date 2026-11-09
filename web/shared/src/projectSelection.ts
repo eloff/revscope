@@ -55,5 +55,7 @@ export const [selectedProjectId, setSelectedProjectId] = makePersisted(createSig
  * subscription in good standing and is what actually refuses the extra project.
  */
 export function planAllowsMultipleProjects(plan: string): boolean {
-  return plan === "growth" || plan === "founder" || plan === "enterprise";
+  return (
+    plan === "growth" || plan === "founder" || plan === "founder_friends" || plan === "enterprise"
+  );
 }

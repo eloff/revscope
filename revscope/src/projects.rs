@@ -119,8 +119,10 @@ pub(crate) fn new_project_name(
 /// "1 website"; keep the plans in sync with `planAllowsMultipleProjects` in
 /// web/shared/src/projectSelection.ts and the tiers in web/site pricing.ts.
 pub(crate) fn plan_allows_multiple_projects(plan: &str, subscription_status: Option<&str>) -> bool {
-    matches!(plan, "growth" | "founder" | "enterprise")
-        && plan_includes_paid_features(plan, subscription_status)
+    matches!(
+        plan,
+        "growth" | "founder" | "founder_friends" | "enterprise"
+    ) && plan_includes_paid_features(plan, subscription_status)
 }
 
 /// Whether an account's subscription is one it's paying for, which custom domains,
@@ -135,7 +137,7 @@ pub(crate) fn plan_includes_paid_features(plan: &str, subscription_status: Optio
     match plan {
         // Never billed, so it has no subscription status.
         "enterprise" => true,
-        "starter" | "growth" | "founder" => {
+        "starter" | "growth" | "founder" | "founder_friends" => {
             matches!(
                 subscription_status,
                 Some("trialing" | "active" | "past_due")
@@ -418,7 +420,13 @@ mod tests {
     #[test]
     #[cfg(not(feature = "self-hosted"))]
     fn paid_features_start_at_the_starter_plan() {
-        for plan in ["starter", "growth", "founder", "enterprise"] {
+        for plan in [
+            "starter",
+            "growth",
+            "founder",
+            "founder_friends",
+            "enterprise",
+        ] {
             assert!(plan_includes_paid_features(plan, Some("active")), "{plan}");
         }
         for plan in ["free", "brand_new_plan", ""] {
@@ -545,7 +553,7 @@ mod tests {
 
     #[test]
     fn only_growth_and_above_hold_more_than_one_project() {
-        for plan in ["growth", "founder", "enterprise"] {
+        for plan in ["growth", "founder", "founder_friends", "enterprise"] {
             assert!(
                 plan_allows_multiple_projects(plan, Some("active")),
                 "{plan}"

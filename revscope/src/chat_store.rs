@@ -633,6 +633,12 @@ pub(crate) enum QuotaError {
     Db(AuthError),
 }
 
+/// Founder & Friends is Growth without what costs us money to serve, and AI is
+/// the only such feature so far.
+fn plan_includes_ai(plan_type: &str) -> bool {
+    !matches!(plan_type, "free" | "founder_friends")
+}
+
 /// Monthly token ceiling for an account from its plan and subscription price.
 ///
 /// Starter is a hard 200K tokens/month. Other plans: paid accounts get
@@ -716,9 +722,9 @@ pub(crate) fn check_quota(
             Ok::<_, QuotaError>((turns, tokens, plan_type, price, trial_unpaid))
         })?;
 
-    if plan_type == "free" {
+    if !plan_includes_ai(&plan_type) {
         return Err(QuotaError::Exceeded(
-            "AI-powered insights are not included in the free plan; upgrade to a paid plan to use them"
+            "AI-powered insights are not included in your plan; upgrade to a paid plan to use them"
                 .to_string(),
         ));
     }
@@ -1095,6 +1101,16 @@ mod tests {
         assert_eq!(monthly_token_budget("starter", 0, false), 200_000);
         assert_eq!(monthly_token_budget("starter", 12_900, false), 200_000);
         assert_eq!(monthly_token_budget("starter", 12_900, true), 200_000);
+    }
+
+    #[test]
+    fn free_plans_have_no_ai() {
+        for plan in ["free", "founder_friends"] {
+            assert!(!plan_includes_ai(plan), "{plan}");
+        }
+        for plan in ["starter", "growth", "founder", "enterprise"] {
+            assert!(plan_includes_ai(plan), "{plan}");
+        }
     }
 
     #[test]

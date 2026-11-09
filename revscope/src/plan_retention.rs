@@ -13,8 +13,8 @@ pub(crate) fn plan_retention_months(plan: &str) -> Option<i64> {
     }
     match plan {
         "starter" => Some(24),
-        // Founder is the Growth plan at a launch price.
-        "growth" | "founder" => Some(60),
+        // Founder is the Growth plan at a launch price, and Founder & Friends its private free form.
+        "growth" | "founder" | "founder_friends" => Some(60),
         // Every account in a hosted build without the private billing module.
         "enterprise" => None,
         // A plan type added without an entry here shouldn't get more than Free.
@@ -40,6 +40,7 @@ mod tests {
         assert_eq!(plan_retention_months("starter"), Some(24));
         assert_eq!(plan_retention_months("growth"), Some(60));
         assert_eq!(plan_retention_months("founder"), Some(60));
+        assert_eq!(plan_retention_months("founder_friends"), Some(60));
         assert_eq!(plan_retention_months("enterprise"), None);
     }
 

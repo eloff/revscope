@@ -28,7 +28,7 @@ pub(super) fn map_project_auth_error(error: AuthError, context: &str) -> Respons
     }
 }
 
-pub(super) fn too_many_requests(retry_after: Duration) -> Response {
+pub(crate) fn too_many_requests(retry_after: Duration) -> Response {
     rate_limited(
         retry_after,
         "too many attempts; please wait a few minutes and try again",

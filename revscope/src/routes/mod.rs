@@ -35,6 +35,8 @@ pub(crate) use resolve::{
 };
 pub(crate) use responses::map_auth_error;
 use responses::method_not_allowed;
+#[cfg(feature = "billing")]
+pub(crate) use responses::too_many_requests;
 pub(crate) use session::request_session_key;
 
 /// Synchronous route handler. Designed to run inside `tokio::task::spawn_blocking`

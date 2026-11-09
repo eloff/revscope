@@ -55,7 +55,7 @@ describe("isDemoProjectId", () => {
 
 describe("planAllowsMultipleProjects", () => {
   it("allows more than one project from Growth up", () => {
-    for (const plan of ["growth", "founder", "enterprise"]) {
+    for (const plan of ["growth", "founder", "founder_friends", "enterprise"]) {
       expect(planAllowsMultipleProjects(plan)).toBe(true);
     }
     for (const plan of ["free", "starter", ""]) {
