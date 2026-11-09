@@ -91,6 +91,24 @@ squash() {
   echo "$dir: squashed ${count[$dir]} commit(s) into $(git -C "$dir" rev-parse --short HEAD) (the old tip was $old)"
 }
 
+# Folds what check.sh's formatters committed in the worktree at $1 into its squashed commit. Any
+# other commit that appeared during the checks is someone's work, which only they can decide to land.
+fold_format_commits() {
+  local dir=$1 head folded
+  head=$(git -C "$dir" rev-parse HEAD)
+  [ "$head" != "${landed_at[$dir]}" ] || return 0
+  git -C "$dir" merge-base --is-ancestor "${landed_at[$dir]}" "$head" &&
+    [ "$(git -C "$dir" rev-list --reverse "${landed_at[$dir]}..$head")" = "$(cat "$(format_log "$dir")")" ] ||
+    die "$dir moved during the checks other than by check.sh's own commits, and nothing was pushed. Deal with that, then run this again."
+  # With no commits of its own, landed_at is what's already on origin/main, which can't be rewritten.
+  [ "${count[$dir]}" -gt 0 ] ||
+    die "origin/main of $dir wasn't formatted. check.sh committed the fix to its branch, and nothing was pushed. Run this again to land that too."
+  folded=$(git -C "$dir" log -1 --format=%B "${landed_at[$dir]}" | git stripspace | git -C "$dir" commit-tree -S "$head^{tree}" -p "${landed_at[$dir]}^" -F -) ||
+    die "git couldn't make the signed commit that folds in the formatting in $dir, for the reason above. Nothing was pushed. Fix that, and run this again."
+  git -C "$dir" update-ref HEAD "$folded" "$head"
+  landed_at[$dir]=$folded
+}
+
 # Prints the output $1 of a successful push, minus the two rule bypasses every landing makes by
 # pushing straight to main. Any other bypass still shows, under its heading.
 show_push_output() {
@@ -165,22 +183,14 @@ land() {
     landed_at[$repo]=$(git -C "$repo" rev-parse HEAD)
   done
 
-  local format_commits head folded
-  format_commits=$(mktemp)
-  msgs+=("$format_commits")
-  CHECK_FORMAT_COMMITS=$format_commits scripts/check.sh || die "checks failed. The branches are now the squashed commits. Fix them, commit, and run this again."
-
-  # What the formatters rewrote belongs in the one squashed commit. Any other commit that appeared
-  # during the checks is someone's work, which only they can decide to land.
-  head=$(git rev-parse HEAD)
-  if [ "$head" != "${landed_at[$top]}" ]; then
-    git merge-base --is-ancestor "${landed_at[$top]}" "$head" &&
-      [ "$(git rev-list --reverse "${landed_at[$top]}..$head")" = "$(cat "$format_commits")" ] ||
-      die "$top moved during the checks other than by check.sh's own commits, and nothing was pushed. Deal with that, then run this again."
-    folded=$(git log -1 --format=%B "${landed_at[$top]}" | git stripspace | git commit-tree "$head^{tree}" -p "${landed_at[$top]}^" -F -)
-    git update-ref HEAD "$folded" "$head"
-    landed_at[$top]=$folded
-  fi
+  for repo in "${repos[@]}"; do
+    : >"$(format_log "$repo")"
+  done
+  scripts/check.sh || die "checks failed. The branches are now the squashed commits. Fix them, commit, and run this again."
+  # Before pushing any repo, since a fold that fails after another repo's push would split them.
+  for repo in "${repos[@]}"; do
+    fold_format_commits "$repo"
+  done
 
   # A refused push after another repo's went through would leave the repos' mains out of step, so
   # make sure no main moved during the checks before pushing any.

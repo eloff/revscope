@@ -124,3 +124,64 @@ unchanged() {
     echo "it holds another git repo: $(stray_repos "$dir" "$@" | head -1)"
   fi
 }
+
+# The rest is for the check.sh scripts of this repo and the private repos, each run from its own top
+# level. Between start_formatting and finish_formatting, run_formatter commits formatters' rewrites.
+
+snapshot() { git status --porcelain=v2 -z | sha1sum; git diff | sha1sum; }
+
+# Includes the index, for a staged edit undone in the working tree, and turns off rename detection,
+# since a formatter can push a staged rename below its threshold and expose the old name.
+uncommitted() {
+  { git -c core.quotePath=false diff --no-renames --name-only HEAD
+    git -c core.quotePath=false diff --no-renames --cached --name-only; } | LC_ALL=C sort -u
+}
+
+# Files whose every change is staged, leaving out staged deletions, which have nothing to restage.
+fully_staged() {
+  LC_ALL=C comm -23 <(git -c core.quotePath=false diff --cached --name-only --diff-filter=d | LC_ALL=C sort) \
+    <(git -c core.quotePath=false diff --name-only | LC_ALL=C sort)
+}
+
+# Where run_formatter lists the commits it makes in the worktree at $1, so land.sh can tell them from
+# anyone else's. In the worktree's own git directory, so each repo's are kept apart.
+format_log() { git -C "${1:-.}" rev-parse --path-format=absolute --git-path check-format-commits; }
+
+start_formatting() {
+  before=$(snapshot)
+  other_changes=
+  # The full ref, since the short name reads heads/main when a tag is also called main.
+  head_ref=$(git symbolic-ref -q HEAD || true)
+  [ "$head_ref" != refs/heads/main ] || head_ref=
+}
+
+# Runs the formatter "$@" in directory $1 and commits the files it rewrote. It commits even if the
+# formatter then fails on a lint error, or a later run would mistake those files for someone's edits.
+run_formatter() {
+  local dir=$1 status=0 earlier now path rewritten=() staged=()
+  shift
+  [ "$before" = "$(snapshot)" ] || other_changes=1
+  earlier=$(uncommitted)
+  while IFS= read -r path; do staged+=("$path"); done < <(fully_staged)
+  (cd "$dir" && "$@") || status=$?
+  if [ -n "$head_ref" ]; then
+    now=$(uncommitted)
+    # The check for an empty path is for echo's blank line when nothing is left uncommitted.
+    while IFS= read -r path; do [ -z "$path" ] || rewritten+=("$path"); done < <(LC_ALL=C comm -13 <(echo "$earlier") <(echo "$now"))
+    if [ ${#rewritten[@]} -gt 0 ]; then
+      git --literal-pathspecs commit -q -s -m "Apply formatting" -- "${rewritten[@]}" ||
+        die "couldn't commit what a formatter rewrote (see git status). Commit it yourself, then run this again."
+      git rev-parse HEAD >>"$(format_log)"
+      echo "committed formatting of ${#rewritten[@]} file(s) as $(git rev-parse --short HEAD)"
+    fi
+    # Otherwise git add, check.sh, git commit would commit the version from before the formatter.
+    [ ${#staged[@]} = 0 ] || git --literal-pathspecs add -- "${staged[@]}"
+    before=$(snapshot)
+  fi
+  return "$status"
+}
+
+finish_formatting() {
+  [ -z "$other_changes" ] && [ "$before" = "$(snapshot)" ] ||
+    die "the checks changed files they can't commit themselves in $PWD (see git status). Review and commit them, then run this again."
+}
