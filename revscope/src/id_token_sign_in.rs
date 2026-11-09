@@ -6,15 +6,22 @@ use serde::Deserialize;
 
 use crate::auth::{
     AuthError, AuthSuccess, MIN_USER_NAME_LENGTH, NewAccountRequest, NewLogin, NewUser,
-    create_account, issue_session, map_query_error, normalize_email,
+    create_account, issue_session, link_identity, map_query_error, normalize_email,
 };
-use crate::db::open_main_database_read;
+use crate::db::{open_main_database_read, open_main_database_write};
 use crate::id_token::{Identity, MAX_TOKEN_LEN, SignInError, Verifier};
 use crate::server_context::ServerContext;
 
-/// The user may have a password, an invite, or another provider's sign-in.
-const EMAIL_HAS_ACCOUNT: &str = "An account with this email already exists. Log in the way you \
-     signed up, or use Forgot password to set a password.";
+/// The user has a password or an invite, but hasn't proved they read this address.
+const EMAIL_NOT_PROVEN: &str = "An account with this email already exists. To connect this \
+     sign-in, use Forgot password to set a new password, then try again. That confirms the email \
+     is yours and signs out your other devices and connected tools.";
+
+const EMAIL_HAS_ACCOUNT: &str =
+    "An account with this email already exists. Log in with this sign-in instead.";
+
+const EMAIL_HAS_OTHER_LOGIN: &str = "An account with this email already uses a different login \
+     with this provider. Log in with that one, or use Forgot password.";
 
 /// Longest name we take from the browser; Apple's full names are far shorter.
 const MAX_NAME_LEN: usize = 200;
@@ -43,8 +50,9 @@ pub(crate) struct SignedIn {
     pub(crate) signed_up: bool,
 }
 
-/// Signs in the user the token's identity signed up as, or, when `signup`
-/// asks, makes them a new account.
+/// Signs in the user the token's identity belongs to, linking it to the user
+/// with its email if that user has proved the address, or, when `signup` asks,
+/// makes them a new account.
 pub(crate) async fn sign_in(
     server_context: Arc<ServerContext>,
     payload: IdTokenRequest,
@@ -58,16 +66,9 @@ pub(crate) async fn sign_in(
     let identity = verify(&server_context, verifier, payload.id_token.as_str()).await?;
 
     let conn = open_main_database_read(server_context.clone()).await?;
-    let linked = conn
-        .query_opt(
-            "SELECT user_id::text FROM user_identities WHERE provider = $1 AND subject = $2",
-            &[&provider.id, &identity.subject],
-        )
-        .await
-        .map_err(map_query_error)?;
-    if let Some(row) = linked {
+    if let Some(user_id) = linked_user(&conn, provider.id, identity.subject.as_str()).await? {
         drop(conn);
-        return logged_in(server_context, provider.id, &row.get::<_, String>(0)).await;
+        return logged_in(server_context, provider.id, &user_id).await;
     }
 
     let email = identity
@@ -80,16 +81,52 @@ pub(crate) async fn sign_in(
     if !identity.email_verified {
         return Err(AuthError::InvalidRequest(provider.unverified_email));
     }
-    // Never linked to an existing user by email: nothing proves a password
-    // signup or an invite owns its address, so whoever made that user first
-    // would share the account with the provider's verified owner.
+    // Linked by email only to a user a reset link or a provider has vouched
+    // for. Nothing proves a password signup or an invite owns its address, so
+    // whoever made that user first would share the account with its real owner.
     let existing = conn
-        .query_opt("SELECT 1 FROM users WHERE email = $1", &[&email.normalized])
+        .query_opt(
+            "SELECT u.id::text,
+                    u.email_verified_at IS NOT NULL
+                    OR EXISTS (SELECT 1 FROM user_identities i WHERE i.user_id = u.id),
+                    EXISTS (
+                        SELECT 1 FROM user_identities i
+                        WHERE i.user_id = u.id AND i.provider = $2
+                    )
+             FROM users u
+             WHERE u.email = $1",
+            &[&email.normalized, &provider.id],
+        )
         .await
         .map_err(map_query_error)?;
     drop(conn);
-    if existing.is_some() {
-        return Err(AuthError::Conflict(EMAIL_HAS_ACCOUNT));
+    if let Some(row) = existing {
+        if !row.get::<_, bool>(1) {
+            return Err(AuthError::Conflict(EMAIL_NOT_PROVEN));
+        }
+        // One person's login at a provider is the one already linked; another
+        // subject claiming the address is someone else, or a mailbox reassigned.
+        if row.get::<_, bool>(2) {
+            return Err(AuthError::Conflict(EMAIL_HAS_OTHER_LOGIN));
+        }
+        // The signup page would otherwise count this as a new customer and
+        // start a checkout for a plan against the existing account.
+        if payload.signup.is_some() {
+            return Err(AuthError::Conflict(EMAIL_HAS_ACCOUNT));
+        }
+        let user_id: String = row.get(0);
+        let conn = open_main_database_write(server_context.clone()).await?;
+        if link_identity(&conn, provider.id, identity.subject.as_str(), &user_id).await? {
+            drop(conn);
+            return logged_in(server_context, provider.id, &user_id).await;
+        }
+        // A double submit of this same sign-in got there first.
+        let raced = linked_user(&conn, provider.id, identity.subject.as_str()).await?;
+        drop(conn);
+        return match raced {
+            Some(user_id) => logged_in(server_context, provider.id, &user_id).await,
+            None => Err(AuthError::Conflict(provider.already_linked)),
+        };
     }
 
     let Some(account) = payload.signup.as_ref() else {
@@ -116,6 +153,21 @@ pub(crate) async fn sign_in(
         provider: provider.id,
         signed_up: true,
     })
+}
+
+async fn linked_user(
+    conn: &crate::db::main::Connection,
+    provider: &str,
+    subject: &str,
+) -> Result<Option<String>, AuthError> {
+    let row = conn
+        .query_opt(
+            "SELECT user_id::text FROM user_identities WHERE provider = $1 AND subject = $2",
+            &[&provider, &subject],
+        )
+        .await
+        .map_err(map_query_error)?;
+    Ok(row.map(|row| row.get(0)))
 }
 
 async fn logged_in(

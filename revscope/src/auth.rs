@@ -44,6 +44,14 @@ pub(crate) enum NewLogin<'a> {
     },
 }
 
+/// Who can read a password reset link, and so whether using it proves its
+/// user reads their email.
+pub(crate) enum ResetLinkDelivery {
+    InboxOnly,
+    /// An invite, which is also returned to the admin who sent it.
+    SharedWithInviter,
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct ResetPasswordRequest {
     pub(crate) token: String,
@@ -281,7 +289,7 @@ pub(crate) async fn insert_new_user(
 
 /// Lets `subject` at `provider` sign in as `user_id`. A subject already linked
 /// (to anyone) is left as it was, and answers false.
-async fn link_identity(
+pub(crate) async fn link_identity(
     conn: &crate::db::main::Connection,
     provider: &str,
     subject: &str,
@@ -422,29 +430,73 @@ pub(crate) async fn login(
         }
         return Err(AuthError::InvalidCredentials);
     }
-    if rounds < PASSWORD_HASHING_ROUNDS {
-        let rehashed = hash_password(
+    let mut checked_hashes = vec![hashed_password.as_slice()];
+    let rehashed = (rounds < PASSWORD_HASHING_ROUNDS).then(|| {
+        hash_password(
             password,
             &salt_email,
             &user_id,
             &account_id,
             PASSWORD_HASHING_ROUNDS,
-        );
+        )
+    });
+    if let Some(rehashed) = &rehashed {
+        checked_hashes.push(rehashed);
         // A failed upgrade leaves the old hash working, so it must not fail
         // the login; the next one tries again.
-        if let Err(error) = replace_password_hash(
-            server_context.clone(),
-            &user_id,
-            &hashed_password,
-            &rehashed,
-        )
-        .await
+        if let Err(error) =
+            replace_password_hash(server_context.clone(), &user_id, &hashed_password, rehashed)
+                .await
         {
             error!("failed to upgrade password hash for user {user_id}: {error:?}");
         }
     }
 
-    issue_session(server_context, &user_id).await
+    issue_session_for_password(server_context, &user_id, &checked_hashes).await
+}
+
+/// Like [`issue_session`], but only while the user's password is still one of
+/// `checked_hashes`. A reset ends every session, including one from a login
+/// that checked the old password just before the reset landed.
+async fn issue_session_for_password(
+    server_context: Arc<ServerContext>,
+    user_id: &str,
+    checked_hashes: &[&[u8]],
+) -> Result<AuthSuccess, AuthError> {
+    let conn = open_main_database_write(server_context).await?;
+    let token = UuidToken::generate()?;
+    // FOR SHARE makes this wait out a reset in progress and then read its new
+    // hash. A reset that starts after waits for this insert and deletes the row.
+    let inserted = conn
+        .execute(
+            "INSERT INTO sessions (token_hash, user_id, expires_at)
+             SELECT $1::bytea, id, NOW() + ($3::int * INTERVAL '1 second')
+             FROM users
+             WHERE id = $2::text::uuid AND hashed_password = ANY($4::bytea[])
+             FOR SHARE",
+            &[
+                &token.hash(),
+                &user_id,
+                &SESSION_MAX_AGE_SECONDS,
+                &checked_hashes,
+            ],
+        )
+        .await
+        .map_err(map_query_error)?;
+    if inserted == 0 {
+        return Err(AuthError::InvalidCredentials);
+    }
+    conn.execute(
+        "UPDATE users SET last_login_at = NOW() WHERE id = $1::text::uuid",
+        &[&user_id],
+    )
+    .await
+    .map_err(map_query_error)?;
+    Ok(AuthSuccess {
+        session: SessionCookie {
+            session_id: token.to_string(),
+        },
+    })
 }
 
 /// Swaps `old` for `new` only if it is still the stored hash, so a password
@@ -607,7 +659,13 @@ async fn send_password_reset(
     )
     .await
     .map_err(map_query_error)?;
-    let token = insert_password_reset_token(&conn, &user_id, PASSWORD_RESET_TTL_SECONDS).await?;
+    let token = insert_password_reset_token(
+        &conn,
+        &user_id,
+        PASSWORD_RESET_TTL_SECONDS,
+        ResetLinkDelivery::InboxOnly,
+    )
+    .await?;
     drop(conn);
 
     let reset_url = password_reset_url(&token);
@@ -686,8 +744,10 @@ pub(crate) async fn reset_password(
             .map_err(map_query_error)?;
             let reset = conn
                 .query_opt(
+                    // A proving link also ends any invite link still out, which
+                    // the inviter holds and could otherwise set a password with.
                     "WITH valid_token AS (
-                        SELECT token_hash, user_id
+                        SELECT token_hash, user_id, proves_email
                         FROM password_reset_tokens
                         WHERE token_hash = $1
                         AND expires_at > NOW()
@@ -695,22 +755,37 @@ pub(crate) async fn reset_password(
                      ),
                      updated_user AS (
                         UPDATE users
-                        SET hashed_password = $2
+                        SET hashed_password = $2,
+                            email_verified_at = CASE
+                                WHEN (SELECT proves_email FROM valid_token) THEN NOW()
+                                ELSE email_verified_at
+                            END
                         WHERE id = (SELECT user_id FROM valid_token)
                         RETURNING id
                      ),
                      deleted_token AS (
                         DELETE FROM password_reset_tokens
-                        WHERE token_hash = (SELECT token_hash FROM valid_token)
-                        AND EXISTS (SELECT 1 FROM updated_user)
+                        WHERE EXISTS (SELECT 1 FROM updated_user)
+                        AND (
+                            token_hash = (SELECT token_hash FROM valid_token)
+                            OR (
+                                user_id = (SELECT user_id FROM valid_token)
+                                AND (SELECT proves_email FROM valid_token)
+                            )
+                        )
                         RETURNING user_id
                      ),
                      deleted_sessions AS (
                         DELETE FROM sessions
-                        WHERE user_id = (SELECT user_id FROM deleted_token)
+                        WHERE user_id IN (SELECT user_id FROM deleted_token)
+                        RETURNING user_id
+                     ),
+                     deleted_api_tokens AS (
+                        DELETE FROM api_tokens
+                        WHERE user_id IN (SELECT user_id FROM deleted_token)
                         RETURNING user_id
                      )
-                     SELECT user_id::text FROM deleted_token",
+                     SELECT user_id::text FROM deleted_token LIMIT 1",
                     &[&token_hash, &password_hash],
                 )
                 .await
@@ -722,12 +797,18 @@ pub(crate) async fn reset_password(
             ))
         })
         .await;
-    // The reset deletes every session of this user, so stop serving them here.
-    // Before looking at the result, since an error can follow a commit. The
-    // token can only name the user read above.
+    // The reset deletes every session and token of this user, so stop serving
+    // them here. Before looking at the result, since an error can follow a
+    // commit. The token can only name the user read above.
+    crate::user_access::forget_user(&server_context, user_id.as_str());
+    // Grants held only in memory: redeeming one checks neither the session that
+    // asked for it nor the password, so old ones would outlive the reset.
     server_context
-        .session_cache
-        .invalidate_user(user_id.as_str());
+        .mcp_authorization_codes
+        .retain(|grant| grant.user_id != user_id);
+    server_context
+        .download_tokens
+        .retain(|grant| grant.user_id != user_id);
     updated?;
 
     Ok(())
@@ -993,14 +1074,16 @@ pub(crate) async fn insert_password_reset_token(
     conn: &crate::db::main::Connection,
     user_id: &str,
     ttl_seconds: i32,
+    delivery: ResetLinkDelivery,
 ) -> Result<UuidToken, AuthError> {
     let token = UuidToken::generate()?;
+    let proves_email = matches!(delivery, ResetLinkDelivery::InboxOnly);
     conn.execute(
         // Without the cast Postgres infers a float8 parameter, because that is
         // the preferred operand type for multiplying an interval.
-        "INSERT INTO password_reset_tokens (token_hash, user_id, expires_at)
-         VALUES ($1, $2::text::uuid, NOW() + ($3::int * INTERVAL '1 second'))",
-        &[&token.hash(), &user_id, &ttl_seconds],
+        "INSERT INTO password_reset_tokens (token_hash, user_id, expires_at, proves_email)
+         VALUES ($1, $2::text::uuid, NOW() + ($3::int * INTERVAL '1 second'), $4)",
+        &[&token.hash(), &user_id, &ttl_seconds, &proves_email],
     )
     .await
     .map_err(map_query_error)?;
@@ -1068,6 +1151,139 @@ pub(crate) fn db_constraint(error: &tokio_postgres::Error) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_reset_drops_the_users_grants_held_in_memory() {
+        let (server_context, conn) = crate::test_utils::main_test_db("reset-grants").await;
+        let account_id = crate::test_utils::insert_test_account(&conn, "reset_grants").await;
+        let email = format!("g{}@example.com", account_id.replace('-', ""));
+        let user_id: String = conn
+            .query_one(
+                "INSERT INTO users (account_id, name, email, hashed_password)
+                 VALUES ($1::text::uuid, 'Holder', $2, 'old'::bytea) RETURNING id::text",
+                &[&account_id, &email],
+            )
+            .await
+            .expect("insert user")
+            .get(0);
+        let code_for = |user_id: &str| {
+            server_context
+                .mcp_authorization_codes
+                .issue(
+                    crate::mcp::authorize::AuthorizationGrant {
+                        client_id: "client".to_string(),
+                        redirect_uri: "http://127.0.0.1/cb".to_string(),
+                        code_challenge: "challenge".to_string(),
+                        account_id: account_id.clone(),
+                        user_id: user_id.to_string(),
+                        scope: crate::mcp::authorize::GrantScope::Cli,
+                    },
+                    300,
+                )
+                .expect("issue code")
+                .secret
+        };
+        let download_for = |user_id: &str| {
+            server_context
+                .download_tokens
+                .issue(
+                    crate::download_db::DownloadGrant {
+                        project_key: 1,
+                        user_id: user_id.to_string(),
+                        account_id: account_id.clone(),
+                    },
+                    300,
+                )
+                .expect("issue download token")
+                .secret
+        };
+        let (code, download) = (code_for(&user_id), download_for(&user_id));
+        let (other_code, other_download) = (code_for("someone-else"), download_for("someone-else"));
+        let token =
+            insert_password_reset_token(&conn, &user_id, 3600, ResetLinkDelivery::InboxOnly)
+                .await
+                .expect("insert reset token");
+
+        reset_password(
+            server_context.clone(),
+            ResetPasswordRequest {
+                token: token.to_string(),
+                password: "a-long-enough-password".to_string(),
+            },
+        )
+        .await
+        .expect("reset");
+
+        assert!(server_context.mcp_authorization_codes.get(code).is_none());
+        assert!(server_context.download_tokens.get(download).is_none());
+        assert!(
+            server_context
+                .mcp_authorization_codes
+                .get(other_code)
+                .is_some()
+        );
+        assert!(server_context.download_tokens.get(other_download).is_some());
+        conn.execute(
+            "DELETE FROM accounts WHERE id = $1::text::uuid",
+            &[&account_id],
+        )
+        .await
+        .expect("delete account");
+    }
+
+    #[tokio::test]
+    async fn a_login_that_checked_the_old_password_gets_no_session_after_a_reset() {
+        let (server_context, conn) = crate::test_utils::main_test_db("login-reset-race").await;
+        let account_id = crate::test_utils::insert_test_account(&conn, "login_reset_race").await;
+        let email = format!("r{}@example.com", account_id.replace('-', ""));
+        let user_id: String = conn
+            .query_one(
+                "INSERT INTO users (account_id, name, email, hashed_password)
+                 VALUES ($1::text::uuid, 'Racer', $2, 'old'::bytea) RETURNING id::text",
+                &[&account_id, &email],
+            )
+            .await
+            .expect("insert user")
+            .get(0);
+
+        // A reset holds the user's row while the login tries to record its session.
+        let login_user = user_id.clone();
+        let login = conn
+            .in_transaction(async |conn| {
+                conn.execute(
+                    "UPDATE users SET hashed_password = 'new'::bytea WHERE id = $1::text::uuid",
+                    &[&user_id],
+                )
+                .await?;
+                let login = tokio::spawn(async move {
+                    issue_session_for_password(server_context, &login_user, &[b"old"]).await
+                });
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                Ok::<_, AuthError>(login)
+            })
+            .await
+            .expect("reset commits");
+        let result = login.await.expect("login task");
+        assert!(
+            matches!(result, Err(AuthError::InvalidCredentials)),
+            "got {result:?}"
+        );
+        let sessions: i64 = conn
+            .query_one(
+                "SELECT COUNT(*) FROM sessions WHERE user_id = $1::text::uuid",
+                &[&user_id],
+            )
+            .await
+            .expect("count sessions")
+            .get(0);
+        assert_eq!(sessions, 0);
+        conn.execute(
+            "DELETE FROM accounts WHERE id = $1::text::uuid",
+            &[&account_id],
+        )
+        .await
+        .expect("delete account");
+    }
 
     /// The same code points as the list in authValidation.test.ts.
     const FORBIDDEN_CODE_POINTS: [u32; 31] = [
@@ -1151,9 +1367,14 @@ mod tests {
             .await
             .expect("insert pending user")
             .get(0);
-        let old_token = insert_password_reset_token(&conn, &user_id, 3600)
-            .await
-            .expect("insert invite token");
+        let old_token = insert_password_reset_token(
+            &conn,
+            &user_id,
+            3600,
+            ResetLinkDelivery::SharedWithInviter,
+        )
+        .await
+        .expect("insert invite token");
 
         // A re-invite holds the user's row and replaces the link while the
         // invitee submits the old one.
@@ -1181,7 +1402,13 @@ mod tests {
                     &[&user_id],
                 )
                 .await?;
-                insert_password_reset_token(conn, &user_id, 3600).await?;
+                insert_password_reset_token(
+                    conn,
+                    &user_id,
+                    3600,
+                    ResetLinkDelivery::SharedWithInviter,
+                )
+                .await?;
                 Ok::<_, AuthError>(reset)
             })
             .await

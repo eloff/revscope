@@ -16,8 +16,8 @@ use log::error;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{
-    AuthError, MIN_USER_NAME_LENGTH, insert_password_reset_token, insert_user, map_query_error,
-    normalize_email, password_reset_url,
+    AuthError, MIN_USER_NAME_LENGTH, ResetLinkDelivery, insert_password_reset_token, insert_user,
+    map_query_error, normalize_email, password_reset_url,
 };
 use crate::authorize::AdminAccount;
 use crate::db::open_main_database_write;
@@ -118,7 +118,13 @@ pub(crate) fn invite_user(
                 )
                 .await
                 .map_err(map_query_error)?;
-                let token = insert_password_reset_token(conn, &user_id, INVITE_TTL_SECONDS).await?;
+                let token = insert_password_reset_token(
+                    conn,
+                    &user_id,
+                    INVITE_TTL_SECONDS,
+                    ResetLinkDelivery::SharedWithInviter,
+                )
+                .await?;
                 Ok((user_id, token))
             })
             .await;

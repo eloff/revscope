@@ -13,7 +13,7 @@ use std::net::TcpListener;
 use std::sync::{Mutex, Once};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use common::{HttpResponse, TestServer};
+use common::{GOOGLE_ISSUER, HttpResponse, TestServer, id_token};
 use serde_json::{Value, json};
 
 const SIGNUP_PATH: &str = "/v2/public/auth/signup";
@@ -21,6 +21,7 @@ const LOGIN_PATH: &str = "/v2/public/auth/login";
 const LOGOUT_PATH: &str = "/v2/public/auth/logout";
 const FORGOT_PASSWORD_PATH: &str = "/v2/public/auth/forgot-password";
 const RESET_PASSWORD_PATH: &str = "/v2/public/auth/reset-password";
+const ID_TOKEN_PATH: &str = "/v2/public/auth/id-token";
 const ME_PATH: &str = "/v2/session/me";
 const PASSWORD: &str = "a-long-enough-password";
 const NEW_PASSWORD: &str = "another-long-enough-password";
@@ -35,6 +36,23 @@ async fn a_reset_link_sets_a_new_password_and_ends_every_session() -> io::Result
     let account = signup(&server, "pwreset").await?;
     let old_cookie = format!("rr_session={}", account.session_id);
     assert_eq!(me_status(&server, &old_cookie).await?, 200);
+    let minted = server
+        .post_json(
+            &format!("/v2/session/projects/{}/query-token", account.project_id),
+            "",
+            &[("Cookie", old_cookie.as_str())],
+        )
+        .await?;
+    assert_eq!(minted.status_code(), 200, "{}", minted.body_str());
+    let query_bearer = format!(
+        "Bearer {}",
+        minted.json::<Value>()["token"].as_str().expect("token")
+    );
+    let schema_path = format!("/v2/query/projects/{}/schema", account.project_id);
+    let schema = server
+        .get_query(&schema_path, &[("Authorization", query_bearer.as_str())])
+        .await?;
+    assert_eq!(schema.status_code(), 200, "{}", schema.body_str());
 
     let forgot = server
         .post_json(
@@ -72,8 +90,12 @@ async fn a_reset_link_sets_a_new_password_and_ends_every_session() -> io::Result
     );
 
     // A reset is how someone locks out whoever had their password, so the
-    // sessions signed in under the old one end with it.
+    // sessions and tokens made under the old one end with it.
     assert_eq!(me_status(&server, &old_cookie).await?, 401);
+    let schema = server
+        .get_query(&schema_path, &[("Authorization", query_bearer.as_str())])
+        .await?;
+    assert_eq!(schema.status_code(), 401, "{}", schema.body_str());
     assert_eq!(
         login(&server, &account.email, PASSWORD)
             .await?
@@ -177,6 +199,137 @@ async fn an_account_signed_up_without_a_password_is_claimed_with_a_reset_link() 
     assert_eq!(me.status_code(), 401, "{}", me.body_str());
 
     delete_account(&server, &account_name).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_reset_link_proves_the_email_so_a_provider_can_join_the_password_user() -> io::Result<()>
+{
+    start_mail_server();
+    let server = TestServer::spawn("password-proves-email").await?;
+    let account = signup(&server, "pwproves").await?;
+    let subject = format!("subject-{}", account.email);
+    assert_eq!(
+        google_sign_in(&server, &subject, &account.email)
+            .await?
+            .status_code(),
+        409,
+        "nothing has proved this signup owns the address"
+    );
+
+    set_password_by_email(&server, &account.email, NEW_PASSWORD).await?;
+
+    let linked = google_sign_in(&server, &subject, &account.email).await?;
+    assert_eq!(linked.status_code(), 200, "{}", linked.body_str());
+    let by_password = login(&server, &account.email, NEW_PASSWORD).await?;
+    assert_eq!(by_password.status_code(), 200, "{}", by_password.body_str());
+    assert_eq!(
+        linked.json::<Value>()["user_id"],
+        by_password.json::<Value>()["user_id"]
+    );
+
+    delete_account(&server, &account.account_name).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn forgot_password_adds_a_password_to_a_google_user() -> io::Result<()> {
+    start_mail_server();
+    let server = TestServer::spawn("password-on-google").await?;
+    let slug = format!("pwgoogle{}", unique_suffix());
+    let account_name = format!("{slug}.example");
+    let email = format!("{slug}@example.com");
+    let token = id_token(GOOGLE_ISSUER, &slug, Some(&email), json!(true));
+    let created = server
+        .post_json(
+            ID_TOKEN_PATH,
+            &json!({
+                "provider": "google",
+                "id_token": token,
+                "signup": {
+                    "account_name": account_name,
+                    "plan": "free",
+                    "events": "",
+                    "billing": "monthly",
+                },
+            })
+            .to_string(),
+            &[],
+        )
+        .await?;
+    assert_eq!(created.status_code(), 200, "{}", created.body_str());
+    let user_id = created.json::<Value>()["user_id"].clone();
+
+    set_password_by_email(&server, &email, NEW_PASSWORD).await?;
+
+    let by_password = login(&server, &email, NEW_PASSWORD).await?;
+    assert_eq!(by_password.status_code(), 200, "{}", by_password.body_str());
+    assert_eq!(by_password.json::<Value>()["user_id"], user_id);
+    let by_google = google_sign_in(&server, &slug, &email).await?;
+    assert_eq!(by_google.status_code(), 200, "{}", by_google.body_str());
+    assert_eq!(by_google.json::<Value>()["user_id"], user_id);
+
+    delete_account(&server, &account_name).await;
+    Ok(())
+}
+
+// The inviter is handed the link, so an admin could invite someone's address,
+// set the password themselves, and have that person's Google login join them.
+#[tokio::test]
+async fn an_invite_link_does_not_prove_the_email() -> io::Result<()> {
+    start_mail_server();
+    let server = TestServer::spawn("invite-no-proof").await?;
+    let admin = signup(&server, "invadmin").await?;
+    common::signup::mark_subscription_paid(&server, &admin.account_name).await;
+    let admin_cookie = format!("rr_session={}", admin.session_id);
+    let email = format!("invitee{}@example.com", unique_suffix());
+    let subject = format!("subject-{email}");
+
+    let invite_token = invite(&server, &admin_cookie, &email).await?;
+    assert_eq!(
+        google_sign_in(&server, &subject, &email)
+            .await?
+            .status_code(),
+        409,
+        "an invite nobody has accepted"
+    );
+
+    assert_eq!(
+        reset(&server, &invite_token, PASSWORD).await?.status_code(),
+        200
+    );
+    assert_eq!(
+        google_sign_in(&server, &subject, &email)
+            .await?
+            .status_code(),
+        409,
+        "an invite link the inviter may have used"
+    );
+
+    delete_account(&server, &admin.account_name).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn proving_the_email_ends_invite_links_still_out() -> io::Result<()> {
+    start_mail_server();
+    let server = TestServer::spawn("invite-link-ended").await?;
+    let admin = signup(&server, "invended").await?;
+    common::signup::mark_subscription_paid(&server, &admin.account_name).await;
+    let admin_cookie = format!("rr_session={}", admin.session_id);
+    let email = format!("invitee{}@example.com", unique_suffix());
+    let invite_token = invite(&server, &admin_cookie, &email).await?;
+
+    set_password_by_email(&server, &email, NEW_PASSWORD).await?;
+
+    let replayed = reset(&server, &invite_token, PASSWORD).await?;
+    assert_eq!(replayed.status_code(), 400, "{}", replayed.body_str());
+    assert_eq!(
+        login(&server, &email, NEW_PASSWORD).await?.status_code(),
+        200
+    );
+
+    delete_account(&server, &admin.account_name).await;
     Ok(())
 }
 
@@ -652,6 +805,66 @@ async fn reset_token_sent_to(address: &str) -> String {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("no reset email was sent to {address}");
+}
+
+/// Requests a reset link for `email` and uses the newest one sent there.
+async fn set_password_by_email(server: &TestServer, email: &str, password: &str) -> io::Result<()> {
+    let already_sent = emails_sent_to(email).len();
+    let forgot = server
+        .post_json(
+            FORGOT_PASSWORD_PATH,
+            &json!({ "email": email }).to_string(),
+            &[],
+        )
+        .await?;
+    assert_eq!(forgot.status_code(), 200, "{}", forgot.body_str());
+    // An invite may already be waiting in the same inbox.
+    for _ in 0..250 {
+        if emails_sent_to(email).len() > already_sent {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let token = reset_token_sent_to(email).await;
+    let response = reset(server, &token, password).await?;
+    assert_eq!(response.status_code(), 200, "{}", response.body_str());
+    Ok(())
+}
+
+async fn google_sign_in(
+    server: &TestServer,
+    subject: &str,
+    email: &str,
+) -> io::Result<HttpResponse> {
+    let token = id_token(GOOGLE_ISSUER, subject, Some(email), json!(true));
+    server
+        .post_json(
+            ID_TOKEN_PATH,
+            &json!({ "provider": "google", "id_token": token }).to_string(),
+            &[],
+        )
+        .await
+}
+
+/// Invites `email` as a viewer and returns the token from the link given to the inviter.
+async fn invite(server: &TestServer, admin_cookie: &str, email: &str) -> io::Result<String> {
+    let response = server
+        .post_json(
+            "/v2/session/users/invite",
+            &json!({ "name": "Ivy Invitee", "email": email, "is_admin": false, "project_ids": null })
+                .to_string(),
+            &[("Cookie", admin_cookie)],
+        )
+        .await?;
+    assert_eq!(response.status_code(), 200, "{}", response.body_str());
+    let body: Value = response.json();
+    let url = body["invite_url"].as_str().expect("invite url");
+    Ok(url
+        .split("token=")
+        .nth(1)
+        .and_then(|rest| rest.split('&').next())
+        .expect("token in invite url")
+        .to_string())
 }
 
 async fn reset(server: &TestServer, token: &str, password: &str) -> io::Result<HttpResponse> {

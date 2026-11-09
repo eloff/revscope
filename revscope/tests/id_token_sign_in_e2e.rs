@@ -7,17 +7,13 @@ use std::io;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use common::{SIGN_IN_CLIENT_ID, SIGN_IN_KEY_ID, SIGN_IN_PRIVATE_KEY, TestServer};
-use jsonwebtoken::{Algorithm, EncodingKey, Header};
+use common::{APPLE_ISSUER, GOOGLE_ISSUER, SIGN_IN_CLIENT_ID, TestServer, id_token};
 use serde_json::{Value, json};
 
 const ID_TOKEN_PATH: &str = "/v2/public/auth/id-token";
 const PROVIDERS_PATH: &str = "/v2/public/auth/providers";
 const SIGNUP_PATH: &str = "/v2/public/auth/signup";
 const ME_PATH: &str = "/v2/session/me";
-
-const GOOGLE_ISSUER: &str = "https://accounts.google.com";
-const APPLE_ISSUER: &str = "https://appleid.apple.com";
 
 fn unique_slug(tag: &str) -> String {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -27,31 +23,6 @@ fn unique_slug(tag: &str) -> String {
         .as_nanos();
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("idt{tag}{}{n}", nanos % 1_000_000_000_000)
-}
-
-fn id_token(issuer: &str, subject: &str, email: Option<&str>, verified: Value) -> String {
-    let exp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock after epoch")
-        .as_secs()
-        + 600;
-    let mut claims = json!({
-        "iss": issuer,
-        "aud": SIGN_IN_CLIENT_ID,
-        "sub": subject,
-        "exp": exp,
-        "email_verified": verified,
-    });
-    if let Some(email) = email {
-        claims["email"] = json!(email);
-    }
-    if issuer == GOOGLE_ISSUER {
-        claims["name"] = json!("Grace Hopper");
-    }
-    let mut header = Header::new(Algorithm::RS256);
-    header.kid = Some(SIGN_IN_KEY_ID.to_owned());
-    let key = EncodingKey::from_rsa_pem(SIGN_IN_PRIVATE_KEY.as_bytes()).expect("test key");
-    jsonwebtoken::encode(&header, &claims, &key).expect("sign test token")
 }
 
 fn signup_fields(website: &str) -> Value {
@@ -181,7 +152,7 @@ async fn google_signs_up_then_logs_in_to_the_same_user() -> io::Result<()> {
 }
 
 #[tokio::test]
-async fn a_sign_in_never_takes_over_a_user_with_the_same_email() -> io::Result<()> {
+async fn a_sign_in_never_takes_over_a_user_who_has_not_proved_their_email() -> io::Result<()> {
     let server = TestServer::spawn("id-token-no-email-link").await?;
     let slug = unique_slug("a");
     let website = format!("{slug}.example");
@@ -220,7 +191,7 @@ async fn a_sign_in_never_takes_over_a_user_with_the_same_email() -> io::Result<(
         assert_eq!(
             response.json::<Value>()["error"],
             json!(
-                "An account with this email already exists. Log in the way you signed up, or use Forgot password to set a password."
+                "An account with this email already exists. To connect this sign-in, use Forgot password to set a new password, then try again. That confirms the email is yours and signs out your other devices and connected tools."
             )
         );
         assert!(response.header("set-cookie").is_none());
@@ -237,6 +208,101 @@ async fn a_sign_in_never_takes_over_a_user_with_the_same_email() -> io::Result<(
         .expect("count identities")
         .get(0);
     assert_eq!(identities, 0);
+
+    delete_account(&server, &website).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_second_provider_with_the_same_email_joins_the_same_user() -> io::Result<()> {
+    let server = TestServer::spawn("id-token-second-provider").await?;
+    let slug = unique_slug("p");
+    let website = format!("{slug}.example");
+    let email = format!("{slug}@example.com");
+    let google = id_token(GOOGLE_ISSUER, &slug, Some(&email), json!(true));
+    let response = server
+        .post_json(
+            ID_TOKEN_PATH,
+            &json!({ "provider": "google", "id_token": google, "signup": signup_fields(&website) })
+                .to_string(),
+            &[],
+        )
+        .await?;
+    assert_eq!(response.status_code(), 200, "{}", response.body_str());
+    let user_id = response.json::<Value>()["user_id"].clone();
+
+    let apple = id_token(APPLE_ISSUER, &slug, Some(&email), json!("true"));
+    // The second time finds the link rather than making it.
+    for _ in 0..2 {
+        let response = server
+            .post_json(
+                ID_TOKEN_PATH,
+                &json!({ "provider": "apple", "id_token": apple }).to_string(),
+                &[],
+            )
+            .await?;
+        assert_eq!(response.status_code(), 200, "{}", response.body_str());
+        assert_eq!(response.json::<Value>()["user_id"], user_id);
+        assert_eq!(last_login_method(&response), Some("apple"));
+    }
+
+    delete_account(&server, &website).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn only_a_first_login_at_a_provider_from_the_login_page_joins_a_user() -> io::Result<()> {
+    let server = TestServer::spawn("id-token-link-limits").await?;
+    let slug = unique_slug("q");
+    let website = format!("{slug}.example");
+    let email = format!("{slug}@example.com");
+    let google = id_token(GOOGLE_ISSUER, &slug, Some(&email), json!(true));
+    let response = server
+        .post_json(
+            ID_TOKEN_PATH,
+            &json!({ "provider": "google", "id_token": google, "signup": signup_fields(&website) })
+                .to_string(),
+            &[],
+        )
+        .await?;
+    assert_eq!(response.status_code(), 200, "{}", response.body_str());
+
+    let other_subject = format!("{slug}-other");
+    let other_google = id_token(GOOGLE_ISSUER, &other_subject, Some(&email), json!(true));
+    let apple = id_token(APPLE_ISSUER, &slug, Some(&email), json!("true"));
+    for (body, error) in [
+        (
+            json!({ "provider": "google", "id_token": other_google }),
+            "An account with this email already uses a different login with this provider. Log in with that one, or use Forgot password.",
+        ),
+        (
+            json!({
+                "provider": "apple",
+                "id_token": apple,
+                "signup": signup_fields(&format!("{slug}-other.example")),
+            }),
+            "An account with this email already exists. Log in with this sign-in instead.",
+        ),
+    ] {
+        let response = server
+            .post_json(ID_TOKEN_PATH, &body.to_string(), &[])
+            .await?;
+        assert_eq!(response.status_code(), 409, "{}", response.body_str());
+        assert_eq!(response.json::<Value>()["error"], json!(error));
+    }
+    let conn = revscope::db::open_main_database_read(server.context.clone())
+        .await
+        .expect("open main database");
+    let identities: i64 = conn
+        .query_one(
+            "SELECT COUNT(*) FROM user_identities WHERE subject = ANY($1)",
+            &[&vec![slug.clone(), other_subject]],
+        )
+        .await
+        .expect("count identities")
+        .get(0);
+    assert_eq!(identities, 1, "only the signup's own login");
+    drop(conn);
 
     delete_account(&server, &website).await;
     Ok(())

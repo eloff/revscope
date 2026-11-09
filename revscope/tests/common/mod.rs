@@ -51,6 +51,35 @@ pub const SIGN_IN_CLIENT_ID: &str = "test-client";
 pub const SIGN_IN_KEY_ID: &str = "test-key";
 pub const SIGN_IN_PRIVATE_KEY: &str = include_str!("../../testdata/id-token-test-key.pem");
 const SIGN_IN_PUBLIC_KEY: &str = include_str!("../../testdata/id-token-test-key.pub.pem");
+pub const GOOGLE_ISSUER: &str = "https://accounts.google.com";
+pub const APPLE_ISSUER: &str = "https://appleid.apple.com";
+
+/// An ID token the test server accepts as coming from `issuer`.
+pub fn id_token(issuer: &str, subject: &str, email: Option<&str>, verified: Value) -> String {
+    let exp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_secs()
+        + 600;
+    let mut claims = serde_json::json!({
+        "iss": issuer,
+        "aud": SIGN_IN_CLIENT_ID,
+        "sub": subject,
+        "exp": exp,
+        "email_verified": verified,
+    });
+    if let Some(email) = email {
+        claims["email"] = serde_json::json!(email);
+    }
+    if issuer == GOOGLE_ISSUER {
+        claims["name"] = serde_json::json!("Grace Hopper");
+    }
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some(SIGN_IN_KEY_ID.to_owned());
+    let key =
+        jsonwebtoken::EncodingKey::from_rsa_pem(SIGN_IN_PRIVATE_KEY.as_bytes()).expect("test key");
+    jsonwebtoken::encode(&header, &claims, &key).expect("sign test token")
+}
 
 pub struct TestServer {
     pub addr: SocketAddr,
