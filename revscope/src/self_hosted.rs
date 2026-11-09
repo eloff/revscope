@@ -20,6 +20,9 @@ const ACCOUNT_NAME: &str = "self-hosted";
 /// the first user can't both get in. Arbitrary, but must not collide with
 /// other advisory locks on the database.
 const SIGNUP_LOCK_KEY: i64 = 0x7265_7673_6967_6e75;
+/// Advisory locks span the database, but the users a signup checks are per
+/// schema, and e2e test runs each have their own.
+const SIGNUP_LOCK_ID: &str = "$1::bigint + hashtext(current_schema())";
 pub(crate) const SIGNUP_CLOSED: &str = "Signup is closed. Ask an existing user to invite you.";
 
 /// Whether a new visitor may still sign up. Always on revscope.co; on a
@@ -46,7 +49,10 @@ pub(crate) async fn signup_is_open(conn: &Connection) -> Result<bool, AuthError>
 /// connection, since the lock outlives the statement and returns to the pool.
 pub(crate) async fn lock_signup(conn: &Connection) -> Result<(), AuthError> {
     let row = conn
-        .query_one("SELECT pg_try_advisory_lock($1)", &[&SIGNUP_LOCK_KEY])
+        .query_one(
+            &format!("SELECT pg_try_advisory_lock({SIGNUP_LOCK_ID})"),
+            &[&SIGNUP_LOCK_KEY],
+        )
         .await?;
     if row.get::<_, bool>(0) {
         Ok(())
@@ -59,7 +65,10 @@ pub(crate) async fn lock_signup(conn: &Connection) -> Result<(), AuthError> {
 
 pub(crate) async fn unlock_signup(conn: &Connection) {
     if let Err(error) = conn
-        .execute("SELECT pg_advisory_unlock($1)", &[&SIGNUP_LOCK_KEY])
+        .execute(
+            &format!("SELECT pg_advisory_unlock({SIGNUP_LOCK_ID})"),
+            &[&SIGNUP_LOCK_KEY],
+        )
         .await
     {
         log::error!("failed to release the self-hosted signup lock: {error}");

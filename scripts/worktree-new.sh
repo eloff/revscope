@@ -4,6 +4,7 @@
 # Creates ../revscope-<branch> on a new branch from origin/main, ready to build and test, and prints
 # its path. Each private repo the main checkout has inside it gets a worktree on the same branch
 # name, at the same place in the new one, set up by its scripts/worktree-setup.sh if it has one.
+# The worktree gets its own schema for the backend's e2e tests (see e2e_worktree_env in lib.sh).
 # If any step fails, everything it made is removed again, so no worktree is left without its
 # private repos.
 set -euo pipefail
@@ -46,7 +47,7 @@ add() {
 add "$main" "$dest"
 # Gitignored local config. The production env files stay behind, since deploys run from the main
 # checkout.
-link_ignored "$main" "$dest" CLAUDE.local.md .env revscope/.env revscope/.e2e.env web/.env web/app/.env revscope/GeoLite2-City.mmdb
+link_ignored "$main" "$dest" CLAUDE.local.md .env revscope/.env web/.env web/app/.env revscope/GeoLite2-City.mmdb
 pnpm_deps "$dest/web"
 
 for repo in "${repos[@]:1}"; do
@@ -57,5 +58,7 @@ for repo in "${repos[@]:1}"; do
   fi
 done
 
+# Last, because nothing after it can fail and leave the schema behind.
+e2e_worktree_env "$main" "$dest" "$branch"
 done=1
 echo "$dest"

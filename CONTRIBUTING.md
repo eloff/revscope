@@ -32,7 +32,10 @@ Use pnpm, not npm.
 
 The backend's end-to-end tests in `revscope/tests/` need a Postgres database.
 Set `DATABASE_URL` in your environment or in `revscope/.e2e.env`, preferably
-pointing at a database used only for tests.
+pointing at a database used only for tests. A worktree from
+`scripts/worktree-new.sh` gets its own schema in that database through its own
+`.e2e.env`, so test runs in different worktrees don't see each other's data.
+An exported `DATABASE_URL` overrides that file, and so that schema.
 
 ## Checks
 

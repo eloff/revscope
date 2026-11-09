@@ -34,6 +34,59 @@ link_ignored() {
   done
 }
 
+# A new name for the Postgres schema of the e2e tests in a worktree on branch $1. Random, so it can
+# never be the schema of a worktree that's in use, whatever has happened to that one's path or branch.
+e2e_schema() {
+  local slug
+  slug=$(printf %s "$1" | tr -c 'a-zA-Z0-9' _ | tr 'A-Z' 'a-z' | cut -c1-40)
+  echo "e2e_${slug}_$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+}
+
+# The DATABASE_URL in the env file $1, or nothing if there's no such file.
+e2e_url() {
+  [ ! -f "$1" ] || sed -n 's/^DATABASE_URL=//p' "$1" | head -1
+}
+
+# Gives the worktree at $2, on the new branch $3, its own schema in the main checkout $1's e2e
+# database, and an .e2e.env selecting it. The tests' background workers scan every project, so
+# sessions sharing a schema take each other's jobs. Without a usable database the worktree links the
+# shared file instead, since a change that needs no backend tests shouldn't be blocked.
+e2e_worktree_env() {
+  local main=$1 dest=$2 branch=$3 file=revscope/.e2e.env url schema separator error=
+  [ -e "$main/$file" ] && git -C "$dest" check-ignore -q "$file" || return 0
+  url=$(e2e_url "$main/$file")
+  url=${url%[?&]}
+  schema=$(e2e_schema "$branch")
+  if ! [[ $url =~ ^postgres(ql)?://[^[:space:]\'\"#\$\\]+$ ]] || [[ $url == *options=* || $url == *\?*@* ]]; then
+    # A ? before the @ is in the password, and would be taken for the start of the query below.
+    error="its DATABASE_URL isn't a plain postgres:// URL without options"
+  elif ! error=$(PGCONNECT_TIMEOUT=5 psql "$url" -Xq -v ON_ERROR_STOP=1 -c "CREATE SCHEMA $schema" 2>&1); then
+    :
+  else
+    [[ $url == *\?* ]] && separator='&' || separator='?'
+    (
+      umask 077
+      awk -v line="DATABASE_URL=$url${separator}options=-csearch_path%3D$schema" \
+        '/^DATABASE_URL=/ { print line; next } 1' "$main/$file" >"$dest/$file"
+    )
+    return 0
+  fi
+  echo "warning: this worktree's backend tests will share the e2e schema with other sessions, since it couldn't have its own: $error" >&2
+  link_ignored "$main" "$dest" "$file"
+}
+
+# Drops the schema a worktree's DATABASE_URL $1 selects, if it does. Read from the URL rather than
+# worked out again, so a renamed branch still finds it.
+e2e_drop_schema() {
+  local url=$1 schema error
+  [[ $url =~ [?\&]options=-csearch_path%3D(e2e_[a-z0-9_]+)$ ]] || return 0
+  schema=${BASH_REMATCH[1]}
+  # The timeout is so a hung test holding a table can't keep land.sh, and its lock, waiting forever.
+  error=$(PGCONNECT_TIMEOUT=5 psql "$url" -Xq -v ON_ERROR_STOP=1 \
+    -c "SET lock_timeout = '5s'" -c "DROP SCHEMA IF EXISTS $schema CASCADE" 2>&1) ||
+    echo "warning: couldn't drop the e2e schema $schema, which is harmless but stays behind: $error" >&2
+}
+
 # Installs a pnpm package's dependencies unless they're up to date with its lockfile, from the local
 # store when it can.
 pnpm_deps() {

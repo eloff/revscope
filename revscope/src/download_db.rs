@@ -316,7 +316,9 @@ mod tests {
 
     #[test]
     fn only_the_demo_by_id_skips_checking_the_tokens_holder() {
-        crate::test_env::load_e2e_env();
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        // The holder lookup reads tables a new test schema doesn't have until this runs.
+        runtime.block_on(crate::test_utils::main_test_db("download-holder"));
         let (server_context, _data_dir, _token) = context_with_token();
         // Named like the demo, but not the demo, and minted by nobody on it.
         crate::db::insert_project(server_context.as_ref(), 2, "demo".to_string(), 1);
@@ -330,7 +332,6 @@ mod tests {
             .download_tokens
             .issue(grant, DOWNLOAD_TOKEN_TTL_SECONDS)
             .expect("issue download token");
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
         let _guard = runtime.enter();
         let result =
             download_with_token(server_context, &issued.secret.to_string(), "2", None, None);

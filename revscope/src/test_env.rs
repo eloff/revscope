@@ -7,9 +7,10 @@ use std::sync::Once;
 
 static LOAD: Once = Once::new();
 
-/// `.e2e.env` is gitignored, so a linked worktree has none of its own; there
-/// the main checkout's copy is used instead. A missing file is left for the
-/// caller's `DATABASE_URL` assert to report.
+/// `.e2e.env` is gitignored, so a linked worktree has none of its own unless
+/// `scripts/worktree-new.sh` wrote one; otherwise the main checkout's copy is
+/// used instead. A missing file is left for the caller's
+/// `DATABASE_URL` assert to report.
 pub fn load_e2e_env() {
     LOAD.call_once(|| {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));

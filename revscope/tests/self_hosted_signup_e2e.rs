@@ -470,10 +470,27 @@ async fn admin_execute(admin_url: &str, sql: &str) {
 /// connection strings (`postgres://…`) are supported.
 fn with_search_path(url: &str, schema: &str) -> String {
     assert!(url.contains("://"), "DATABASE_URL must be a URL");
+    let (base, query) = url.split_once('?').unwrap_or((url, ""));
+    // A worktree's URL selects that worktree's schema, which this replaces.
+    let mut params: Vec<&str> = query
+        .split('&')
+        .filter(|param| !param.is_empty() && !selects_only_a_schema(param))
+        .collect();
     assert!(
-        !url.contains("options="),
-        "DATABASE_URL already sets options, which this would override"
+        !params.iter().any(|param| param.starts_with("options=")),
+        "DATABASE_URL already sets other options, which this would override"
     );
-    let separator = if url.contains('?') { '&' } else { '?' };
-    format!("{url}{separator}options=-csearch_path%3D{schema}")
+    let search_path = format!("options=-csearch_path%3D{schema}");
+    params.push(&search_path);
+    format!("{base}?{}", params.join("&"))
+}
+
+fn selects_only_a_schema(param: &str) -> bool {
+    param
+        .strip_prefix("options=-csearch_path%3D")
+        .is_some_and(|schema| {
+            schema
+                .chars()
+                .all(|char| char.is_ascii_alphanumeric() || char == '_')
+        })
 }

@@ -6,7 +6,7 @@
 # with commits of its own is squashed into one signed commit on its origin/main, replacing them
 # (the old tips are printed, and stay in the reflog). check.sh runs on the result, then the private
 # repos push to main, then this one, with a sign-off. Last, the worktrees and branches are deleted
-# (--keep leaves them), unless one changed meanwhile.
+# and the worktree's e2e schema (--keep leaves them), unless one changed meanwhile.
 #
 # Signing uses git's own settings (user.signingkey, and gpg.format for an SSH key). GitHub only
 # counts the signature if that key is on the account and the committer's email is verified there.
@@ -200,6 +200,9 @@ land() {
     why=$(unchanged "$repo" "${landed_at[$repo]}" "${nested[@]}")
     [ -z "$why" ] || die "left the worktrees in place, since $repo changed during the landing: $why"
   done
+  # Read now, since removing the worktree removes the file.
+  local top_e2e_url=
+  [ -L "$top/revscope/.e2e.env" ] || top_e2e_url=$(e2e_url "$top/revscope/.e2e.env")
   cd "$main"
   for repo in "${repos[@]}"; do
     local branch repo_main
@@ -209,6 +212,7 @@ land() {
     git -C "$repo_main" branch -q -D "$branch"
     echo "deleted $repo and its branch $branch"
   done
+  e2e_drop_schema "$top_e2e_url"
 }
 
 start=$PWD
