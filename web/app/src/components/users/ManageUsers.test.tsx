@@ -48,7 +48,7 @@ function row(name: string) {
 
 async function fillInvite(name: string, email: string) {
   const user = userEvent.setup();
-  await user.type(screen.getByLabelText("Name"), name);
+  await user.type(await screen.findByLabelText("Name"), name);
   await user.type(screen.getByLabelText("Email"), email);
   return user;
 }
@@ -65,8 +65,18 @@ describe("ManageUsers", () => {
     expect(await screen.findByText("Only account admins can manage users.")).toBeInTheDocument();
   });
 
+  it("offers an upgrade instead of the invite form when the plan has no team members", async () => {
+    mockApi("get", USERS, { users: [ada], invites_included: false });
+    render(() => <ManageUsers />);
+    expect(await screen.findByRole("link", { name: "Upgrade your plan" })).toHaveAttribute(
+      "href",
+      "/billing",
+    );
+    expect(screen.queryByRole("button", { name: "Invite" })).not.toBeInTheDocument();
+  });
+
   it("lists users with their role, invite state and projects", async () => {
-    mockApi("get", USERS, { users: [ada, bo] });
+    mockApi("get", USERS, { users: [ada, bo], invites_included: true });
     render(() => <ManageUsers />);
     await screen.findByText("bo@example.com");
     expect(row("Ada").getByText("Admin")).toBeInTheDocument();
@@ -83,10 +93,11 @@ describe("ManageUsers", () => {
     mockApi("get", USERS, { error: "Only an account admin can do this." }, 403);
     render(() => <ManageUsers />);
     expect(await screen.findByText("Only an account admin can do this.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Invite" })).toBeInTheDocument();
   });
 
   it("invites a member to chosen projects and reloads the list", async () => {
-    const lists = mockApi("get", USERS, { users: [ada] });
+    const lists = mockApi("get", USERS, { users: [ada], invites_included: true });
     const invites = mockApi("post", INVITE, { invite_url: "https://x/invite/1", emailed: false });
     render(() => <ManageUsers />);
     await screen.findByText("ada@example.com");
@@ -110,7 +121,7 @@ describe("ManageUsers", () => {
   });
 
   it("invites an admin to every project", async () => {
-    mockApi("get", USERS, { users: [ada] });
+    mockApi("get", USERS, { users: [ada], invites_included: true });
     const invites = mockApi("post", INVITE, { invite_url: "https://x/invite/1", emailed: true });
     render(() => <ManageUsers />);
     await screen.findByText("ada@example.com");
@@ -128,7 +139,7 @@ describe("ManageUsers", () => {
   });
 
   it("refuses to invite a member to no projects", async () => {
-    mockApi("get", USERS, { users: [ada] });
+    mockApi("get", USERS, { users: [ada], invites_included: true });
     const invites = mockApi("post", INVITE, { invite_url: "https://x/invite/1", emailed: false });
     render(() => <ManageUsers />);
     await screen.findByText("ada@example.com");
@@ -142,7 +153,7 @@ describe("ManageUsers", () => {
   });
 
   it("copies the invite link", async () => {
-    mockApi("get", USERS, { users: [] });
+    mockApi("get", USERS, { users: [], invites_included: true });
     mockApi("post", INVITE, { invite_url: "https://x/invite/1", emailed: false });
     render(() => <ManageUsers />);
     const user = await fillInvite("Cy", "cy@example.com");
@@ -153,8 +164,22 @@ describe("ManageUsers", () => {
     expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
 
+  it("keeps showing a new invite link when reloading the list fails", async () => {
+    mockApi("get", USERS, { users: [ada], invites_included: true });
+    mockApi("post", INVITE, { invite_url: "https://x/invite/1", emailed: false });
+    render(() => <ManageUsers />);
+    await screen.findByText("ada@example.com");
+    await fillInvite("Grace", "grace@example.com");
+    const reloads = mockApi("get", USERS, { error: "Try again later." }, 500);
+    submitInvite();
+    await vi.waitFor(() => expect(reloads).toHaveLength(1));
+    expect(await screen.findByText("Try again later.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    expect(screen.getByDisplayValue("https://x/invite/1")).toBeInTheDocument();
+  });
+
   it("changes a member's access and reloads the list", async () => {
-    const lists = mockApi("get", USERS, { users: [ada, bo] });
+    const lists = mockApi("get", USERS, { users: [ada, bo], invites_included: true });
     const updates = mockApi("post", UPDATE, { ok: true });
     render(() => <ManageUsers />);
     await screen.findByText("bo@example.com");
@@ -171,7 +196,7 @@ describe("ManageUsers", () => {
   });
 
   it("shows why an access change failed", async () => {
-    mockApi("get", USERS, { users: [ada, bo] });
+    mockApi("get", USERS, { users: [ada, bo], invites_included: true });
     mockApi("post", UPDATE, { error: "Only an account admin can do this." }, 403);
     render(() => <ManageUsers />);
     await screen.findByText("bo@example.com");
@@ -183,7 +208,7 @@ describe("ManageUsers", () => {
   });
 
   it("removes a user after confirming", async () => {
-    const lists = mockApi("get", USERS, { users: [ada, bo] });
+    const lists = mockApi("get", USERS, { users: [ada, bo], invites_included: true });
     const removals = mockApi("post", REMOVE, { ok: true });
     render(() => <ManageUsers />);
     await screen.findByText("bo@example.com");

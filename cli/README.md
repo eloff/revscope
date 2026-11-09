@@ -84,7 +84,7 @@ The credential lasts a year and is kept in `$XDG_CONFIG_HOME/revscope/credential
   "error": {
     "code": "forbidden",
     "exit_code": 4,
-    "message": "Your plan includes one website. Upgrade to Growth to add more.",
+    "message": "Adding more websites needs an active Growth plan.",
     "status": 403
   }
 }

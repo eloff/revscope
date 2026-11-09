@@ -353,6 +353,21 @@ async fn first_user_signs_up_and_invites_the_rest() -> io::Result<()> {
         .await?;
     assert_eq!(refused.status_code(), 409, "{}", refused.body_str());
 
+    // Everyone on an instance arrives by invite, so a big team isn't rate limited.
+    for index in 0..30 {
+        let body = json!({
+            "name": "Grace Hopper",
+            "email": format!("team{index}-{invitee}"),
+            "is_admin": false,
+            "project_ids": null,
+        })
+        .to_string();
+        let invited = server
+            .post_json(INVITE_PATH, &body, &[("Cookie", owner_cookie)])
+            .await?;
+        assert_eq!(invited.status_code(), 200, "{}", invited.body_str());
+    }
+
     let period = conn
         .query_one(
             "SELECT plan_type::text, events_monthly_limit, actual_price_cents

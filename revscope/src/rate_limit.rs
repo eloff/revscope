@@ -72,6 +72,10 @@ pub(crate) const CERTIFICATE_DNS_CHECKS_PER_ACCOUNT: Rate = Rate::new(30, 60);
 /// leaves the rest of the 300 for renewals and the platform certificate.
 pub(crate) const CERTIFICATE_ORDERS_PER_DEPLOYMENT: Rate = Rate::new(100, 3 * 60);
 
+/// Every invite can email a stranger text the inviter wrote, from our domain.
+/// The burst covers bringing a whole team on at once.
+const INVITES_PER_ACCOUNT: Rate = Rate::new(20, 30 * 60);
+
 #[derive(Clone, Copy)]
 struct Bucket {
     /// When the bucket will be full again. A bucket is just this instant: the
@@ -154,6 +158,7 @@ pub(crate) struct AuthRateLimits {
     pub(crate) signup_ip: RateLimiter,
     pub(crate) forgot_password_ip: RateLimiter,
     pub(crate) forgot_password_email: RateLimiter,
+    pub(crate) invite_account: RateLimiter,
 }
 
 impl AuthRateLimits {
@@ -164,6 +169,7 @@ impl AuthRateLimits {
             signup_ip: RateLimiter::new(SIGNUP_PER_IP),
             forgot_password_ip: RateLimiter::new(FORGOT_PASSWORD_PER_IP),
             forgot_password_email: RateLimiter::new(FORGOT_PASSWORD_PER_EMAIL),
+            invite_account: RateLimiter::new(INVITES_PER_ACCOUNT),
         }
     }
 }

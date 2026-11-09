@@ -12,6 +12,7 @@ use crate::troubleshooting::{self, TroubleshootingCheckRequest};
 use crate::update_user::{self, UpdateUserRequest};
 
 use super::request::{ApiRequest, RouteResult};
+use super::responses::too_many_invites;
 
 pub(super) fn get_settings(
     request: &ApiRequest,
@@ -35,7 +36,21 @@ pub(super) fn account_users(request: &ApiRequest, admin: &AdminAccount) -> Route
 
 pub(super) fn invite_user(request: &ApiRequest, admin: &AdminAccount) -> RouteResult {
     let payload = request.json_body::<InviteUserRequest>("invalid invite payload")?;
+    let limits = &request.context().auth_rate_limits;
+    let account_id = &admin.user().account_id;
+    // This protects revscope.co's sending domain. A self-hosted admin sends from
+    // their own, and onboards everyone through invites.
+    if !crate::self_hosted::ENABLED {
+        limits
+            .invite_account
+            .check(account_id)
+            .map_err(too_many_invites)?;
+    }
     let outcome = invite_user::invite_user(request.context(), admin, payload);
+    // A refused invite sent nothing, so it shouldn't use up the allowance.
+    if outcome.is_err() {
+        limits.invite_account.refund(account_id);
+    }
     request.session_json(admin, outcome, "invite_user")
 }
 

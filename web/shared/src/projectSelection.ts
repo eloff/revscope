@@ -50,8 +50,9 @@ export const [selectedProjectId, setSelectedProjectId] = makePersisted(createSig
 });
 
 /**
- * Plans sold with more than one website. Mirrors `plan_allows_multiple_projects`
- * in revscope/src/projects.rs, which is what actually refuses the extra project.
+ * Plans sold with more than one website. Mirrors the plans in
+ * `plan_allows_multiple_projects` in revscope/src/projects.rs, which also needs a
+ * subscription in good standing and is what actually refuses the extra project.
  */
 export function planAllowsMultipleProjects(plan: string): boolean {
   return plan === "growth" || plan === "founder" || plan === "enterprise";

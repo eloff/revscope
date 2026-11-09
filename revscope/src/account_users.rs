@@ -9,6 +9,7 @@ use crate::auth::{AuthError, map_query_error};
 use crate::authorize::AdminAccount;
 use crate::db::open_main_database_read;
 use crate::pending_users::pending_user_sql;
+use crate::projects::account_includes_paid_features;
 use crate::server_context::ServerContext;
 use crate::util::block_on;
 
@@ -16,6 +17,8 @@ use crate::util::block_on;
 pub(crate) struct AccountUsersResponse {
     /// Oldest first.
     users: Vec<AccountUser>,
+    /// Whether the account's subscription lets it invite more people.
+    invites_included: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,6 +80,10 @@ pub(crate) fn account_users(
                 project_ids: row.get(6),
             })
             .collect();
-        Ok(AccountUsersResponse { users })
+        let invites_included = account_includes_paid_features(&conn, &user.account_id).await?;
+        Ok(AccountUsersResponse {
+            users,
+            invites_included,
+        })
     })
 }

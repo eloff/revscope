@@ -20,6 +20,12 @@ export type AccountUser = UserAccess & {
   last_login_at: number | null;
 };
 
+export type AccountUsers = {
+  users: AccountUser[];
+  /** Whether the account's subscription lets it invite more people. */
+  invites_included: boolean;
+};
+
 export type InviteUserResponse = {
   invite_url: string;
   /** False when the server can't send email; share the link yourself. */
@@ -39,9 +45,9 @@ function postJson<T>(session: AuthSession, path: string, body: unknown, failure:
 }
 
 /** Admins only: everyone on the account, oldest first. */
-export async function fetchAccountUsers(session: AuthSession): Promise<AccountUser[]> {
+export async function fetchAccountUsers(session: AuthSession): Promise<AccountUsers> {
   const url = new URL(sessionApiPath("users"), getApiBaseUrl());
-  const result = await fetchJson<{ users?: AccountUser[] }>(
+  const result = await fetchJson<Partial<AccountUsers>>(
     url,
     authRequestInit(session),
     "Unable to load users.",
@@ -49,7 +55,7 @@ export async function fetchAccountUsers(session: AuthSession): Promise<AccountUs
   if (!result.users) {
     throw new Error("Unable to load users.");
   }
-  return result.users;
+  return { users: result.users, invites_included: result.invites_included === true };
 }
 
 /** Inviting a pending user again replaces their link and their access. */

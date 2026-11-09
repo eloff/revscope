@@ -6,6 +6,9 @@
 //! pending user again replaces their link and their access. The link is
 //! emailed when MailChannels is configured, and always returned so the
 //! inviter can share it.
+//!
+//! The free plan is sold as one team member, so inviting needs a paid plan in
+//! good standing.
 
 use std::sync::Arc;
 
@@ -20,10 +23,13 @@ use crate::authorize::AdminAccount;
 use crate::db::open_main_database_write;
 use crate::email::{EmailError, send_invite_email};
 use crate::pending_users::pending_user_sql;
+use crate::projects::account_includes_paid_features;
 use crate::server_context::ServerContext;
 use crate::tokens::INVITE_TTL_SECONDS;
 use crate::user_access::{AccessRequest, UserAccess, lock_account_as_admin, write_user_access};
 use crate::util::block_on;
+
+const INVITES_NOT_INCLUDED: &str = "Team members need an active Starter or higher plan.";
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct InviteUserRequest {
@@ -61,6 +67,9 @@ pub(crate) fn invite_user(
         let invited = conn
             .in_transaction(async |conn| {
                 lock_account_as_admin(conn, &inviter.account_id, &inviter.user_id).await?;
+                if !account_includes_paid_features(conn, &inviter.account_id).await? {
+                    return Err(AuthError::Forbidden(INVITES_NOT_INCLUDED));
+                }
                 // Locked so a pending user can't accept an earlier invite, or
                 // link a Google or Apple sign-in, and so start minting tokens,
                 // while this one changes their access. If they already did,

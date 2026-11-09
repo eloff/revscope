@@ -71,6 +71,24 @@ impl NewSignup {
     }
 }
 
+/// Marks a signup's subscription as paid, for tests of what a paying account can
+/// do. A build with billing leaves a paid plan unpaid until checkout completes.
+pub async fn mark_subscription_paid(server: &TestServer, account_name: &str) {
+    let conn = revscope::db::open_main_database_write(server.context.clone())
+        .await
+        .expect("open main database");
+    let updated = conn
+        .execute(
+            "UPDATE account_subscriptions SET subscription_status = 'active'
+             WHERE ended_at IS NULL
+               AND account_id = (SELECT id FROM accounts WHERE name = $1)",
+            &[&account_name],
+        )
+        .await
+        .expect("mark subscription paid");
+    assert_eq!(updated, 1, "{account_name} has one open period");
+}
+
 pub fn unique_slug(tag: &str) -> String {
     static RUN_ID: OnceLock<u128> = OnceLock::new();
     static COUNTER: AtomicU32 = AtomicU32::new(0);

@@ -204,6 +204,36 @@ async fn a_starter_account_keeps_its_one_project() -> io::Result<()> {
 }
 
 #[tokio::test]
+async fn an_account_that_picked_growth_without_paying_keeps_its_one_project() -> io::Result<()> {
+    let server = TestServer::spawn("projects-unpaid-growth").await?;
+    let account = signup(&server, "projunpaid", "growth").await?;
+    let conn = revscope::db::open_main_database_write(server.context.clone())
+        .await
+        .expect("open main database");
+    conn.execute(
+        "UPDATE account_subscriptions SET subscription_status = NULL
+         WHERE ended_at IS NULL
+           AND account_id = (SELECT id FROM accounts WHERE name = $1)",
+        &[&account.account_name],
+    )
+    .await
+    .expect("clear subscription status");
+    drop(conn);
+
+    let refused = server
+        .post_json(
+            CREATE_PATH,
+            &json!({ "website": format!("second.{}", account.account_name) }).to_string(),
+            &[("Cookie", account.cookie.as_str())],
+        )
+        .await?;
+    assert_eq!(refused.status_code(), 403, "{}", refused.body_str());
+
+    delete_account(&server, &account.account_name).await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn projects_are_only_changed_by_their_own_signed_in_account() -> io::Result<()> {
     let server = TestServer::spawn("projects-authz").await?;
     let owner = signup(&server, "projowner", "growth").await?;
@@ -435,7 +465,8 @@ async fn set_plan(server: &TestServer, account_name: &str, plan: &str) {
         .expect("open main database");
     let updated = conn
         .execute(
-            "UPDATE account_subscriptions SET plan_type = $2::text::plan_type
+            "UPDATE account_subscriptions
+             SET plan_type = $2::text::plan_type, subscription_status = 'active'
              WHERE ended_at IS NULL
                AND account_id = (SELECT id FROM accounts WHERE name = $1)",
             &[&account_name, &plan],

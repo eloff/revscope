@@ -2,7 +2,8 @@
 //!
 //! The project gets the name sent, or else one derived from the website, the
 //! way signup names the first one. That name becomes its ingest path, so it is unique across every account.
-//! Accounts on plans sold as "1 website" are held to the one they signed up with.
+//! Accounts on plans sold as "1 website", and accounts that picked a larger plan
+//! but aren't paying for it, are held to the one they signed up with.
 
 use std::sync::Arc;
 
@@ -20,8 +21,7 @@ use crate::server_context::ServerContext;
 use crate::user_access::lock_account_as_admin;
 use crate::util::block_on;
 
-pub(crate) const SINGLE_PROJECT_PLAN: &str =
-    "Your plan includes one website. Upgrade to Growth to add more.";
+pub(crate) const SINGLE_PROJECT_PLAN: &str = "Adding more websites needs an active Growth plan.";
 
 pub(crate) fn create_project(
     server_context: Arc<ServerContext>,
@@ -37,7 +37,12 @@ pub(crate) fn create_project(
         conn.in_transaction(async |conn| {
             lock_account_as_admin(conn, &user.account_id, &user.user_id).await?;
             let account = lock_account_projects(conn, &user.account_id).await?;
-            if account.project_count > 0 && !plan_allows_multiple_projects(&account.plan) {
+            if account.project_count > 0
+                && !plan_allows_multiple_projects(
+                    &account.plan,
+                    account.subscription_status.as_deref(),
+                )
+            {
                 return Err(AuthError::Forbidden(SINGLE_PROJECT_PLAN));
             }
             let project_id: i32 = conn

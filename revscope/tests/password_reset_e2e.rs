@@ -134,6 +134,7 @@ async fn an_account_signed_up_without_a_password_is_claimed_with_a_reset_link() 
         .get_query(ME_PATH, &[("Authorization", &bearer)])
         .await?;
     assert_eq!(me.status_code(), 200, "{}", me.body_str());
+    common::signup::mark_subscription_paid(&server, &account_name).await;
 
     // It isn't a pending invite, or an admin could send themselves its reset link and
     // take it over, and the token holder could demote the only admin.

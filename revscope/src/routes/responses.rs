@@ -29,13 +29,25 @@ pub(super) fn map_project_auth_error(error: AuthError, context: &str) -> Respons
 }
 
 pub(super) fn too_many_requests(retry_after: Duration) -> Response {
+    rate_limited(
+        retry_after,
+        "too many attempts; please wait a few minutes and try again",
+    )
+}
+
+/// Invites earn back slowly, so "a few minutes" would send people back too soon.
+pub(super) fn too_many_invites(retry_after: Duration) -> Response {
+    rate_limited(
+        retry_after,
+        "too many invites sent recently; please try again later",
+    )
+}
+
+fn rate_limited(retry_after: Duration, message: &str) -> Response {
     // Rounded up: a client that waits exactly this long must not be refused.
     let seconds = retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0);
-    let body = serde_json::to_string(&ErrorBody::new(
-        ErrorCode::RateLimited,
-        "too many attempts; please wait a few minutes and try again",
-    ))
-    .expect("a body of strings always serializes");
+    let body = serde_json::to_string(&ErrorBody::new(ErrorCode::RateLimited, message))
+        .expect("a body of strings always serializes");
     Response::json_with_headers(
         "429 Too Many Requests",
         body,

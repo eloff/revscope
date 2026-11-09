@@ -92,8 +92,8 @@ describe("users client", () => {
         project_ids: null,
       },
     ];
-    mockApi("get", "/v2/session/users", { users });
-    await expect(fetchAccountUsers(session)).resolves.toEqual(users);
+    mockApi("get", "/v2/session/users", { users, invites_included: true });
+    await expect(fetchAccountUsers(session)).resolves.toEqual({ users, invites_included: true });
     mockApi("get", "/v2/session/users", {});
     await expect(fetchAccountUsers(session)).rejects.toThrow("Unable to load users.");
   });

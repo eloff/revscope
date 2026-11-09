@@ -116,18 +116,19 @@ pub(crate) fn new_project_name(
 }
 
 /// Plans that may hold more than one project. Starter and free are sold as
-/// "1 website"; keep in sync with `planAllowsMultipleProjects` in
+/// "1 website"; keep the plans in sync with `planAllowsMultipleProjects` in
 /// web/shared/src/projectSelection.ts and the tiers in web/site pricing.ts.
-pub(crate) fn plan_allows_multiple_projects(plan: &str) -> bool {
+pub(crate) fn plan_allows_multiple_projects(plan: &str, subscription_status: Option<&str>) -> bool {
     matches!(plan, "growth" | "founder" | "enterprise")
+        && plan_includes_paid_features(plan, subscription_status)
 }
 
-/// Whether an account's subscription includes a custom domain. Reads the status as
-/// well as the plan because the plan changes when a checkout starts, before any
-/// payment, and stays the same after a cancellation. Keep the plans in sync with
-/// the tiers in web/site pricing.ts. A plan type added without an entry here
-/// doesn't get one.
-pub(crate) fn plan_allows_custom_domain(plan: &str, subscription_status: Option<&str>) -> bool {
+/// Whether an account's subscription is one it's paying for, which custom domains,
+/// team members and extra projects all need. Reads the status as well as the plan because the
+/// plan changes when a checkout starts, before any payment, and stays the same
+/// after a cancellation. Keep the plans in sync with the tiers in web/site
+/// pricing.ts. A plan type added without an entry here doesn't get them.
+pub(crate) fn plan_includes_paid_features(plan: &str, subscription_status: Option<&str>) -> bool {
     if cfg!(feature = "self-hosted") {
         return true;
     }
@@ -161,7 +162,25 @@ pub(crate) async fn project_includes_custom_domain(
         .await
         .map_err(AuthError::from)?
         .ok_or(AuthError::NotFound("no such project"))?;
-    Ok(plan_allows_custom_domain(row.get(0), row.get(1)))
+    Ok(plan_includes_paid_features(row.get(0), row.get(1)))
+}
+
+/// Read fresh for each decision: a session can hold a plan since changed.
+pub(crate) async fn account_includes_paid_features(
+    conn: &Connection,
+    account_id: &str,
+) -> Result<bool, AuthError> {
+    let row = conn
+        .query_opt(
+            "SELECT plan_type::text, subscription_status
+             FROM account_subscriptions
+             WHERE account_id = $1::text::uuid AND ended_at IS NULL",
+            &[&account_id],
+        )
+        .await
+        .map_err(AuthError::from)?
+        .ok_or(AuthError::InvalidSession)?;
+    Ok(plan_includes_paid_features(row.get(0), row.get(1)))
 }
 
 /// Parse a non-negative project id from an API/query/path string.
@@ -358,6 +377,7 @@ pub(crate) const PROJECT_NAME_TAKEN: &str =
 /// is held until that transaction ends.
 pub(crate) struct LockedAccount {
     pub(crate) plan: String,
+    pub(crate) subscription_status: Option<String>,
     pub(crate) project_count: i64,
 }
 
@@ -365,9 +385,9 @@ pub(crate) async fn lock_account_projects(
     conn: &Connection,
     account_id: &str,
 ) -> Result<LockedAccount, AuthError> {
-    let plan: String = conn
+    let row = conn
         .query_opt(
-            "SELECT sub.plan_type::text
+            "SELECT sub.plan_type::text, sub.subscription_status
              FROM accounts a
              INNER JOIN account_subscriptions sub
                 ON sub.account_id = a.id AND sub.ended_at IS NULL
@@ -376,8 +396,7 @@ pub(crate) async fn lock_account_projects(
             &[&account_id],
         )
         .await?
-        .ok_or(AuthError::InvalidSession)?
-        .get(0);
+        .ok_or(AuthError::InvalidSession)?;
     let project_count: i64 = conn
         .query_one(
             "SELECT COUNT(*) FROM projects WHERE account_id = $1::text::uuid",
@@ -386,7 +405,8 @@ pub(crate) async fn lock_account_projects(
         .await?
         .get(0);
     Ok(LockedAccount {
-        plan,
+        plan: row.get(0),
+        subscription_status: row.get(1),
         project_count,
     })
 }
@@ -397,21 +417,21 @@ mod tests {
 
     #[test]
     #[cfg(not(feature = "self-hosted"))]
-    fn custom_domains_start_at_the_starter_plan() {
+    fn paid_features_start_at_the_starter_plan() {
         for plan in ["starter", "growth", "founder", "enterprise"] {
-            assert!(plan_allows_custom_domain(plan, Some("active")), "{plan}");
+            assert!(plan_includes_paid_features(plan, Some("active")), "{plan}");
         }
         for plan in ["free", "brand_new_plan", ""] {
-            assert!(!plan_allows_custom_domain(plan, Some("active")), "{plan}");
+            assert!(!plan_includes_paid_features(plan, Some("active")), "{plan}");
         }
     }
 
     #[test]
     #[cfg(not(feature = "self-hosted"))]
-    fn a_custom_domain_needs_a_subscription_in_good_standing_on_a_paid_plan() {
+    fn paid_features_need_a_subscription_in_good_standing_on_a_paid_plan() {
         for status in ["trialing", "active", "past_due"] {
             assert!(
-                plan_allows_custom_domain("starter", Some(status)),
+                plan_includes_paid_features("starter", Some(status)),
                 "{status}"
             );
         }
@@ -422,15 +442,18 @@ mod tests {
             Some("canceled"),
             Some(""),
         ] {
-            assert!(!plan_allows_custom_domain("starter", status), "{status:?}");
+            assert!(
+                !plan_includes_paid_features("starter", status),
+                "{status:?}"
+            );
         }
-        assert!(plan_allows_custom_domain("enterprise", None));
+        assert!(plan_includes_paid_features("enterprise", None));
     }
 
     #[test]
     #[cfg(feature = "self-hosted")]
-    fn self_hosted_allows_a_custom_domain_whatever_the_plan() {
-        assert!(plan_allows_custom_domain("free", None));
+    fn self_hosted_includes_paid_features_whatever_the_plan() {
+        assert!(plan_includes_paid_features("free", None));
     }
 
     #[test]
@@ -523,11 +546,29 @@ mod tests {
     #[test]
     fn only_growth_and_above_hold_more_than_one_project() {
         for plan in ["growth", "founder", "enterprise"] {
-            assert!(plan_allows_multiple_projects(plan), "{plan}");
+            assert!(
+                plan_allows_multiple_projects(plan, Some("active")),
+                "{plan}"
+            );
         }
         for plan in ["free", "starter", ""] {
-            assert!(!plan_allows_multiple_projects(plan), "{plan}");
+            assert!(
+                !plan_allows_multiple_projects(plan, Some("active")),
+                "{plan}"
+            );
         }
+    }
+
+    #[test]
+    #[cfg(not(feature = "self-hosted"))]
+    fn choosing_growth_before_paying_does_not_allow_more_projects() {
+        for status in [None, Some("incomplete"), Some("canceled")] {
+            assert!(
+                !plan_allows_multiple_projects("growth", status),
+                "{status:?}"
+            );
+        }
+        assert!(plan_allows_multiple_projects("enterprise", None));
     }
 
     #[test]

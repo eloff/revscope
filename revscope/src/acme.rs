@@ -1291,7 +1291,7 @@ async fn load_custom_domains(
             Some(SavedCustomDomain {
                 name: row.get::<_, Option<String>>(0)?,
                 account_id: row.get(1),
-                included: crate::projects::plan_allows_custom_domain(row.get(2), row.get(3)),
+                included: crate::projects::plan_includes_paid_features(row.get(2), row.get(3)),
             })
         })
         .collect())

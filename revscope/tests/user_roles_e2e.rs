@@ -708,6 +708,7 @@ async fn signup(server: &TestServer, tag: &str) -> io::Result<Account> {
         .as_str()
         .expect("project id")
         .to_string();
+    common::signup::mark_subscription_paid(server, &account_name).await;
     Ok(Account {
         account_name,
         slug,
