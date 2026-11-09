@@ -285,7 +285,7 @@ The backend answers on several hostnames: `api.revscope.co` for the API,
 customers point a CNAME at to use their own domain. With `REVSCOPE_LISTEN_TLS`
 set, the backend gets and renews Let's Encrypt certificates for `eu1` and `api`
 (the default `REVSCOPE_TLS_DOMAINS`) and for customers' domains itself. It orders
-for a customer's domain only once that domain resolves to the same address as
+for a customer's domain only on a plan that includes one (Starter and up) and once that domain resolves to the same address as
 the first of those hostnames, and it limits how many it
 orders per account and overall, apart from the first attempt at renewing
 each certificate.

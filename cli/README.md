@@ -49,7 +49,7 @@ revscope query "SELECT p.path, COUNT(*) AS views
 | `whoami` | Shows the signed-in user and their projects. |
 | `password-reset` | Emails a link for setting the account's password. |
 | `projects list`, `create` | Lists projects, or adds one, named after its website or `--project-name`. The free plan allows one. |
-| `settings show`, `set` | Time zone, payment success path, and custom domain. |
+| `settings show`, `set` | Time zone, payment success path, and custom domain (Starter plans and up). |
 | `install snippet` | Prints the tracker snippet, pointing at this project's server. |
 | `install status` | Recent events, including those not saved yet, and integration sync status. |
 | `install verify` | Checks a page for the tracker, and whether visits have arrived in the last hour. Needs `--url` on an account with several projects. |

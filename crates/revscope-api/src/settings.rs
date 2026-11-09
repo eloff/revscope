@@ -8,6 +8,9 @@ pub struct SettingsResponse {
     pub payment_success_path: Option<String>,
     /// First-party CNAME hostname for the tracker, or `None` when unset.
     pub custom_domain: Option<String>,
+    /// Whether the account's subscription includes a custom domain.
+    #[serde(default)]
+    pub custom_domain_included: bool,
     pub integrations: Vec<IntegrationView>,
 }
 
@@ -50,12 +53,30 @@ impl IntegrationView {
 pub struct SaveSettingsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present_or_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub payment_success_path: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present_or_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub custom_domain: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub integrations: Vec<IntegrationInput>,
+}
+
+/// Tells a field sent as `null`, which clears it, from an absent one, which keeps
+/// it. Serde reads both as the outer `None` of an `Option<Option<_>>`.
+fn present_or_null<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -78,5 +99,38 @@ impl std::fmt::Debug for IntegrationInput {
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("secret", &self.secret.as_ref().map(|_| "<redacted>"))
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(body: &str) -> SaveSettingsRequest {
+        serde_json::from_str(body).expect("valid request")
+    }
+
+    #[test]
+    fn an_absent_field_keeps_its_value_and_null_clears_it() {
+        assert_eq!(parse("{}").custom_domain, None);
+        assert_eq!(parse("{}").payment_success_path, None);
+        let cleared = parse(r#"{"custom_domain":null,"payment_success_path":null}"#);
+        assert_eq!(cleared.custom_domain, Some(None));
+        assert_eq!(cleared.payment_success_path, Some(None));
+        assert_eq!(
+            parse(r#"{"custom_domain":"a.example.com"}"#).custom_domain,
+            Some(Some("a.example.com".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_cleared_field_survives_the_round_trip() {
+        let request = SaveSettingsRequest {
+            custom_domain: Some(None),
+            ..Default::default()
+        };
+        let body = serde_json::to_string(&request).expect("serializes");
+        assert_eq!(body, r#"{"custom_domain":null}"#);
+        assert_eq!(parse(&body).custom_domain, Some(None));
     }
 }

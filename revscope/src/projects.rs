@@ -122,6 +122,48 @@ pub(crate) fn plan_allows_multiple_projects(plan: &str) -> bool {
     matches!(plan, "growth" | "founder" | "enterprise")
 }
 
+/// Whether an account's subscription includes a custom domain. Reads the status as
+/// well as the plan because the plan changes when a checkout starts, before any
+/// payment, and stays the same after a cancellation. Keep the plans in sync with
+/// the tiers in web/site pricing.ts. A plan type added without an entry here
+/// doesn't get one.
+pub(crate) fn plan_allows_custom_domain(plan: &str, subscription_status: Option<&str>) -> bool {
+    if cfg!(feature = "self-hosted") {
+        return true;
+    }
+    match plan {
+        // Never billed, so it has no subscription status.
+        "enterprise" => true,
+        "starter" | "growth" | "founder" => {
+            matches!(
+                subscription_status,
+                Some("trialing" | "active" | "past_due")
+            )
+        }
+        _ => false,
+    }
+}
+
+/// Read fresh for each decision: a session can hold a plan since changed.
+pub(crate) async fn project_includes_custom_domain(
+    conn: &Connection,
+    project_id: i32,
+) -> Result<bool, AuthError> {
+    let row = conn
+        .query_opt(
+            "SELECT sub.plan_type::text, sub.subscription_status
+             FROM projects p
+             JOIN account_subscriptions sub
+                ON sub.account_id = p.account_id AND sub.ended_at IS NULL
+             WHERE p.id = $1",
+            &[&project_id],
+        )
+        .await
+        .map_err(AuthError::from)?
+        .ok_or(AuthError::NotFound("no such project"))?;
+    Ok(plan_allows_custom_domain(row.get(0), row.get(1)))
+}
+
 /// Parse a non-negative project id from an API/query/path string.
 /// `0` is allowed for staging (e.g. `generate`); real projects start at `1`.
 pub(crate) fn parse_project_id_str(project_id: &str) -> Option<i32> {
@@ -352,6 +394,44 @@ pub(crate) async fn lock_account_projects(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(not(feature = "self-hosted"))]
+    fn custom_domains_start_at_the_starter_plan() {
+        for plan in ["starter", "growth", "founder", "enterprise"] {
+            assert!(plan_allows_custom_domain(plan, Some("active")), "{plan}");
+        }
+        for plan in ["free", "brand_new_plan", ""] {
+            assert!(!plan_allows_custom_domain(plan, Some("active")), "{plan}");
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "self-hosted"))]
+    fn a_custom_domain_needs_a_subscription_in_good_standing_on_a_paid_plan() {
+        for status in ["trialing", "active", "past_due"] {
+            assert!(
+                plan_allows_custom_domain("starter", Some(status)),
+                "{status}"
+            );
+        }
+        for status in [
+            None,
+            Some("unpaid"),
+            Some("incomplete"),
+            Some("canceled"),
+            Some(""),
+        ] {
+            assert!(!plan_allows_custom_domain("starter", status), "{status:?}");
+        }
+        assert!(plan_allows_custom_domain("enterprise", None));
+    }
+
+    #[test]
+    #[cfg(feature = "self-hosted")]
+    fn self_hosted_allows_a_custom_domain_whatever_the_plan() {
+        assert!(plan_allows_custom_domain("free", None));
+    }
 
     #[test]
     fn recognizes_hardcoded_public_project_names() {

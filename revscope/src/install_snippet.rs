@@ -24,7 +24,11 @@ pub(crate) fn install(
     let row = projects::fetch_project_blocking(server_context.clone(), project.key())
         .map_err(|error| AuthError::Db(error.to_string()))?
         .ok_or(AuthError::InvalidRequest("project not found"))?;
-    let custom_domain = settings::get_settings(server_context, project)?.custom_domain;
+    let settings = settings::get_settings(server_context, project)?;
+    // One kept from before a downgrade stays in the settings so it can be cleared.
+    let custom_domain = settings
+        .custom_domain
+        .filter(|_| settings.custom_domain_included);
     let server_url = server_url(custom_domain.as_deref(), host);
     Ok(InstallResponse {
         snippet: render_snippet(row.name(), server_url.as_deref()),

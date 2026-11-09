@@ -8,6 +8,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{Semaphore, watch};
 
 use dashmap::DashMap;
+use fxhash::FxHashMap;
 use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, Challenge, ChallengeType, Identifier,
     LetsEncrypt, NewAccount, NewOrder, Order, OrderStatus, Problem, RetryPolicy,
@@ -96,6 +97,10 @@ const ORDER_WAIT: Duration = Duration::from_secs(5 * 60);
 /// stalled connection would otherwise keep the order in flight until a restart,
 /// and every later check would join it instead of retrying.
 const ORDER_DEADLINE: Duration = Duration::from_secs(15 * 60);
+/// How often to reread which custom domains are active and start any orders that
+/// makes due. Billing changes plans without telling this module, so this is how
+/// soon a change takes effect.
+const CUSTOM_DOMAIN_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// How long to wait for DNS when checking that a custom domain points here.
 const DNS_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 /// Concurrent system DNS lookups for those checks. Each holds a thread of the
@@ -321,7 +326,10 @@ impl AcmeState {
     }
 
     pub(crate) fn set_custom_domains(&self, domains: impl IntoIterator<Item = (String, String)>) {
-        self.custom_domains.clear();
+        // Not cleared first, since a handshake in the gap would find its domain gone.
+        let domains: FxHashMap<String, String> = domains.into_iter().collect();
+        self.custom_domains
+            .retain(|domain, _| domains.contains_key(domain));
         for (domain, account_id) in domains {
             self.custom_domains.insert(domain, account_id);
         }
@@ -557,23 +565,34 @@ pub(crate) fn challenge_response(server_context: &ServerContext, target: &str) -
 /// handshake after a restart can succeed before the renewal task runs.
 pub async fn prepare_acme(server_context: Arc<ServerContext>, config: &AcmeConfig) {
     server_context.acme.set_config(config.clone());
-    match load_custom_domains(server_context.clone()).await {
-        Ok(domains) => {
-            let count = domains.len();
-            server_context.acme.set_custom_domains(domains);
-            if count > 0 {
-                info!("loaded {count} custom ACME domain(s) from project settings");
-            }
+    let saved = match load_custom_domains(server_context.clone()).await {
+        Ok(saved) => saved,
+        Err(error) => {
+            warn!("unable to load custom ACME domains: {error}");
+            Vec::new()
         }
-        Err(error) => warn!("unable to load custom ACME domains: {error}"),
+    };
+    if !saved.is_empty() {
+        info!(
+            "loaded {} custom ACME domain(s) from project settings",
+            saved.len()
+        );
     }
-    load_cached_certificates(&server_context, config);
+    let names: Vec<String> = saved.iter().map(|domain| domain.name.clone()).collect();
+    server_context
+        .acme
+        .set_custom_domains(active_domains(saved));
+    load_cached_certificates(&server_context, config, &names);
 }
 
 /// Installs any cached certificate, then starts the task that orders one over
 /// ACME HTTP-01 and renews it before it expires.
 pub fn start_acme_task(server_context: Arc<ServerContext>, config: AcmeConfig) {
     server_context.acme.set_config(config);
+    crate::task::spawn(
+        server_context.clone(),
+        custom_domain_refresh_loop(server_context.clone()),
+    );
     crate::task::spawn(server_context.clone(), renewal_loop(server_context));
 }
 
@@ -585,6 +604,24 @@ pub(crate) fn request_issuance(server_context: Arc<ServerContext>, domain: &str)
         return;
     }
     let _ = order_if_missing(&server_context, domain);
+}
+
+/// Makes a just-saved domain active, or leaves it inactive when the plan doesn't
+/// include one.
+pub(crate) fn apply_saved_custom_domain(
+    server_context: &Arc<ServerContext>,
+    previous: Option<&str>,
+    next: Option<&str>,
+    plan_allows: bool,
+    account_id: &str,
+) {
+    let active = next.filter(|_| plan_allows);
+    server_context
+        .acme
+        .replace_custom_domain(previous, active, account_id);
+    if let Some(domain) = active {
+        request_issuance(server_context.clone(), domain);
+    }
 }
 
 /// If the handshake's name is allowed but has no certificate yet, starts or
@@ -809,17 +846,34 @@ fn finish_order(server_context: &ServerContext, order_key: &str, _succeeded: boo
     }
 }
 
+async fn refresh_custom_domains(server_context: &Arc<ServerContext>) {
+    match load_custom_domains(server_context.clone()).await {
+        Ok(saved) => {
+            let acme = &server_context.acme;
+            acme.set_custom_domains(active_domains(saved));
+            acme.held_back
+                .retain(|domain, _| acme.custom_domains.contains_key(domain));
+        }
+        Err(error) => warn!("unable to refresh custom ACME domains: {error}"),
+    }
+}
+
+async fn custom_domain_refresh_loop(server_context: Arc<ServerContext>) {
+    loop {
+        tokio::select! {
+            _ = server_context.wait_for_shutdown() => return,
+            _ = tokio::time::sleep(CUSTOM_DOMAIN_REFRESH_INTERVAL) => {}
+        }
+        refresh_custom_domains(&server_context).await;
+        // A handshake only orders when no certificate is installed, so a domain
+        // whose certificate expired while its plan didn't cover it needs this.
+        start_due_orders(&server_context);
+    }
+}
+
 async fn renewal_loop(server_context: Arc<ServerContext>) {
     loop {
-        match load_custom_domains(server_context.clone()).await {
-            Ok(domains) => {
-                server_context.acme.set_custom_domains(domains);
-                let acme = &server_context.acme;
-                acme.held_back
-                    .retain(|domain, _| acme.custom_domains.contains_key(domain));
-            }
-            Err(error) => warn!("unable to refresh custom ACME domains: {error}"),
-        }
+        refresh_custom_domains(&server_context).await;
 
         let wait = if start_due_orders(&server_context) {
             RENEWAL_RETRY_INTERVAL
@@ -1135,7 +1189,14 @@ async fn load_or_create_account(config: &AcmeConfig) -> Result<Account, AcmeErro
     Ok(account)
 }
 
-fn load_cached_certificates(server_context: &ServerContext, config: &AcmeConfig) {
+/// `custom_domains` includes those whose plan no longer covers them, so that a
+/// certificate already paid for in quota keeps working until it expires, whenever
+/// the next restart happens to be.
+fn load_cached_certificates(
+    server_context: &ServerContext,
+    config: &AcmeConfig,
+    custom_domains: &[String],
+) {
     let platform_dir = config.cache_dir.join(PLATFORM_CACHE_DIR);
     let platform_names = config.platform_domains.clone();
     let platform_label = platform_names.join(", ");
@@ -1152,12 +1213,11 @@ fn load_cached_certificates(server_context: &ServerContext, config: &AcmeConfig)
         Err(error) => warn!("ignoring cached certificate for {platform_label}: {error}"),
     }
 
-    for domain in server_context.acme.custom_domains.iter() {
-        let domain = domain.key().clone();
-        let cache_dir = config.cache_dir.join(CUSTOM_CACHE_DIR).join(&domain);
+    for domain in custom_domains {
+        let cache_dir = config.cache_dir.join(CUSTOM_CACHE_DIR).join(domain);
         match load_cached_certificate(
             &cache_dir,
-            std::slice::from_ref(&domain),
+            std::slice::from_ref(domain),
             server_context.acme.certificates(),
         ) {
             Ok(Some(not_after)) => info!(
@@ -1192,18 +1252,34 @@ fn load_cached_certificate(
     )?))
 }
 
-/// The saved custom domains, each with the account that owns its project.
+struct SavedCustomDomain {
+    name: String,
+    account_id: String,
+    /// Whether the account's subscription currently includes a custom domain.
+    included: bool,
+}
+
+fn active_domains(saved: Vec<SavedCustomDomain>) -> impl Iterator<Item = (String, String)> {
+    saved
+        .into_iter()
+        .filter(|domain| domain.included)
+        .map(|domain| (domain.name, domain.account_id))
+}
+
 async fn load_custom_domains(
     server_context: Arc<ServerContext>,
-) -> Result<Vec<(String, String)>, AcmeError> {
+) -> Result<Vec<SavedCustomDomain>, AcmeError> {
     let conn = open_main_database_read(server_context)
         .await
         .map_err(|error| AcmeError::Database(error.to_string()))?;
     let rows = conn
         .query(
-            "SELECT s.custom_domain, p.account_id::text
+            "SELECT s.custom_domain, p.account_id::text, sub.plan_type::text,
+                    sub.subscription_status
              FROM project_settings s
              JOIN projects p ON p.id = s.project_id
+             JOIN account_subscriptions sub
+                ON sub.account_id = p.account_id AND sub.ended_at IS NULL
              WHERE s.custom_domain IS NOT NULL",
             &[],
         )
@@ -1211,7 +1287,13 @@ async fn load_custom_domains(
         .map_err(|error| AcmeError::Database(error.to_string()))?;
     Ok(rows
         .iter()
-        .filter_map(|row| Some((row.get::<_, Option<String>>(0)?, row.get(1))))
+        .filter_map(|row| {
+            Some(SavedCustomDomain {
+                name: row.get::<_, Option<String>>(0)?,
+                account_id: row.get(1),
+                included: crate::projects::plan_allows_custom_domain(row.get(2), row.get(3)),
+            })
+        })
         .collect())
 }
 
@@ -1801,6 +1883,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn saving_a_domain_the_plan_excludes_neither_activates_nor_orders_it() {
+        let server_context = test_context();
+        let _listener = configure_listening_acme_server(&server_context).await;
+
+        apply_saved_custom_domain(
+            &server_context,
+            None,
+            Some("assets.example.com"),
+            false,
+            TEST_ACCOUNT,
+        );
+
+        assert!(server_context.acme.custom_domains.is_empty());
+        assert!(server_context.acme.in_flight.is_empty());
+    }
+
+    #[tokio::test]
+    async fn saving_a_domain_the_plan_includes_activates_and_orders_it() {
+        let server_context = test_context();
+        let listener = configure_listening_acme_server(&server_context).await;
+        point_at_platform(&server_context, "assets.example.com");
+        server_context.acme.custom_domains.clear();
+
+        apply_saved_custom_domain(
+            &server_context,
+            None,
+            Some("assets.example.com"),
+            true,
+            TEST_ACCOUNT,
+        );
+
+        assert!(
+            server_context
+                .acme
+                .custom_domains
+                .contains_key("assets.example.com")
+        );
+        tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("the order should contact the ACME server")
+            .expect("accept ACME connection");
+    }
+
+    #[tokio::test]
     async fn resolves_names_with_the_system_resolver() {
         let addresses = AcmeState::new()
             .resolve("localhost")
@@ -1809,10 +1935,30 @@ mod tests {
         assert!(addresses.iter().any(IpAddr::is_loopback), "{addresses:?}");
     }
 
-    #[tokio::test]
-    async fn loads_each_custom_domain_with_its_owning_account() {
-        let (server_context, conn) = crate::test_utils::main_test_db("acme-domain-account").await;
-        let account_id = crate::test_utils::insert_test_account(&conn, "acme_domain_account").await;
+    /// Saves a custom domain on a new project in a new account on `plan`.
+    async fn save_domain_on_plan(
+        conn: &crate::db::main::Connection,
+        tag: &str,
+        plan: &'static str,
+    ) -> (String, String) {
+        let account_id = crate::test_utils::insert_test_account(conn, tag).await;
+        crate::account_subscription::insert_open_period(
+            conn,
+            &account_id,
+            &crate::account_subscription::PlanTerms {
+                plan_type: plan,
+                ..crate::account_subscription::PlanTerms::COMPLIMENTARY
+            },
+        )
+        .await
+        .expect("open subscription");
+        conn.execute(
+            "UPDATE account_subscriptions SET subscription_status = 'active'
+             WHERE account_id = $1::text::uuid",
+            &[&account_id],
+        )
+        .await
+        .expect("activate subscription");
         let name = format!("p{}", account_id.replace('-', ""));
         let project_id: i32 = conn
             .query_one(
@@ -1829,16 +1975,77 @@ mod tests {
         )
         .await
         .expect("save custom domain");
+        (domain, account_id)
+    }
 
-        let domains = load_custom_domains(server_context).await.expect("load");
-
-        assert!(domains.contains(&(domain, account_id.clone())));
+    async fn delete_account(conn: &crate::db::main::Connection, account_id: &str) {
         conn.execute(
             "DELETE FROM accounts WHERE id = $1::text::uuid",
             &[&account_id],
         )
         .await
         .expect("delete account");
+    }
+
+    #[tokio::test]
+    async fn loads_each_custom_domain_with_its_owning_account() {
+        let (server_context, conn) = crate::test_utils::main_test_db("acme-domain-account").await;
+        let (domain, account_id) =
+            save_domain_on_plan(&conn, "acme_domain_account", "starter").await;
+
+        let domains = load_custom_domains(server_context).await.expect("load");
+
+        let loaded = domains
+            .iter()
+            .find(|saved| saved.name == domain)
+            .expect("domain");
+        assert_eq!(loaded.account_id, account_id);
+        assert!(loaded.included);
+        delete_account(&conn, &account_id).await;
+    }
+
+    #[tokio::test]
+    #[cfg(not(feature = "self-hosted"))]
+    async fn a_free_accounts_domain_is_listed_but_not_active() {
+        let (server_context, conn) = crate::test_utils::main_test_db("acme-domain-free").await;
+        let (domain, account_id) = save_domain_on_plan(&conn, "acme_domain_free", "free").await;
+
+        let saved = load_custom_domains(server_context).await.expect("load");
+
+        assert!(saved.iter().any(|saved| saved.name == domain));
+        assert!(!active_domains(saved).any(|(name, _)| name == domain));
+        delete_account(&conn, &account_id).await;
+    }
+
+    #[tokio::test]
+    #[cfg(not(feature = "self-hosted"))]
+    async fn a_restart_keeps_serving_a_domain_the_plan_no_longer_covers() {
+        let (server_context, conn) = crate::test_utils::main_test_db("acme-domain-kept").await;
+        let (domain, account_id) = save_domain_on_plan(&conn, "acme_domain_kept", "free").await;
+        let cache_dir = temporary_cache_dir("downgraded");
+        let domain_dir = cache_dir.join(CUSTOM_CACHE_DIR).join(&domain);
+        std::fs::create_dir_all(&domain_dir).expect("create domain cache");
+        let (pem, key) = self_signed(&[domain.as_str()]);
+        std::fs::write(domain_dir.join(CERTIFICATE_FILE), pem).expect("cache certificate");
+        std::fs::write(domain_dir.join(PRIVATE_KEY_FILE), key).expect("cache key");
+        let mut config = test_config(&["eu1.revscope.co"]);
+        config.cache_dir = cache_dir.clone();
+
+        prepare_acme(server_context.clone(), &config).await;
+
+        assert!(server_context.acme.resolve_sni(Some(&domain)).is_some());
+        assert!(!server_context.acme.is_allowed(&domain));
+        std::fs::remove_dir_all(&cache_dir).expect("remove cache directory");
+        delete_account(&conn, &account_id).await;
+    }
+
+    #[test]
+    fn setting_custom_domains_drops_those_no_longer_listed() {
+        let state = AcmeState::new();
+        state.set_custom_domains([("old.example.com".to_string(), TEST_ACCOUNT.to_string())]);
+        state.set_custom_domains([("new.example.com".to_string(), TEST_ACCOUNT.to_string())]);
+        assert!(!state.custom_domains.contains_key("old.example.com"));
+        assert!(state.custom_domains.contains_key("new.example.com"));
     }
 
     fn test_context() -> Arc<ServerContext> {
@@ -2092,7 +2299,7 @@ mod tests {
         let server_context = test_context();
         server_context.acme.set_config(config.clone());
 
-        load_cached_certificates(&server_context, &config);
+        load_cached_certificates(&server_context, &config, &[]);
         assert!(
             server_context
                 .acme

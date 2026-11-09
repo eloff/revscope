@@ -201,6 +201,7 @@ export type SettingsResponse = {
   timezone: string;
   payment_success_path: string | null;
   custom_domain: string | null;
+  custom_domain_included: boolean;
   integrations: IntegrationView[];
 };
 
@@ -215,10 +216,11 @@ export type IntegrationSavePayload = {
   secret: string | null;
 };
 
+/** Omitted fields keep their stored value; `null` clears them. */
 export type SaveSettingsPayload = {
   timezone: string;
-  payment_success_path: string | null;
-  custom_domain: string | null;
+  payment_success_path?: string | null;
+  custom_domain?: string | null;
   integrations: IntegrationSavePayload[];
 };
 

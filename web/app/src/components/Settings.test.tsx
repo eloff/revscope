@@ -18,6 +18,7 @@ function settings(overrides: Partial<SettingsResponse> = {}): SettingsResponse {
     timezone: "UTC",
     payment_success_path: "/thanks",
     custom_domain: null,
+    custom_domain_included: true,
     integrations: [],
     ...overrides,
   };
@@ -63,6 +64,53 @@ async function renderSettings(response = settings(), projectId = "1") {
 }
 
 describe("Settings", () => {
+  it("clears a saved custom domain by sending null", async () => {
+    const { user } = await renderSettings(settings({ custom_domain: "assets.example.com" }));
+    const saves = mockApi("post", "/v2/session/projects/1/settings", settings());
+    await user.clear(screen.getByLabelText(/Custom domain/));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Settings saved.")).toBeInTheDocument();
+    const body = saves[0]?.body as { custom_domain: unknown };
+    expect(body.custom_domain).toBeNull();
+  });
+
+  it("offers a custom domain when the subscription includes one", async () => {
+    await renderSettings();
+    expect(screen.getByLabelText(/Custom domain/)).toBeEnabled();
+    expect(screen.getByText(/First-party hostname for the tracker/)).toBeInTheDocument();
+  });
+
+  it("disables the custom domain when the subscription doesn't include one", async () => {
+    await renderSettings(settings({ custom_domain_included: false }));
+    expect(screen.getByLabelText(/Custom domain/)).toBeDisabled();
+    expect(screen.getByRole("link", { name: "Upgrade your plan" })).toHaveAttribute(
+      "href",
+      "/billing",
+    );
+  });
+
+  it("lets an account without the feature clear a domain it kept", async () => {
+    const { user } = await renderSettings(
+      settings({ custom_domain: "assets.example.com", custom_domain_included: false }),
+    );
+    expect(screen.getByText(/Your plan doesn't include this domain/)).toBeInTheDocument();
+    const saves = mockApi(
+      "post",
+      "/v2/session/projects/1/settings",
+      settings({ custom_domain_included: false }),
+    );
+    const field = screen.getByLabelText(/Custom domain/);
+    await user.clear(field);
+    expect(field).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Settings saved.")).toBeInTheDocument();
+    const body = saves[0]?.body as { custom_domain: unknown };
+    expect(body.custom_domain).toBeNull();
+    expect(screen.getByLabelText(/Custom domain/)).toBeDisabled();
+  });
+
   it("asks a signed-out visitor to log in", async () => {
     render(() => <Settings />);
     expect(await screen.findByText("Log in to manage your settings.")).toBeInTheDocument();
@@ -118,7 +166,7 @@ describe("Settings", () => {
     expect(await screen.findByText("This account has no projects yet.")).toBeInTheDocument();
   });
 
-  it("saves edits, leaving untouched secrets alone and blank fields null", async () => {
+  it("saves edits, leaving untouched fields and secrets alone", async () => {
     const { user } = await renderSettings(settings({ integrations: [stripe] }));
     const saves = mockApi(
       "post",
@@ -133,11 +181,11 @@ describe("Settings", () => {
     expect(await screen.findByText("Settings saved.")).toBeInTheDocument();
     const body = saves[0]?.body as {
       payment_success_path: string;
-      custom_domain: null;
+      custom_domain?: string | null;
       integrations: { integration_type: string; api_key: unknown }[];
     };
     expect(body.payment_success_path).toBe("/done");
-    expect(body.custom_domain).toBeNull();
+    expect(body).not.toHaveProperty("custom_domain");
     expect(
       body.integrations.find((entry) => entry.integration_type === "stripe")?.api_key,
     ).toBeNull();

@@ -112,6 +112,7 @@ type FormState = {
 };
 
 const EMPTY_RESPONSE: SettingsResponse = {
+  custom_domain_included: true,
   timezone: "UTC",
   payment_success_path: null,
   custom_domain: null,
@@ -203,6 +204,17 @@ function formatSyncTime(value: string): { relative: string; absolute: string } {
 export default function Settings() {
   const { authUser, authResolved } = useAuthState();
   const [form, setForm] = createStore<FormState>(buildForm(EMPTY_RESPONSE));
+  // These two fields are sent only when changed, so a tab left open can't clear a
+  // value someone else saved.
+  let loaded = buildForm(EMPTY_RESPONSE);
+  const [customDomainIncluded, setCustomDomainIncluded] = createSignal(true);
+  const [savedCustomDomain, setSavedCustomDomain] = createSignal("");
+  const showResponse = (response: SettingsResponse) => {
+    loaded = buildForm(response);
+    setCustomDomainIncluded(response.custom_domain_included);
+    setSavedCustomDomain(loaded.custom_domain);
+    setForm(reconcile(buildForm(response)));
+  };
   const [activeTab, setActiveTab] = createSignal<IntegrationType>(INTEGRATION_TYPES[0]);
   const [loading, setLoading] = createSignal(true);
   const [loadError, setLoadError] = createSignal("");
@@ -255,7 +267,7 @@ export default function Settings() {
       setProjectId(target);
       setSelectedProjectId(target);
       const response = await fetchSettings(user, target);
-      setForm(reconcile(buildForm(response)));
+      showResponse(response);
       setDirty(false);
       setLoadError("");
     } catch (caught) {
@@ -277,8 +289,12 @@ export default function Settings() {
     });
     return {
       timezone: form.timezone,
-      payment_success_path: emptyToNull(form.payment_success_path),
-      custom_domain: emptyToNull(form.custom_domain),
+      ...(form.payment_success_path !== loaded.payment_success_path && {
+        payment_success_path: emptyToNull(form.payment_success_path),
+      }),
+      ...(form.custom_domain !== loaded.custom_domain && {
+        custom_domain: emptyToNull(form.custom_domain),
+      }),
       integrations,
     };
   };
@@ -294,7 +310,7 @@ export default function Settings() {
     setStatusSuccessMessage("");
     try {
       const response = await saveSettings(user, project, buildPayload());
-      setForm(reconcile(buildForm(response)));
+      showResponse(response);
       patchProjectTimezone(project, response.timezone || "UTC");
       setDirty(false);
       setStatusSuccessMessage("Settings saved.");
@@ -714,16 +730,32 @@ export default function Settings() {
                       autocomplete="off"
                       placeholder="assets.example.com"
                       value={form.custom_domain}
+                      disabled={!customDomainIncluded() && !savedCustomDomain()}
                       onInput={(event) => {
                         setForm("custom_domain", event.currentTarget.value);
                         markDirty();
                       }}
                     />
-                    <p class={fieldHelp}>
-                      First-party hostname for the tracker. Create a DNS-only CNAME from this name
-                      to <code>eu1.revscope.co</code>, then use it as the server URL in the install
-                      snippet. Leave empty to use the hosted <code>eu1.revscope.co</code> endpoint.
-                    </p>
+                    <Show
+                      when={customDomainIncluded()}
+                      fallback={
+                        <p class={fieldHelp}>
+                          <Show when={savedCustomDomain()}>
+                            Your plan doesn't include this domain, so its certificate won't renew
+                            and it will stop working when that expires. You can clear it.{" "}
+                          </Show>
+                          Custom domains need an active Starter or higher plan.{" "}
+                          <a href="/billing">Upgrade your plan</a> to use one.
+                        </p>
+                      }
+                    >
+                      <p class={fieldHelp}>
+                        First-party hostname for the tracker. Create a DNS-only CNAME from this name
+                        to <code>eu1.revscope.co</code>, then use it as the server URL in the
+                        install snippet. Leave empty to use the hosted <code>eu1.revscope.co</code>{" "}
+                        endpoint.
+                      </p>
+                    </Show>
                   </div>
                 </div>
 

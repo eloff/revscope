@@ -20,12 +20,14 @@ use crate::authorize::{AdminProject, OwnedProject};
 use crate::crypto;
 use crate::db::main::Connection;
 use crate::db::{open_main_database_read, open_main_database_write};
+use crate::projects::project_includes_custom_domain;
 use crate::server_context::ServerContext;
 use crate::timezone::{self, DEFAULT_TIMEZONE};
 use crate::util::block_on;
 
 const MAX_PAYMENT_SUCCESS_PATH_LEN: usize = 2048;
 const MAX_CUSTOM_DOMAIN_LEN: usize = 253;
+const CUSTOM_DOMAIN_PLAN: &str = "Custom domains need an active Starter or higher plan.";
 
 pub(crate) fn get_settings(
     server_context: Arc<ServerContext>,
@@ -36,12 +38,14 @@ pub(crate) fn get_settings(
     block_on(async move {
         let conn = open_main_database_read(server_context).await?;
         let (timezone, custom_domain) = load_project_settings(&conn, project_key).await?;
+        let custom_domain_included = project_includes_custom_domain(&conn, project_key).await?;
         let payment_success_path = load_payment_success_path(&conn, project_key).await?;
         let integrations = load_integrations(&conn, project_key).await?;
         Ok(SettingsResponse {
             timezone,
             payment_success_path,
             custom_domain,
+            custom_domain_included,
             integrations,
         })
     })
@@ -75,6 +79,20 @@ pub(crate) fn save_settings(
         let server_context = server_context.clone();
         block_on(async move {
             let conn = open_main_database_write(server_context.clone()).await?;
+            // Before any write, so that a domain the plan refuses doesn't save half the form.
+            let custom_domain = match custom_domain {
+                Some(next) => {
+                    let previous = load_custom_domain(&conn, project_key).await?;
+                    let plan_allows = project_includes_custom_domain(&conn, project_key).await?;
+                    // API clients can resend the domain unchanged, and one kept from
+                    // before a downgrade mustn't block changes to other settings.
+                    if !plan_allows && next.is_some() && next != previous {
+                        return Err(AuthError::Forbidden(CUSTOM_DOMAIN_PLAN));
+                    }
+                    Some((next, previous, plan_allows))
+                }
+                None => None,
+            };
             if let Some(timezone) = timezone {
                 conn.execute(
                     "INSERT INTO project_settings (project_id, timezone) VALUES ($1, $2)
@@ -92,8 +110,7 @@ pub(crate) fn save_settings(
                 .await
                 .map_err(AuthError::from)?;
             }
-            if let Some(custom_domain) = custom_domain {
-                let previous = load_custom_domain(&conn, project_key).await?;
+            if let Some((custom_domain, previous, plan_allows)) = custom_domain {
                 let account_id = load_account_id(&conn, project_key).await?;
                 conn.execute(
                     "INSERT INTO project_settings (project_id, custom_domain) VALUES ($1, $2)
@@ -102,14 +119,13 @@ pub(crate) fn save_settings(
                 )
                 .await
                 .map_err(map_custom_domain_error)?;
-                server_context.acme.replace_custom_domain(
+                crate::acme::apply_saved_custom_domain(
+                    &server_context,
                     previous.as_deref(),
                     custom_domain.as_deref(),
+                    plan_allows,
                     &account_id,
                 );
-                if let Some(domain) = custom_domain.as_deref() {
-                    crate::acme::request_issuance(server_context.clone(), domain);
-                }
             }
             for integration in &request.integrations {
                 upsert_integration(&conn, project_key, integration).await?;

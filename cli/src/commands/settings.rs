@@ -28,7 +28,7 @@ pub fn set(context: &Context, args: &SetSettingsArgs) -> Result<Report> {
     let project = context.project()?;
     let body = SaveSettingsRequest {
         timezone: args.timezone.clone(),
-        // The server clears these on an empty string; JSON null would mean no change.
+        // An empty string clears these on every server; older ones read JSON null as no change.
         payment_success_path: args.payment_success_path.clone().map(Some),
         custom_domain: args.custom_domain.clone().map(Some),
         integrations: Vec::new(),

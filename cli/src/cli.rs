@@ -182,7 +182,8 @@ pub struct SetSettingsArgs {
     /// The path a visitor lands on after paying, such as `/thanks`. Empty clears it.
     #[arg(long)]
     pub payment_success_path: Option<String>,
-    /// A hostname CNAMEd to RevScope to serve the tracker from. Empty clears it.
+    /// A hostname CNAMEd to RevScope to serve the tracker from, on Starter plans and
+    /// up. Empty clears it.
     #[arg(long)]
     pub custom_domain: Option<String>,
 }

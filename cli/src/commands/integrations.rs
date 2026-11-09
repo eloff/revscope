@@ -628,6 +628,7 @@ mod tests {
             timezone: "UTC".into(),
             payment_success_path: None,
             custom_domain: None,
+            custom_domain_included: true,
             integrations: vec![view(None, None, None), view(None, Some("***"), None)],
         };
         assert_eq!(connected(settings).len(), 1);
