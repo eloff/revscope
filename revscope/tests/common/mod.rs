@@ -110,6 +110,12 @@ impl TestServer {
         Self::start_configured(label, true, |context| context.use_ga_test_api(base_url)).await
     }
 
+    /// Like [`Self::spawn`], with `token` configured as the MCP demo token.
+    #[allow(dead_code)]
+    pub async fn spawn_with_mcp_demo_token(label: &str, token: &str) -> io::Result<Self> {
+        Self::start_configured(label, false, |context| context.use_mcp_demo_token(token)).await
+    }
+
     async fn start(label: &str, on_disk: bool) -> io::Result<Self> {
         Self::start_configured(label, on_disk, |_| {}).await
     }

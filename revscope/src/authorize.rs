@@ -13,6 +13,7 @@ use std::sync::Arc;
 use crate::auth::{self, AuthError, SessionCookie, SessionUser};
 use crate::db::{ProjectCache, parse_project_id};
 use crate::download_db::DEMO_PROJECT_ID;
+use crate::mcp::token::McpGrant;
 use crate::projects::is_public_project_name;
 use crate::query_token::{ProjectAuth, authorize_project as authorize_project_credential};
 use crate::server_context::ServerContext;
@@ -355,14 +356,24 @@ pub(crate) fn authorize_chat(
     Ok(ChatGrant { project, caller })
 }
 
-/// A project named by a tool call on an account-scoped MCP token. The token
-/// grants every project on `account_key` and nothing else, so ownership is the
-/// whole check; [`crate::mcp::token`] has already verified the token is live.
+/// A project named by a tool call on an MCP token. An account's token grants
+/// every project on that account and nothing else, and the demo token grants the
+/// demo alone, which like downloads must have the demo's id and a public name,
+/// so a self-hosted server whose project 1 is private exposes nothing;
+/// [`crate::mcp::token`] has already verified the token is live.
 pub(crate) fn authorize_mcp_project(
-    account_key: u128,
+    grant: &McpGrant,
     project: &ProjectCache,
 ) -> Result<AuthorizedProject, AuthError> {
-    if project.account_id() != account_key {
+    let allowed = match grant {
+        McpGrant::Account(account) => {
+            crate::db::project::parse_uuid_key(account.id()) == Some(project.account_id())
+        }
+        McpGrant::Demo => {
+            is_demo_project_id(&project.id_string()) && is_public_project_name(project.name())
+        }
+    };
+    if !allowed {
         return Err(AuthError::NoProjectAccess);
     }
     AuthorizedProject::from_parsed(&project.id_string())
@@ -910,24 +921,54 @@ mod tests {
     #[test]
     fn mcp_grants_follow_the_token_account() {
         let fx = Fixture::new();
-        let own_key = crate::db::project::parse_uuid_key(OWN_ACCOUNT).expect("uuid");
+        let own_grant = &McpGrant::Account(crate::mcp::token::McpAccount::for_tests(OWN_ACCOUNT));
         let own_project = fx.context.cache_project(OWN_ID, "ownsite", OWN_ACCOUNT);
         let other_project = fx
             .context
             .cache_project(OTHER_ID, "othersite", OTHER_ACCOUNT);
         let demo_project = fx.context.cache_project(DEMO_ID, "demo", DEMO_ACCOUNT);
         assert_grants(
-            authorize_mcp_project(own_key, &own_project.expect("own project")),
+            authorize_mcp_project(own_grant, &own_project.expect("own project")),
             OWN_ID,
         );
         assert_rejected(authorize_mcp_project(
-            own_key,
+            own_grant,
             &other_project.expect("other project"),
         ));
         assert_rejected(authorize_mcp_project(
-            own_key,
+            own_grant,
             &demo_project.expect("demo project"),
         ));
+    }
+
+    #[test]
+    fn the_mcp_demo_token_reaches_the_demo_and_nothing_else() {
+        let fx = Fixture::new();
+        for (id, name, account) in [
+            (OWN_ID, "ownsite", OWN_ACCOUNT),
+            (OTHER_ID, "othersite", OTHER_ACCOUNT),
+        ] {
+            let project = fx
+                .context
+                .cache_project(id, name, account)
+                .expect("project");
+            assert_rejected(authorize_mcp_project(&McpGrant::Demo, &project));
+        }
+        let demo = fx
+            .context
+            .cache_project(DEMO_ID, "demo", DEMO_ACCOUNT)
+            .expect("demo");
+        assert_grants(authorize_mcp_project(&McpGrant::Demo, &demo), DEMO_ID);
+    }
+
+    /// A self-hosted server's first project has the demo's id but is private.
+    #[test]
+    fn the_mcp_demo_token_refuses_a_private_project_with_the_demo_id() {
+        let context = ServerContext::new_in_memory("authorize-unit-private-first-project");
+        let private = context
+            .cache_project(DEMO_ID, "firstsite", OWN_ACCOUNT)
+            .expect("project");
+        assert_rejected(authorize_mcp_project(&McpGrant::Demo, &private));
     }
 
     #[test]

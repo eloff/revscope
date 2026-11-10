@@ -18,13 +18,13 @@ use crate::http::CorsOrigins;
 use crate::id_token::{APPLE, GOOGLE, Provider, Verifier};
 use crate::ingest::IngestMap;
 use crate::mcp::authorize::AuthorizationGrant;
-use crate::mcp::token::McpAccount;
+use crate::mcp::token::{McpAccount, mcp_demo_token_from_env, parse_demo_token};
 use crate::mcp::transport::{McpHttpService, build_mcp_service};
 use crate::overview::{DEMO_OVERVIEW_CACHE_ENTRIES, DemoOverviewResponseCache};
 use crate::rate_limit::{AuthRateLimits, PublicWriteRateLimits};
 use crate::request_slots::{PER_SESSION_SLOTS, REQUEST_SLOT_WAIT, RequestSlot, RequestSlots};
 use crate::session_cache::SessionCache;
-use crate::tokens::{ExpiringTokens, SignedChallenges};
+use crate::tokens::{ExpiringTokens, SignedChallenges, TokenSecret};
 
 /// Where per-project SQLite databases live for this server context.
 #[derive(Clone, Debug)]
@@ -79,6 +79,10 @@ pub struct ServerContext {
     /// as [`Self::query_token_cache`]. These grant an account rather than one
     /// project, so what is cached is the account they were minted for.
     pub(crate) mcp_token_cache: ExpiringTokens<McpAccount>,
+    /// The MCP token that reads only the public demo. Set from
+    /// `REVSCOPE_MCP_DEMO_TOKEN` in [`Self::new`]; `None` leaves the demo
+    /// unreachable over MCP.
+    pub(crate) mcp_demo_token: Option<TokenSecret>,
     /// OAuth authorization codes the consent page has minted but no client has
     /// redeemed yet. In memory only, and single use: they live for minutes, so a
     /// restart just sends the user through the consent page again.
@@ -163,6 +167,7 @@ impl ServerContext {
         context.google_sign_in = sign_in_verifier_from_env(&GOOGLE, "REVSCOPE_GOOGLE_CLIENT_ID");
         context.apple_sign_in = sign_in_verifier_from_env(&APPLE, "REVSCOPE_APPLE_CLIENT_ID");
         context.google_oauth = GoogleOAuthClient::from_env();
+        context.mcp_demo_token = mcp_demo_token_from_env(|name| std::env::var(name).ok());
         if context.overview_cache_disabled {
             log::warn!("overview cache disabled via REVSCOPE_DISABLE_OVERVIEW_CACHE");
         }
@@ -203,6 +208,7 @@ impl ServerContext {
                 .expect("the OS random source is available at startup"),
             query_token_cache: ExpiringTokens::new(),
             mcp_token_cache: ExpiringTokens::new(),
+            mcp_demo_token: None,
             mcp_authorization_codes: ExpiringTokens::new(),
             mcp_service: build_mcp_service(),
             project_name_cache: Arc::new(DashMap::new()),
@@ -278,6 +284,12 @@ impl ServerContext {
             key(),
         ));
         self.apple_sign_in = Some(Verifier::with_key(&APPLE, client_id.to_owned(), kid, key()));
+    }
+
+    /// Lets `token` read the public demo over MCP, when it is `rsm_` and 32
+    /// hex characters; anything else leaves the demo unreachable.
+    pub fn use_mcp_demo_token(&mut self, token: &str) {
+        self.mcp_demo_token = parse_demo_token(token);
     }
 
     /// Sends Google Analytics import traffic to `base_url` instead of Google, and

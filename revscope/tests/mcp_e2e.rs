@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64URL;
-use common::{DEMO_PROJECT_NAME, HttpResponse, TestServer, TrackHit, page_id};
+use common::{DEMO_PROJECT_NAME, DEMO_PROJECT_NAME_B, HttpResponse, TestServer, TrackHit, page_id};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -309,6 +309,131 @@ async fn a_query_without_a_usable_project_name_is_told_what_to_use() -> io::Resu
     );
 
     delete_account(&server, &account.account_name).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_demo_token_reads_the_demo_and_no_other_project() -> io::Result<()> {
+    let demo_token = format!("rsm_{}", "d".repeat(32));
+    let server = TestServer::spawn_with_mcp_demo_token("mcp-demo-token", &demo_token).await?;
+    let account = signup(&server, "mcpdemotoken").await?;
+    let authorization = format!("Bearer {demo_token}");
+    let headers = [
+        ("Authorization", authorization.as_str()),
+        ("Accept", MCP_ACCEPT),
+    ];
+
+    let projects = mcp_result(
+        &server,
+        &jsonrpc("tools/call", json!({ "name": "list_projects" }), 2),
+        &headers,
+    )
+    .await?;
+    assert_eq!(
+        tool_text(&projects),
+        format!("1 project(s):\n{DEMO_PROJECT_NAME}")
+    );
+
+    let schema = mcp_result(
+        &server,
+        &jsonrpc("tools/call", json!({ "name": "get_schema" }), 3),
+        &headers,
+    )
+    .await?;
+    assert!(
+        tool_text(&schema).contains("CREATE TABLE"),
+        "{}",
+        tool_text(&schema)
+    );
+
+    let queried = mcp_result(
+        &server,
+        &jsonrpc(
+            "tools/call",
+            json!({
+                "name": "run_query",
+                "arguments": {
+                    "project_name": DEMO_PROJECT_NAME,
+                    "sql": "SELECT count(*) AS n FROM paths",
+                },
+            }),
+            4,
+        ),
+        &headers,
+    )
+    .await?;
+    assert_eq!(queried["isError"], json!(false), "{queried}");
+    assert!(
+        tool_text(&queried).starts_with("1 row(s)"),
+        "{}",
+        tool_text(&queried)
+    );
+
+    for (other, id) in [(DEMO_PROJECT_NAME_B, 5), (account.project_name.as_str(), 6)] {
+        let refused = query_error(
+            &server,
+            &headers,
+            json!({ "project_name": other, "sql": "SELECT 1" }),
+            id,
+        )
+        .await?;
+        assert_eq!(
+            refused,
+            format!("unknown project name {other:?}; available projects are: {DEMO_PROJECT_NAME}"),
+            "the demo token must not reach another account's project"
+        );
+    }
+
+    // Configuring the demo token must not open the demo to account tokens.
+    let account_authorization = mcp_authorization(&server, &account).await?;
+    let account_headers = [
+        ("Authorization", account_authorization.as_str()),
+        ("Accept", MCP_ACCEPT),
+    ];
+    let foreign = query_error(
+        &server,
+        &account_headers,
+        json!({ "project_name": DEMO_PROJECT_NAME, "sql": "SELECT 1" }),
+        7,
+    )
+    .await?;
+    assert_eq!(
+        foreign,
+        format!(
+            "unknown project name \"{DEMO_PROJECT_NAME}\"; available projects are: {}",
+            account.project_name
+        )
+    );
+
+    delete_account(&server, &account.account_name).await;
+    Ok(())
+}
+
+/// The same token the test above configures, sent to a server that configured
+/// none, so the demo answers only because a token was set; which variable sets
+/// it is `mcp::token`'s unit test.
+#[tokio::test]
+async fn without_a_configured_demo_token_the_demo_is_unreachable() -> io::Result<()> {
+    let server = TestServer::spawn("mcp-no-demo-token").await?;
+    let authorization = format!("Bearer rsm_{}", "d".repeat(32));
+    let refused = server
+        .post_json(
+            MCP_PATH,
+            &jsonrpc(
+                "tools/call",
+                json!({
+                    "name": "run_query",
+                    "arguments": { "project_name": DEMO_PROJECT_NAME, "sql": "SELECT 1" },
+                }),
+                1,
+            ),
+            &[
+                ("Authorization", authorization.as_str()),
+                ("Accept", MCP_ACCEPT),
+            ],
+        )
+        .await?;
+    assert_eq!(refused.status_code(), 401, "{}", refused.body_str());
     Ok(())
 }
 

@@ -184,6 +184,7 @@ with a comment explaining it. The main groups are:
 | `REVSCOPE_CORS_ORIGINS`                                                    | Hosts of a web app deployed separately from the backend |
 | `REVSCOPE_LISTEN_TLS`, `REVSCOPE_TLS_DOMAINS`, `REVSCOPE_ACME_*`           | Built-in HTTPS with Let's Encrypt certificates          |
 | `REVSCOPE_REQUIRE_CLOUDFLARE`                                              | Settings for the hosted service's servers               |
+| `REVSCOPE_MCP_DEMO_TOKEN`                                                  | An `rsm_` MCP token that reads only the public demo     |
 
 `INTEGRATION_ENCRYPTION_KEY` encrypts the API keys you enter for integrations
 such as Stripe before they are stored. If you lose it, those keys can't be

@@ -7,12 +7,17 @@
 //!
 //! It is also scoped to an account rather than a project, so the agent can move
 //! between projects (and reach ones created later) without a second consent.
+//!
+//! One token is not in `api_tokens`: [`MCP_DEMO_TOKEN_ENV`] configures a token
+//! that reads the public demo and nothing else, so an MCP directory can
+//! health-check the server without holding a token for anyone's account.
 
 use std::sync::Arc;
 
 use tokio_postgres::types::ToSql;
 
 use crate::auth::AuthError;
+use crate::crypto::constant_time_eq;
 use crate::db::{open_main_database_read, open_main_database_write};
 use crate::server_context::ServerContext;
 use crate::tokens::{MCP_TOKEN_TTL_SECONDS, TokenSecret};
@@ -22,6 +27,10 @@ use crate::util::seconds_since_epoch;
 /// Marks the token as ours in an `Authorization: Bearer` header, which
 /// otherwise carries a session id or a query token.
 const MCP_TOKEN_PREFIX: &str = "rsm_";
+
+/// The environment variable holding the demo token, `rsm_` and 32 hex
+/// characters like a minted one. Unset, no token reaches the demo.
+pub(crate) const MCP_DEMO_TOKEN_ENV: &str = "REVSCOPE_MCP_DEMO_TOKEN";
 
 /// How long a verified token is trusted without asking Postgres again, matching
 /// query tokens. Deleting a token locks the holder out after at most this long.
@@ -52,6 +61,40 @@ impl McpAccount {
     pub(crate) fn for_tests(account_id: &str) -> Self {
         Self(account_id.to_string())
     }
+}
+
+/// What a live token may read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum McpGrant {
+    /// Every project on the account a user approved the token for.
+    Account(McpAccount),
+    /// The public demo project alone, for the [`MCP_DEMO_TOKEN_ENV`] token.
+    Demo,
+}
+
+/// Reads a configured demo token, or `None` with a warning when it is not in
+/// the form a minted token takes, so a typo leaves the demo closed rather than
+/// opening it to some other string.
+pub(crate) fn parse_demo_token(configured: &str) -> Option<TokenSecret> {
+    if configured.trim().is_empty() {
+        return None;
+    }
+    let secret = configured
+        .trim()
+        .strip_prefix(MCP_TOKEN_PREFIX)
+        .and_then(TokenSecret::parse);
+    if secret.is_none() {
+        log::warn!(
+            "{MCP_DEMO_TOKEN_ENV} is ignored: it must be rsm_ followed by 32 hex characters"
+        );
+    }
+    secret
+}
+
+/// The demo token [`MCP_DEMO_TOKEN_ENV`] configures, looked up through `env`
+/// so a test can stand in for the process environment.
+pub(crate) fn mcp_demo_token_from_env(env: impl Fn(&str) -> Option<String>) -> Option<TokenSecret> {
+    parse_demo_token(&env(MCP_DEMO_TOKEN_ENV)?)
 }
 
 /// Mints a token for `account_id`, owned by `user_id`, on behalf of the
@@ -124,6 +167,24 @@ pub(crate) async fn revoke_account_tokens(
         .mcp_token_cache
         .retain(|account| account.id() != account_id);
     Ok(revoked)
+}
+
+/// What `secret` grants: the demo when it is the configured demo token,
+/// otherwise the account of a live token in `api_tokens`.
+pub(crate) async fn authorize_grant(
+    server_context: Arc<ServerContext>,
+    secret: TokenSecret,
+) -> Result<McpGrant, AuthError> {
+    if is_demo_token(server_context.mcp_demo_token, secret) {
+        return Ok(McpGrant::Demo);
+    }
+    authorize_token(server_context, secret)
+        .await
+        .map(McpGrant::Account)
+}
+
+fn is_demo_token(configured: Option<TokenSecret>, secret: TokenSecret) -> bool {
+    configured.is_some_and(|demo| constant_time_eq(&demo.hash(), &secret.hash()))
 }
 
 /// The account a live token grants, or [`AuthError::InvalidSession`] when the
@@ -215,5 +276,43 @@ mod tests {
             None
         );
         assert_eq!(parse_authorization(Some("Bearer rsm_not-hex")), None);
+    }
+
+    #[test]
+    fn only_the_configured_demo_token_is_the_demo() {
+        let demo = TokenSecret::generate().expect("generate");
+        let other = TokenSecret::generate().expect("generate");
+        assert!(is_demo_token(Some(demo), demo));
+        assert!(!is_demo_token(Some(demo), other));
+        assert!(!is_demo_token(None, demo));
+    }
+
+    #[test]
+    fn the_demo_token_comes_only_from_its_variable() {
+        let secret = TokenSecret::generate().expect("generate");
+        let token = format!("{MCP_TOKEN_PREFIX}{secret}");
+        // The literal name, not the constant, so renaming the variable fails here.
+        let configured = |name: &str| (name == "REVSCOPE_MCP_DEMO_TOKEN").then(|| token.clone());
+        assert_eq!(mcp_demo_token_from_env(configured), Some(secret));
+        assert_eq!(mcp_demo_token_from_env(|_| None), None);
+        let other_names_only =
+            |name: &str| (name != "REVSCOPE_MCP_DEMO_TOKEN").then(|| token.clone());
+        assert_eq!(mcp_demo_token_from_env(other_names_only), None);
+    }
+
+    #[test]
+    fn a_demo_token_must_look_like_a_minted_one() {
+        let secret = TokenSecret::generate().expect("generate");
+        assert_eq!(
+            parse_demo_token(&format!(" {MCP_TOKEN_PREFIX}{secret}\n")),
+            Some(secret)
+        );
+        assert_eq!(parse_demo_token(""), None);
+        assert_eq!(parse_demo_token(&secret.to_string()), None);
+        assert_eq!(parse_demo_token("rsm_short"), None);
+        assert_eq!(
+            parse_demo_token(&format!("Bearer {MCP_TOKEN_PREFIX}{secret}")),
+            None
+        );
     }
 }

@@ -70,8 +70,8 @@ pub(crate) async fn handle_mcp_request(
     let Some(secret) = token::parse_authorization(parsed.authorization) else {
         return unauthorized(parsed.host, "an MCP access token is required");
     };
-    let account = match token::authorize_token(server_context.clone(), secret).await {
-        Ok(account) => account,
+    let grant = match token::authorize_grant(server_context.clone(), secret).await {
+        Ok(grant) => grant,
         Err(AuthError::InvalidSession | AuthError::InvalidCredentials) => {
             return unauthorized(parsed.host, "the MCP access token is not valid");
         }
@@ -86,7 +86,7 @@ pub(crate) async fn handle_mcp_request(
 
     let grant = McpRequest {
         server_context: server_context.clone(),
-        account,
+        grant,
     };
     let Some(request) =
         build_http_request(&parsed, request_body(raw_request).unwrap_or(&[]), grant)
@@ -224,7 +224,7 @@ mod tests {
     fn test_grant() -> McpRequest {
         McpRequest {
             server_context: Arc::new(ServerContext::new_in_memory("mcp-transport-test")),
-            account: token::McpAccount::for_tests(TEST_ACCOUNT),
+            grant: token::McpGrant::Account(token::McpAccount::for_tests(TEST_ACCOUNT)),
         }
     }
 
@@ -263,7 +263,10 @@ mod tests {
             .extensions()
             .get::<McpRequest>()
             .expect("grant extension");
-        assert_eq!(grant.account.id(), TEST_ACCOUNT);
+        assert_eq!(
+            grant.grant,
+            token::McpGrant::Account(token::McpAccount::for_tests(TEST_ACCOUNT))
+        );
     }
 
     #[tokio::test]

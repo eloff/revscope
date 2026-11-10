@@ -5,11 +5,12 @@
 //! The handler itself is stateless. What a call may read arrives with the
 //! request: [`transport`](super::transport) puts an [`McpRequest`] in the HTTP
 //! extensions, `rmcp` passes the request parts through to the tool, and the tool
-//! takes the account from there. So a tool never has to decide whose data it is
+//! takes the grant from there. So a tool never has to decide whose data it is
 //! allowed to touch, and the service can be built once and shared.
 //!
-//! A token covers a whole account, so `run_query` names its project and every
-//! name it is given is checked against the account before anything is opened.
+//! A token covers a whole account, or for the demo token just the demo, so
+//! `run_query` names its project and every name it is given is checked against
+//! the grant before anything is opened.
 
 use std::sync::Arc;
 
@@ -21,22 +22,24 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, schemars, tool, tool_handler, t
 use serde::Deserialize;
 
 use crate::authorize::{AuthorizedProject, authorize_mcp_project};
-use crate::db::project::parse_uuid_key;
-use crate::mcp::token::McpAccount;
-use crate::projects::{account_project_names, resolve_project};
+use crate::download_db::DEMO_PROJECT_ID;
+use crate::mcp::token::McpGrant;
+use crate::projects::{
+    account_project_names, fetch_project, parse_project_id_str, resolve_project,
+};
 use crate::query::{QueryError, QueryResponse};
 use crate::server_context::ServerContext;
 
 const SERVER_INSTRUCTIONS: &str = "Read-only access to the RevScope analytics databases of one account. Call list_projects for the project names and get_schema for the tables they all share, then run_query against a named project. This server only reads. To create an account, install the tracker on a site, or connect integrations, use the revscope command line tool: https://revscope.co/docs/cli";
 
 /// Everything one MCP request is allowed to do, handed to the tools through the
-/// HTTP extensions. The [`McpAccount`] is what the token checked out as; the
+/// HTTP extensions. The [`McpGrant`] is what the token checked out as; the
 /// context is here rather than on the handler so the handler can be shared
 /// without holding a reference back to it.
 #[derive(Clone)]
 pub(crate) struct McpRequest {
     pub(crate) server_context: Arc<ServerContext>,
-    pub(crate) account: McpAccount,
+    pub(crate) grant: McpGrant,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -82,11 +85,11 @@ impl McpService {
         &self,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let (server_context, account) = {
+        let (server_context, grant) = {
             let request = authorized_request(&context)?;
-            (request.server_context.clone(), request.account.clone())
+            (request.server_context.clone(), request.grant.clone())
         };
-        let names = project_names(server_context, &account).await?;
+        let names = project_names(server_context, &grant).await?;
 
         let listing = if names.is_empty() {
             "this account has no projects yet".to_string()
@@ -145,17 +148,17 @@ impl McpService {
         }): Parameters<RunQueryRequest>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let (server_context, account) = {
+        let (server_context, grant) = {
             let request = authorized_request(&context)?;
-            (request.server_context.clone(), request.account.clone())
+            (request.server_context.clone(), request.grant.clone())
         };
 
         let project = match project_name.as_deref() {
-            Some(name) => account_project(server_context.clone(), &account, name).await?,
+            Some(name) => granted_project(server_context.clone(), &grant, name).await?,
             None => None,
         };
         let Some(project) = project else {
-            return no_such_project(server_context, &account, project_name.as_deref()).await;
+            return no_such_project(server_context, &grant, project_name.as_deref()).await;
         };
 
         let project_id = project.id().to_string();
@@ -206,20 +209,18 @@ fn authorized_request(context: &RequestContext<RoleServer>) -> Result<&McpReques
         })
 }
 
-/// Resolves a name a tool call supplied, to the project it names on this
-/// account. A name belonging to someone else's account is `None`, the same as
-/// one that does not exist anywhere: the answer must not tell the caller which.
-async fn account_project(
+/// Resolves a name a tool call supplied, to the project it names if the grant
+/// reaches it. A name the grant does not reach is `None`, the same as one that
+/// does not exist anywhere: the answer must not tell the caller which.
+async fn granted_project(
     server_context: Arc<ServerContext>,
-    account: &McpAccount,
+    grant: &McpGrant,
     project_name: &str,
 ) -> Result<Option<AuthorizedProject>, ErrorData> {
-    let account_key = parse_uuid_key(account.id())
-        .ok_or_else(|| ErrorData::internal_error("the token names an unreadable account", None))?;
     let project = resolve_project(server_context, project_name)
         .await
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    Ok(project.and_then(|project| authorize_mcp_project(account_key, &project).ok()))
+    Ok(project.and_then(|project| authorize_mcp_project(grant, &project).ok()))
 }
 
 /// What a call that named no project, or one this account cannot see, gets
@@ -227,10 +228,10 @@ async fn account_project(
 /// have used, so the agent can fix the call itself instead of giving up.
 async fn no_such_project(
     server_context: Arc<ServerContext>,
-    account: &McpAccount,
+    grant: &McpGrant,
     project_name: Option<&str>,
 ) -> Result<CallToolResult, ErrorData> {
-    let names = project_names(server_context, account).await?;
+    let names = project_names(server_context, grant).await?;
     let available = if names.is_empty() {
         "this account has no projects yet".to_string()
     } else {
@@ -247,11 +248,22 @@ async fn no_such_project(
 
 async fn project_names(
     server_context: Arc<ServerContext>,
-    account: &McpAccount,
+    grant: &McpGrant,
 ) -> Result<Vec<String>, ErrorData> {
-    account_project_names(server_context, account.id())
-        .await
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+    let names = match grant {
+        McpGrant::Account(account) => account_project_names(server_context, account.id()).await,
+        McpGrant::Demo => {
+            let demo_id = parse_project_id_str(DEMO_PROJECT_ID)
+                .ok_or_else(|| ErrorData::internal_error("the demo project id is invalid", None))?;
+            fetch_project(server_context, demo_id).await.map(|demo| {
+                demo.into_iter()
+                    .filter(|demo| authorize_mcp_project(grant, demo).is_ok())
+                    .map(|demo| demo.name().to_string())
+                    .collect()
+            })
+        }
+    };
+    names.map_err(|error| ErrorData::internal_error(error.to_string(), None))
 }
 
 /// Rows as JSON, prefixed with what was actually applied: the agent needs to
