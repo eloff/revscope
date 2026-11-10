@@ -39,6 +39,7 @@ import {
   type IntegrationField,
   type IntegrationSavePayload,
   type IntegrationType,
+  parseServiceAccountKey,
   type SaveSettingsPayload,
   type SettingsResponse,
   saveSettings,
@@ -46,6 +47,7 @@ import {
 } from "../lib/settingsApi";
 import GoogleAnalyticsImport from "./GoogleAnalyticsImport";
 import { content as selectContent, item as selectItem } from "./ProjectSelect.css";
+import ServiceAccountSteps, { ExternalLink } from "./ServiceAccountSteps";
 import {
   actionsBar,
   connectionStatus,
@@ -63,6 +65,7 @@ import {
   inlineButton,
   input,
   integrationStatus,
+  keyInput,
   maskedValue,
   message,
   optionalTag,
@@ -89,6 +92,8 @@ import {
   timezoneField,
 } from "./Settings.css";
 import SettingsDangerZone from "./SettingsDangerZone";
+
+const SEARCH_CONSOLE: IntegrationType = "google_search_console";
 
 type SecretFieldState = {
   value: string;
@@ -214,6 +219,8 @@ export default function Settings() {
     setCustomDomainIncluded(response.custom_domain_included);
     setSavedCustomDomain(loaded.custom_domain);
     setForm(reconcile(buildForm(response)));
+    setSearchConsoleKey("");
+    setSearchConsoleKeyError("");
   };
   const [activeTab, setActiveTab] = createSignal<IntegrationType>(INTEGRATION_TYPES[0]);
   const [loading, setLoading] = createSignal(true);
@@ -222,6 +229,8 @@ export default function Settings() {
   const [statusErrorMessage, setStatusErrorMessage] = createSignal("");
   const [statusSuccessMessage, setStatusSuccessMessage] = createSignal("");
   const [dirty, setDirty] = createSignal(false);
+  const [searchConsoleKey, setSearchConsoleKey] = createSignal("");
+  const [searchConsoleKeyError, setSearchConsoleKeyError] = createSignal("");
   const [pendingAction, setPendingAction] = createSignal<PendingAction | null>(null);
   /** Follows the cached account, so a background `/v2/session/me` refresh that
    * adds or renames a project updates the header without reloading the form. */
@@ -609,6 +618,72 @@ export default function Settings() {
     );
   };
 
+  const fillFromKeyFile = (text: string) => {
+    setSearchConsoleKey(text);
+    const key = parseServiceAccountKey(text);
+    if (!text.trim() || key) {
+      setSearchConsoleKeyError("");
+    } else {
+      setSearchConsoleKeyError(
+        "That isn't a service account key. Paste the whole JSON file you downloaded.",
+      );
+    }
+    if (!key) {
+      return;
+    }
+    setForm("integrations", SEARCH_CONSOLE, "api_key", { dirty: true, value: key.clientEmail });
+    setForm("integrations", SEARCH_CONSOLE, "secret", { dirty: true, value: key.privateKey });
+    setSearchConsoleKey("");
+    markDirty();
+  };
+
+  const renderSearchConsoleSetup = () => (
+    <>
+      <ServiceAccountSteps
+        open={!integrationConnected(form.integrations[SEARCH_CONSOLE])}
+        apis={[{ name: "Google Search Console API", id: "searchconsole.googleapis.com" }]}
+        grant={
+          <>
+            In{" "}
+            <ExternalLink href="https://search.google.com/search-console">
+              Search Console
+            </ExternalLink>
+            , open the property, then <strong>Settings → Users and permissions → Add user</strong>.
+            Enter the service account's email (<code>client_email</code> in the key file) with{" "}
+            <strong>Restricted</strong> permission. Only the property's owner can add users, and
+            adding the account in Google Cloud doesn't give it access here.
+          </>
+        }
+        finish={
+          <>
+            Paste the key file below, enter the property's URL, and choose <strong>Save</strong>.
+          </>
+        }
+      />
+      <div class={field}>
+        <label class={fieldLabel} for="settings-google_search_console-key-file">
+          Service account JSON key
+        </label>
+        <textarea
+          id="settings-google_search_console-key-file"
+          class={keyInput}
+          spellcheck={false}
+          placeholder={'{ "type": "service_account", … }'}
+          value={searchConsoleKey()}
+          onInput={(event) => fillFromKeyFile(event.currentTarget.value)}
+        />
+        <Show
+          when={searchConsoleKeyError()}
+          fallback={
+            <p class={fieldHelp}>Fills in the email and private key below. Only those are saved.</p>
+          }
+        >
+          <p class={`${statusMessage} ${statusError}`}>{searchConsoleKeyError()}</p>
+        </Show>
+      </div>
+    </>
+  );
+
   const renderField = (type: IntegrationType, fieldMeta: IntegrationField) => {
     const fieldId = `settings-${type}-${fieldMeta.column}`;
     return (
@@ -787,6 +862,7 @@ export default function Settings() {
                         <p class={sectionDescription}>{INTEGRATION_META[type].description}</p>
                         {renderIntegrationStatus(type)}
                         <div class={fieldGrid}>
+                          <Show when={type === SEARCH_CONSOLE}>{renderSearchConsoleSetup()}</Show>
                           <For each={INTEGRATION_META[type].fields}>
                             {(fieldMeta) => renderField(type, fieldMeta)}
                           </For>

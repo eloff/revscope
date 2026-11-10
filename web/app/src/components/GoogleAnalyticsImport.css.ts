@@ -6,17 +6,6 @@ export const connectOptions = style({
   marginTop: "16px",
 });
 
-export const keyInput = style({
-  width: "100%",
-  minHeight: "96px",
-  padding: "8px 10px",
-  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-  fontSize: "0.8rem",
-  border: "1px solid #d1d5db",
-  borderRadius: "6px",
-  boxSizing: "border-box",
-});
-
 export const form = style({
   display: "grid",
   gap: "14px",

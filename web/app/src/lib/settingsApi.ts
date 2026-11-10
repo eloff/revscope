@@ -142,20 +142,21 @@ export const INTEGRATION_META: Record<IntegrationType, IntegrationTypeMeta> = {
         column: "external_account_id",
         label: "Site / property URL",
         placeholder: "sc-domain:example.com",
-        help: "The verified Search Console property to read from. Add the service account as a user on this property.",
+        help: "For a domain property, add sc-domain: before the domain. For a URL-prefix property, enter the full URL with its trailing slash.",
         secret: false,
       },
       {
         column: "api_key",
         label: "Service account email",
         placeholder: "revscope-gsc@example.iam.gserviceaccount.com",
-        help: "Needs Search Console API enabled and Full or Restricted access on the property (read-only is enough).",
+        help: "client_email in the key file. Pasting the key file fills this in.",
         secret: true,
       },
       {
         column: "secret",
         label: "Service account private key",
         placeholder: "-----BEGIN PRIVATE KEY-----…",
+        help: "private_key in the key file. Pasting the key file fills this in.",
         secret: true,
       },
     ],
@@ -175,6 +176,33 @@ export const INTEGRATION_META: Record<IntegrationType, IntegrationTypeMeta> = {
     ],
   },
 };
+
+/**
+ * The email and private key from a Google service account's JSON key file, or null
+ * when the text isn't one. The key's line breaks come back as `\n` escapes, which the
+ * server reads as line breaks, because a single-line input would drop real ones.
+ */
+export function parseServiceAccountKey(
+  text: string,
+): { clientEmail: string; privateKey: string } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return null;
+  }
+  const { client_email: clientEmail, private_key: privateKey } = parsed as Record<string, unknown>;
+  if (typeof clientEmail !== "string" || typeof privateKey !== "string") {
+    return null;
+  }
+  if (!clientEmail.trim() || !privateKey.trim()) {
+    return null;
+  }
+  return { clientEmail: clientEmail.trim(), privateKey: privateKey.trim().replace(/\n/g, "\\n") };
+}
 
 /** An integration as returned by the API; credentials are masked. */
 export type IntegrationView = {

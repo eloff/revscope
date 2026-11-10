@@ -102,6 +102,36 @@ export const fieldHelp = style({
   color: "#9ca3af",
 });
 
+export const keyInput = style({
+  width: "100%",
+  minHeight: "96px",
+  padding: "8px 10px",
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontSize: "0.8rem",
+  border: "1px solid #d1d5db",
+  borderRadius: "6px",
+  boxSizing: "border-box",
+});
+
+export const setupGuide = style({
+  maxWidth: "620px",
+  margin: "0 0 16px",
+  fontSize: "0.9rem",
+  color: "#374151",
+});
+
+export const setupSummary = style({
+  cursor: "pointer",
+  fontWeight: 600,
+});
+
+export const setupSteps = style({
+  display: "grid",
+  gap: "8px",
+  margin: "10px 0 0",
+  paddingLeft: "22px",
+});
+
 export const selectTrigger = style([
   input,
   {

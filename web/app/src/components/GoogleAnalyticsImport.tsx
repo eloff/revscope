@@ -28,17 +28,18 @@ import {
   importList,
   importName,
   importRow,
-  keyInput,
   toggleRow,
   warning,
 } from "./GoogleAnalyticsImport.css";
 import { content as selectContent, item as selectItem } from "./ProjectSelect.css";
+import ServiceAccountSteps, { ExternalLink, type GoogleApi } from "./ServiceAccountSteps";
 import {
   field,
   fieldHelp,
   fieldLabel,
   inlineButton,
   input,
+  keyInput,
   saveButton,
   section,
   sectionDescription,
@@ -52,6 +53,10 @@ import {
 
 const POLL_INTERVAL_MS = 5000;
 const DOCS_PATH = "/docs/integrations/google-analytics";
+const GA_APIS: GoogleApi[] = [
+  { name: "Google Analytics Data API", id: "analyticsdata.googleapis.com" },
+  { name: "Google Analytics Admin API", id: "analyticsadmin.googleapis.com" },
+];
 
 type Props = {
   session: AuthSession;
@@ -281,17 +286,43 @@ export default function GoogleAnalyticsImport(props: Props) {
                       </div>
                     </Show>
                     <div class={field}>
+                      <ServiceAccountSteps
+                        open
+                        apis={GA_APIS}
+                        grant={
+                          <>
+                            In{" "}
+                            <ExternalLink href="https://analytics.google.com/">
+                              Google Analytics
+                            </ExternalLink>
+                            , open <strong>Admin → Property access management</strong> on the
+                            property to import, choose <strong>+ → Add users</strong>, and add the
+                            service account's email (<code>client_email</code> in the key file) as a{" "}
+                            <strong>Viewer</strong>. Adding users takes the Administrator role on
+                            the property.
+                          </>
+                        }
+                        finish={
+                          <>
+                            Paste the whole key file below and choose{" "}
+                            <strong>Connect service account</strong>.
+                          </>
+                        }
+                      />
                       <label class={fieldLabel} for="ga-service-account">
                         Service account JSON key
                       </label>
                       <textarea
                         id="ga-service-account"
                         class={keyInput}
+                        spellcheck={false}
+                        placeholder={'{ "type": "service_account", … }'}
                         value={serviceAccountJson()}
                         onInput={(event) => setServiceAccountJson(event.currentTarget.value)}
                       />
                       <p class={fieldHelp}>
-                        Add the service account's email as a Viewer on your GA4 property first.
+                        RevScope deletes the key when the import ends, or after two hours if you
+                        don't start one.
                       </p>
                       <div>
                         <button
@@ -314,9 +345,9 @@ export default function GoogleAnalyticsImport(props: Props) {
                   fallback={
                     <div class={form}>
                       <p class={`${statusMessage} ${statusError}`}>
-                        This credential can't read any GA4 properties. Use a Google account with
-                        access to the property, or add the service account's email as a Viewer on it
-                        in Google Analytics, then connect again.
+                        This credential can't read any GA4 properties. In Google Analytics, add the
+                        service account's email, or the Google account you signed in with, as a
+                        Viewer on the property, then connect again.
                       </p>
                       <div>
                         <button

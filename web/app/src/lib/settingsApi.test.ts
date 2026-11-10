@@ -3,6 +3,7 @@ import {
   finishedSyncError,
   INTEGRATION_META,
   INTEGRATION_TYPES,
+  parseServiceAccountKey,
   timezoneOptions,
 } from "./settingsApi";
 
@@ -67,5 +68,26 @@ describe("finishedSyncError", () => {
 
   it("reports nothing after a success", () => {
     expect(finishedSyncError({ last_sync_error: null, last_finished_sync_error: null })).toBeNull();
+  });
+});
+
+describe("parseServiceAccountKey", () => {
+  it("takes the email and key from a key file, keeping the key on one line", () => {
+    const file = JSON.stringify({
+      type: "service_account",
+      client_email: "revscope@example.iam.gserviceaccount.com",
+      private_key: "-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----\n",
+    });
+    expect(parseServiceAccountKey(file)).toEqual({
+      clientEmail: "revscope@example.iam.gserviceaccount.com",
+      privateKey: "-----BEGIN PRIVATE KEY-----\\nABC\\n-----END PRIVATE KEY-----",
+    });
+  });
+
+  it("refuses text that isn't a key file", () => {
+    expect(parseServiceAccountKey("{")).toBeNull();
+    expect(parseServiceAccountKey("null")).toBeNull();
+    expect(parseServiceAccountKey('{"client_email":"a@b"}')).toBeNull();
+    expect(parseServiceAccountKey('{"client_email":"","private_key":"k"}')).toBeNull();
   });
 });

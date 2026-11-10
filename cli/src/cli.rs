@@ -364,6 +364,8 @@ pub enum GaImportCommand {
     /// Connect a Google service account, and list the properties it can read.
     Connect(GaConnectArgs),
     /// Print a URL for connecting with a Google login instead, which finishes in the dashboard.
+    // Only self-hosted servers set up for it can do this, so it stays out of the help.
+    #[command(hide = true)]
     OauthUrl,
     /// List imports, their progress, and the dates allowed.
     List,

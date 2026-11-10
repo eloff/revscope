@@ -57,7 +57,7 @@ revscope query "SELECT p.path, COUNT(*) AS views
 | `integrations list` | Shows connected integrations and how their syncs went. |
 | `integrations connect <name>` | Connects one, or changes its credentials. |
 | `integrations disconnect <name>` | Clears its credentials and account. Synced data stays. |
-| `ga-import connect`, `oauth-url` | Connects a Google credential. |
+| `ga-import connect` | Connects a Google service account. |
 | `ga-import list`, `start`, `cancel`, `delete` | Imports history from Google Analytics. |
 | `query` | Runs one read-only SQL statement. `--all` follows the pages. |
 | `tables` | Lists the analytics tables. |

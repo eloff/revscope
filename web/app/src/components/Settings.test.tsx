@@ -215,6 +215,57 @@ describe("Settings", () => {
     );
   });
 
+  it("fills Search Console's email and key from a pasted key file", async () => {
+    const { user } = await renderSettings();
+    const tab = screen.getByRole("tab", { name: "Search Console" });
+    await user.click(tab);
+    const panelElement = document.getElementById(tab.getAttribute("aria-controls") ?? "");
+    if (!panelElement) {
+      throw new Error("the Search Console tab has no panel");
+    }
+    const panel = within(panelElement);
+    expect(panel.getByText("How to create a service account")).toBeVisible();
+
+    const keyFile = panel.getByLabelText("Service account JSON key");
+    await user.click(keyFile);
+    await user.paste("{ not json");
+    expect(screen.getByText(/isn't a service account key/)).toBeInTheDocument();
+
+    await user.clear(keyFile);
+    await user.click(keyFile);
+    await user.paste(
+      JSON.stringify({
+        client_email: "rs@example.iam.gserviceaccount.com",
+        private_key: "-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----\n",
+      }),
+    );
+    expect(keyFile).toHaveValue("");
+    expect(screen.queryByText(/isn't a service account key/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Service account email")).toHaveValue(
+      "rs@example.iam.gserviceaccount.com",
+    );
+
+    await user.type(screen.getByLabelText("Site / property URL"), "sc-domain:example.com");
+    const saves = mockApi("post", "/v2/session/projects/1/settings", settings());
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Settings saved.");
+    const body = saves[0]?.body as {
+      integrations: {
+        integration_type: string;
+        external_account_id: unknown;
+        api_key: unknown;
+        secret: unknown;
+      }[];
+    };
+    expect(
+      body.integrations.find((entry) => entry.integration_type === "google_search_console"),
+    ).toMatchObject({
+      external_account_id: "sc-domain:example.com",
+      api_key: "rs@example.iam.gserviceaccount.com",
+      secret: "-----BEGIN PRIVATE KEY-----\\nABC\\n-----END PRIVATE KEY-----",
+    });
+  });
+
   it("cancels a secret replacement", async () => {
     const { user } = await renderSettings(settings({ integrations: [stripe] }));
     await user.click(screen.getByText("Replace"));
