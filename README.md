@@ -16,7 +16,8 @@ There are two ways to use it:
 
 Agents and scripts can set up the hosted service from the command line, with no
 browser: create an account, install the tracker, connect integrations, and query
-analytics. See [`cli/`](cli/README.md).
+analytics. See [`cli/`](cli/README.md). MCP clients that only run local servers can reach the
+hosted MCP server through the Docker bridge in [`mcp-bridge/`](mcp-bridge/README.md).
 
 ## Run your own instance with Docker
 

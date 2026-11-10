@@ -219,6 +219,28 @@ jobs:
         working-directory: cli/npm
         run: npm test
 
+  # The Docker bridge for stdio-only MCP clients. Its tests stop before reaching RevScope.
+  mcp-bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.12.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: mcp-bridge/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: mcp-bridge
+      # `pnpm check` applies fixes, so fail if it changed anything.
+      - run: pnpm check && git diff --exit-code
+        working-directory: mcp-bridge
+      - run: pnpm audit
+        working-directory: mcp-bridge
+      - run: mcp-bridge/test.sh
+
   # The Playwright suite against this commit's own build, with a freshly generated demo. Running
   # the backend bundled with the web app is one process with no dev-server or Worker to manage.
   e2e:

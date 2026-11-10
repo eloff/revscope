@@ -49,6 +49,7 @@ Run the checks for every part you touched before opening a pull request:
 | `e2e/`      | `pnpm tsc`, `pnpm check`, `pnpm test` (see below)                                          |
 | `cli/`      | `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, in `cli/npm` `npm test`, and in `revscope/` `cargo test --test cli_e2e` |
 | `crates/`   | `cargo fmt`, `cargo clippy`, `cargo test`, then the checks of `revscope/` and `cli/`        |
+| `mcp-bridge/` | `pnpm check`, `./test.sh` (needs Docker on Linux)                                        |
 
 `pnpm check` uses biome with `--write`, so it may reformat files. Commit those
 changes.

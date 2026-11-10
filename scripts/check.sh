@@ -4,7 +4,8 @@
 # Runs the checks CI runs (.github/workflows/ci.yml), which are stricter than CONTRIBUTING.md's, for
 # each part that differs from where this branch left origin/main, counting uncommitted changes, or
 # for every part with --all. It leaves out what needs the network or a running server: the
-# dependency audits, web's dev-server start, and the e2e tests. Then runs the scripts/check.sh of
+# dependency audits, web's dev-server start, and the e2e tests. mcp-bridge's tests need Docker, and
+# the network to build the image when its layers aren't cached. Then runs the scripts/check.sh of
 # each private repo checked out inside this worktree.
 #
 # Formatters may rewrite files, as CONTRIBUTING.md expects. On a branch other than main, this commits
@@ -24,7 +25,7 @@ changed() {
 start_formatting
 
 # The root biome.json is the base of every part's, and the toolchain builds every crate.
-biome=; rust=; tracker=; e2e=; crates=; revscope=; cli=; web=
+biome=; rust=; tracker=; e2e=; crates=; revscope=; cli=; web=; mcp_bridge=
 changed biome.json && biome=1
 changed rust-toolchain.toml && rust=1
 { [ -n "$biome" ] || changed tracker; } && tracker=1
@@ -34,6 +35,7 @@ changed rust-toolchain.toml && rust=1
 { [ -n "$crates" ] || [ -n "$tracker" ] || changed revscope; } && revscope=1
 { [ -n "$crates" ] || changed cli; } && cli=1
 { [ -n "$biome" ] || changed web; } && web=1
+{ [ -n "$biome" ] || changed mcp-bridge; } && mcp_bridge=1
 
 if [ -n "$tracker" ]; then
   echo "== tracker"
@@ -77,6 +79,12 @@ if [ -n "$cli" ]; then
   (cd cli && cargo clippy -q --all-targets --locked -- -D warnings && cargo test -q --locked)
   (cd cli/npm && npm test --silent)
   (cd revscope && cargo test -q --test cli_e2e)
+fi
+if [ -n "$mcp_bridge" ]; then
+  echo "== mcp-bridge"
+  pnpm_deps mcp-bridge
+  run_formatter mcp-bridge pnpm -s check
+  mcp-bridge/test.sh
 fi
 if [ -n "$e2e" ]; then
   echo "== e2e (type check and lint only: its tests need a running target, see CONTRIBUTING.md)"

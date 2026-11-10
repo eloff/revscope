@@ -1,0 +1,16 @@
+{
+  "name": "revscope-mcp-bridge",
+  "private": true,
+  "description": "A stdio MCP server for clients that can't reach RevScope's hosted MCP endpoint themselves",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "type": "module",
+  "scripts": {
+    "check": "biome check --write ."
+  },
+  "dependencies": {
+    "mcp-remote": "0.15.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.5"
+  }
+}
