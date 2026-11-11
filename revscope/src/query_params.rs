@@ -148,14 +148,25 @@ pub(crate) fn paginate<T>(mut rows: Vec<T>, offset: i64, page_size: i64) -> (Vec
     (rows, next_offset)
 }
 
-/// Orders floats for sorting, treating NaN as equal to everything.
+/// Orders floats for sorting, with NaN greater than every number. NaN can't compare
+/// equal to everything: that isn't a total order, and `sort_by` may panic on one.
 pub(crate) fn cmp_f64(left: f64, right: f64) -> Ordering {
-    left.partial_cmp(&right).unwrap_or(Ordering::Equal)
+    left.partial_cmp(&right)
+        .unwrap_or_else(|| left.is_nan().cmp(&right.is_nan()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn floats_sort_in_a_total_order_with_nan_last() {
+        let mut values = [2.0, f64::NAN, -1.0, 0.0, f64::NAN, 1.5];
+        values.sort_by(|left, right| cmp_f64(*left, *right));
+        assert_eq!(values[..4], [-1.0, 0.0, 1.5, 2.0]);
+        assert!(values[4].is_nan() && values[5].is_nan());
+        assert_eq!(cmp_f64(-0.0, 0.0), Ordering::Equal);
+    }
 
     #[test]
     fn report_query_reads_the_range_and_hands_on_the_rest() {

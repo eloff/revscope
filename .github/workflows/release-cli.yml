@@ -33,8 +33,9 @@ jobs:
       - name: The tag names the version being built
         run: |
           version="${GITHUB_REF_NAME#cli-v}"
-          grep -qx "version = \"$version\"" cli/Cargo.toml
-          grep -q "\"version\": \"$version\"" cli/npm/package.json
+          # -F: the dots in a version are literal, or 1.2.3 would also match 1x2y3.
+          grep -qxF "version = \"$version\"" cli/Cargo.toml
+          grep -qF "\"version\": \"$version\"" cli/npm/package.json
       - run: rustup show active-toolchain
       - run: rustup target add ${{ matrix.target }}
       - name: Install the musl toolchain

@@ -5,7 +5,6 @@ use log::info;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use time::{Date, Month, PrimitiveDateTime, Time};
 
 use super::attribution;
 use super::schedule::{
@@ -20,7 +19,7 @@ use super::sync::{SyncCounts, SyncError, SyncKind, SyncResult, serialize_metadat
 use crate::db::{ProjectCache, ProjectConnection};
 use crate::server_context::ServerContext;
 use crate::subscription_status;
-use crate::util::unix_seconds;
+use crate::util::{rfc3339_to_unix, unix_seconds};
 
 const PROVIDER: &str = "lemon_squeezy";
 const LEMON_SQUEEZY_API_BASE_URL: &str = "https://api.lemonsqueezy.com/v1";
@@ -564,82 +563,20 @@ fn parse_optional_lemon_squeezy_time(value: Option<&str>) -> SyncResult<Option<i
     value.map(parse_lemon_squeezy_time).transpose()
 }
 
+/// Lemon Squeezy documents RFC 3339 timestamps ending in `Z`. One without any
+/// offset is still read as UTC, as this integration always has.
 fn parse_lemon_squeezy_time(value: &str) -> SyncResult<i64> {
     let value = value.trim();
-    let value = value.strip_suffix('Z').unwrap_or(value);
-    let (date_part, time_part) = value
-        .split_once('T')
-        .ok_or_else(|| SyncError::LemonSqueezy(format!("invalid timestamp {value:?}")))?;
-    let mut date_parts = date_part.split('-');
-    let year = date_parts
-        .next()
-        .and_then(|part| part.parse::<i32>().ok())
-        .ok_or_else(|| SyncError::LemonSqueezy(format!("invalid timestamp {value:?}")))?;
-    let month = date_parts
-        .next()
-        .and_then(|part| part.parse::<u8>().ok())
-        .and_then(|month| Month::try_from(month).ok())
-        .ok_or_else(|| SyncError::LemonSqueezy(format!("invalid timestamp {value:?}")))?;
-    let day = date_parts
-        .next()
-        .and_then(|part| part.parse::<u8>().ok())
-        .ok_or_else(|| SyncError::LemonSqueezy(format!("invalid timestamp {value:?}")))?;
-    if date_parts.next().is_some() {
-        return Err(SyncError::LemonSqueezy(format!(
-            "invalid timestamp {value:?}"
-        )));
-    }
-
-    let time_part = time_part
-        .split_once('+')
-        .map(|(time, _)| time)
-        .unwrap_or(time_part);
-    let mut time_parts = time_part.split(':');
-    let hour = time_parts
-        .next()
-        .and_then(|part| part.parse::<u8>().ok())
-        .ok_or_else(|| SyncError::LemonSqueezy(format!("invalid timestamp {value:?}")))?;
-    let minute = time_parts
-        .next()
-        .and_then(|part| part.parse::<u8>().ok())
-        .ok_or_else(|| SyncError::LemonSqueezy(format!("invalid timestamp {value:?}")))?;
-    let second_part = time_parts
-        .next()
-        .ok_or_else(|| SyncError::LemonSqueezy(format!("invalid timestamp {value:?}")))?;
-    if time_parts.next().is_some() {
-        return Err(SyncError::LemonSqueezy(format!(
-            "invalid timestamp {value:?}"
-        )));
-    }
-    let (second, microsecond) = parse_seconds(second_part)?;
-    let date = Date::from_calendar_date(year, month, day)
-        .map_err(|error| SyncError::LemonSqueezy(error.to_string()))?;
-    let time = Time::from_hms_micro(hour, minute, second, microsecond)
-        .map_err(|error| SyncError::LemonSqueezy(error.to_string()))?;
-    Ok(PrimitiveDateTime::new(date, time)
-        .assume_utc()
-        .unix_timestamp())
-}
-
-fn parse_seconds(value: &str) -> SyncResult<(u8, u32)> {
-    let (seconds, fraction) = value.split_once('.').unwrap_or((value, ""));
-    let seconds = seconds
-        .parse::<u8>()
-        .map_err(|_| SyncError::LemonSqueezy(format!("invalid timestamp seconds {value:?}")))?;
-    let mut padded = String::with_capacity(6);
-    padded.push_str(fraction);
-    while padded.len() < 6 {
-        padded.push('0');
-    }
-    padded.truncate(6);
-    let microseconds = if padded.is_empty() {
-        0
+    // A date has `-` too, so only what follows it can say whether there's an offset.
+    let has_offset = value
+        .split_once(['T', 't', ' '])
+        .is_some_and(|(_date, time)| time.contains(['Z', 'z', '+', '-']));
+    let parsed = if has_offset {
+        rfc3339_to_unix(value)
     } else {
-        padded
-            .parse::<u32>()
-            .map_err(|_| SyncError::LemonSqueezy(format!("invalid timestamp fraction {value:?}")))?
+        rfc3339_to_unix(&format!("{value}Z"))
     };
-    Ok((seconds, microseconds))
+    parsed.map_err(|error| SyncError::LemonSqueezy(format!("invalid timestamp {value:?}: {error}")))
 }
 
 struct LemonSqueezyClient {
@@ -1120,5 +1057,44 @@ mod tests {
             period_amount(&price("volume", json!({ "tiers": [] })), &item(3)),
             None
         );
+    }
+
+    #[test]
+    fn timestamps_are_read_at_their_own_offset() {
+        let noon_utc = 1_628_683_200;
+        for value in [
+            "2021-08-11T12:00:00.000000Z",
+            " 2021-08-11T12:00:00Z ",
+            "2021-08-11T14:00:00+02:00",
+            "2021-08-11T07:00:00.5-05:00",
+            "2021-08-11T12:00:00.000000",
+        ] {
+            assert_eq!(
+                parse_lemon_squeezy_time(value).ok(),
+                Some(noon_utc),
+                "{value}"
+            );
+        }
+        for value in [
+            "",
+            "2021-08-11",
+            "2021-08-11T12:00:00.12345\u{e9}Z",
+            "2021-13-11T12:00:00Z",
+        ] {
+            assert!(parse_lemon_squeezy_time(value).is_err(), "{value}");
+        }
+        // The error names what's wrong with the value, with or without an offset.
+        for value in [
+            "2021-13-11T12:00:00Z",
+            "2021-13-11T12:00:00",
+            "2021-13-11T12:00:00+02:00",
+        ] {
+            let SyncError::LemonSqueezy(message) =
+                parse_lemon_squeezy_time(value).expect_err("month 13")
+            else {
+                panic!("a Lemon Squeezy error");
+            };
+            assert!(message.contains("month"), "{message}");
+        }
     }
 }
