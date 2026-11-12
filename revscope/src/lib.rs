@@ -98,6 +98,7 @@ mod transitions;
 mod troubleshooting;
 mod untrusted_keys;
 mod update_user;
+mod usage_budget;
 mod user_access;
 pub mod util;
 mod uuid_text;

@@ -1,4 +1,4 @@
-//! Transcript storage for the Ask tab, plus the AI spend limits.
+//! Transcript storage for the Ask tab, plus its usage limits.
 //!
 //! Conversations live in the project database because that is where the data
 //! being discussed lives; usage lives in the main database because the limits
@@ -6,13 +6,9 @@
 //! and anonymous spend live in the main database so they survive demo resets
 //! and stay out of the demo database that signed-in accounts can download.
 //!
-//! The free plan has no Ask access at all. Otherwise the monthly token budget
-//! depends on plan: starter accounts are hard-capped
-//! at 200K tokens/month. Other plans derive the budget from subscription price
-//! — an estimated $6 per million tokens, with a spend cap of 40% of
-//! `actual_price_cents` or $10, whichever is larger. Accounts on those plans
-//! that came through a trial are capped at $5 until their first real payment.
-//! Anonymous demo Ask is capped at a flat lifetime token budget per client IP.
+//! A signed-in account's Ask spend draws on its plan's monthly allowance (see
+//! `usage_budget.rs`). Anonymous demo Ask is capped at a flat lifetime token
+//! budget per client IP.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -28,21 +24,12 @@ use crate::db::{
 };
 use crate::download_db::DEMO_PROJECT_ID;
 use crate::server_context::ServerContext;
+use crate::usage_budget::{self, Allowance};
 use crate::util::{block_on, seconds_since_epoch};
 
 /// Turns one user may start per hour. Sized so a working session never notices
 /// it while a runaway script does.
 const MAX_TURNS_PER_HOUR: i64 = 60;
-/// Assumed AI gateway cost used to convert a dollar budget into tokens.
-const TOKEN_COST_CENTS_PER_MILLION: i64 = 600; // $6 / 1M tokens
-/// Floor on monthly AI spend for paid non-starter accounts, in USD cents.
-const MIN_AI_BUDGET_CENTS: i64 = 1_000; // $10
-/// Cap on monthly AI spend while a non-starter account is still on a trial.
-const TRIAL_AI_BUDGET_CENTS: i64 = 500; // $5
-/// Share of the subscription's `actual_price_cents` available for AI each month.
-const AI_BUDGET_PERCENT: i64 = 40;
-/// Hard monthly token ceiling for starter-plan accounts.
-const STARTER_MONTHLY_TOKEN_BUDGET: i64 = 200_000;
 /// Lifetime token ceiling for anonymous Ask on the public demo, per client IP.
 pub(crate) const DEMO_GUEST_TOKEN_BUDGET: i64 = 100_000;
 /// Longest question accepted. Long pastes belong in the data, not the prompt.
@@ -633,33 +620,8 @@ pub(crate) enum QuotaError {
     Db(AuthError),
 }
 
-/// Founder & Friends is Growth without what costs us money to serve, and AI is
-/// the only such feature so far.
-fn plan_includes_ai(plan_type: &str) -> bool {
-    !matches!(plan_type, "free" | "founder_friends")
-}
-
-/// Monthly token ceiling for an account from its plan and subscription price.
-///
-/// Starter is a hard 200K tokens/month. Other plans: paid accounts get
-/// max(40% of `actual_price_cents`, $10); accounts that had a trial and
-/// haven't paid yet (see [`check_quota`]) get a flat $5. Converted at $6 / million tokens.
-/// Complimentary paid non-starter accounts (price 0) still get the $10 floor.
-fn monthly_token_budget(plan_type: &str, actual_price_cents: i32, trial_unpaid: bool) -> i64 {
-    if plan_type == "starter" {
-        return STARTER_MONTHLY_TOKEN_BUDGET;
-    }
-    let budget_cents = if trial_unpaid {
-        TRIAL_AI_BUDGET_CENTS
-    } else {
-        let from_subscription = i64::from(actual_price_cents) * AI_BUDGET_PERCENT / 100;
-        from_subscription.max(MIN_AI_BUDGET_CENTS)
-    };
-    budget_cents * 1_000_000 / TOKEN_COST_CENTS_PER_MILLION
-}
-
-/// Refuses a turn that would put the caller over either limit. Price and usage
-/// are read together so this stays one round trip.
+/// Refuses a turn that would put the caller over the hourly cap or the
+/// account's monthly allowance.
 pub(crate) fn check_quota(
     server_context: Arc<ServerContext>,
     account_id: &str,
@@ -667,62 +629,29 @@ pub(crate) fn check_quota(
 ) -> Result<(), QuotaError> {
     let account_id = account_id.to_string();
     let user_id = user_id.to_string();
-    let (turns_this_hour, tokens_this_month, plan_type, actual_price_cents, trial_unpaid) =
-        block_on(async move {
-            let conn = open_main_database_read(server_context)
-                .await
-                .map_err(|error| QuotaError::Db(AuthError::Db(error.to_string())))?;
-            let row = conn
-                .query_one(
-                    "SELECT
-                     sub.plan_type::text,
-                     sub.actual_price_cents,
-                     -- The trial date can't say this alone: a first charge can fail after it
-                     -- passes, and it can stay set once paid, since webhooks copy the
-                     -- provider's. A status can't either: `active` can precede the first
-                     -- charge, and `past_due` can follow months of payments. A trial's
-                     -- first invoice can be a paid $0.
-                     a.trial_ends_at IS NOT NULL
-                        AND NOT EXISTS (
-                            SELECT 1 FROM account_orders o
-                            WHERE o.account_id = a.id
-                              AND o.paid
-                              AND o.total_amount_cents > 0
-                              AND o.status <> 'refunded'
-                        ),
-                     (
-                         SELECT COUNT(*)::bigint
-                         FROM chat_usage
-                         WHERE account_id = a.id
-                           AND user_id = $2::text::uuid
-                           AND created_at > NOW() - INTERVAL '1 hour'
-                     ),
-                     (
-                         SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0)::bigint
-                         FROM chat_usage
-                         WHERE account_id = a.id
-                           AND created_at >= date_trunc('month', NOW())
-                     )
-                 FROM accounts a
-                 INNER JOIN account_subscriptions sub
-                    ON sub.account_id = a.id AND sub.ended_at IS NULL
-                 WHERE a.id = $1::text::uuid",
-                    &[
-                        &account_id as &(dyn ToSql + Sync),
-                        &user_id as &(dyn ToSql + Sync),
-                    ],
-                )
-                .await
-                .map_err(|error| QuotaError::Db(AuthError::from(error)))?;
-            let plan_type: String = row.get(0);
-            let price: i32 = row.get(1);
-            let trial_unpaid: bool = row.get(2);
-            let turns: i64 = row.get(3);
-            let tokens: i64 = row.get(4);
-            Ok::<_, QuotaError>((turns, tokens, plan_type, price, trial_unpaid))
-        })?;
+    let (allowance, turns_this_hour) = block_on(async move {
+        let conn = open_main_database_read(server_context)
+            .await
+            .map_err(|error| QuotaError::Db(AuthError::Db(error.to_string())))?;
+        let params: [&(dyn ToSql + Sync); 2] = [&account_id, &user_id];
+        let turns = conn.query_one(
+            "SELECT COUNT(*)::bigint
+             FROM chat_usage
+             WHERE account_id = $1::text::uuid
+               AND user_id = $2::text::uuid
+               AND created_at > NOW() - INTERVAL '1 hour'",
+            &params,
+        );
+        // Pipelined on the one connection, so the second query adds no round trips.
+        let (allowance, turns) = tokio::join!(usage_budget::allowance(&conn, &account_id), turns);
+        let turns: i64 = turns
+            .map_err(AuthError::from)
+            .map_err(QuotaError::Db)?
+            .get(0);
+        Ok::<_, QuotaError>((allowance.map_err(QuotaError::Db)?, turns))
+    })?;
 
-    if !plan_includes_ai(&plan_type) {
+    if allowance == Allowance::NotIncluded {
         return Err(QuotaError::Exceeded(
             "AI-powered insights are not included in your plan; upgrade to a paid plan to use them"
                 .to_string(),
@@ -733,12 +662,9 @@ pub(crate) fn check_quota(
             "you have reached the limit of {MAX_TURNS_PER_HOUR} questions per hour; try again shortly"
         )));
     }
-    // A self-hosted instance pays for its own model key, so there is no plan to
-    // budget against; the hourly cap above still applies.
-    let token_budget = monthly_token_budget(&plan_type, actual_price_cents, trial_unpaid);
-    if !crate::self_hosted::ENABLED && tokens_this_month >= token_budget {
+    if allowance == Allowance::Exhausted {
         return Err(QuotaError::Exceeded(
-            "this account has reached its monthly AI usage limit; it resets at the start of next month"
+            "this account has used its monthly allowance for AI and other usage-based features; it resets at the start of next month"
                 .to_string(),
         ));
     }
@@ -1096,103 +1022,20 @@ mod tests {
         assert_eq!(title.chars().count(), MAX_TITLE_CHARS + 1);
     }
 
-    #[test]
-    fn starter_accounts_are_hard_capped_at_200k_tokens() {
-        assert_eq!(monthly_token_budget("starter", 0, false), 200_000);
-        assert_eq!(monthly_token_budget("starter", 12_900, false), 200_000);
-        assert_eq!(monthly_token_budget("starter", 12_900, true), 200_000);
-    }
-
-    #[test]
-    fn free_plans_have_no_ai() {
-        for plan in ["free", "founder_friends"] {
-            assert!(!plan_includes_ai(plan), "{plan}");
-        }
-        for plan in ["starter", "growth", "founder", "enterprise"] {
-            assert!(plan_includes_ai(plan), "{plan}");
-        }
-    }
-
-    #[test]
-    fn monthly_token_budget_uses_the_ten_dollar_floor() {
-        // $10 / ($6 / 1M) = 1_666_666 tokens.
-        assert_eq!(monthly_token_budget("growth", 0, false), 1_666_666);
-        // 40% of $9 = $3.60, still below the floor.
-        assert_eq!(monthly_token_budget("growth", 900, false), 1_666_666);
-        // 40% of $25 = $10, exactly the floor.
-        assert_eq!(monthly_token_budget("founder", 2_500, false), 1_666_666);
-    }
-
-    #[test]
-    fn monthly_token_budget_scales_with_subscription_price() {
-        // 40% of $129 = $51.60 → 8_600_000 tokens at $6 / 1M.
-        assert_eq!(monthly_token_budget("growth", 12_900, false), 8_600_000);
-        assert_eq!(monthly_token_budget("enterprise", 12_900, false), 8_600_000);
-    }
-
-    /// Whether a growth account, with more of this month's tokens used than the $5
-    /// trial budget allows but fewer than the $10 paid floor, may start a turn.
-    /// `trial_ends_in` is an offset from now, and `order` is its only order, as the
-    /// amount in cents, whether it's paid, and its status.
+    /// What `check_quota` says to a turn from an account on `plan_type` that has
+    /// used more than an unpaid trial's allowance.
     #[cfg(not(feature = "self-hosted"))]
-    async fn quota_allows_a_turn(
-        trial_ends_in: Option<&str>,
-        order: Option<(i32, bool, &str)>,
-    ) -> bool {
-        let tag = "quota_trial";
-        let tokens: i32 = 1_000_000;
+    async fn quota_for(plan_type: &str, order: Option<(i32, bool, &str)>) -> Result<(), String> {
+        let tag = "quota_gate";
         let (server_context, conn) = crate::test_utils::main_test_db(tag).await;
-        let account_id = crate::test_utils::insert_test_account(&conn, tag).await;
-        conn.execute(
-            "UPDATE accounts SET trial_ends_at = NOW() + $2::text::interval
-             WHERE id = $1::text::uuid",
-            &[&account_id, &trial_ends_in],
+        let (account_id, user_id) = crate::usage_budget::insert_metered_account(
+            &conn,
+            tag,
+            plan_type,
+            Some("-7 days"),
+            order,
         )
-        .await
-        .expect("set trial end");
-        conn.execute(
-            "INSERT INTO account_subscriptions (
-                account_id, plan_type, billing_period, regular_price_cents, actual_price_cents
-             ) VALUES ($1::text::uuid, 'growth', 'monthly', 900, 900)",
-            &[&account_id],
-        )
-        .await
-        .expect("open subscription period");
-        if let Some((cents, paid, status)) = order {
-            conn.execute(
-                "INSERT INTO account_orders (
-                    polar_order_id, account_id, status, paid, total_amount_cents, currency, created_at
-                 ) VALUES ($1, $1::text::uuid, $4, $2, $3, 'usd', NOW())",
-                &[&account_id, &paid, &cents, &status],
-            )
-            .await
-            .expect("record order");
-        }
-        let project_id: i32 = conn
-            .query_one(
-                "INSERT INTO projects (account_id, name) VALUES ($1::text::uuid, $2) RETURNING id",
-                &[&account_id, &format!("p{}", account_id.replace('-', ""))],
-            )
-            .await
-            .expect("insert project")
-            .get(0);
-        let user_id: String = conn
-            .query_one(
-                "INSERT INTO users (account_id, name, email)
-                 VALUES ($1::text::uuid, 'Trial', $2) RETURNING id::text",
-                &[&account_id, &format!("{account_id}@example.com")],
-            )
-            .await
-            .expect("insert user")
-            .get(0);
-        conn.execute(
-            "INSERT INTO chat_usage (account_id, user_id, project_id, model, prompt_tokens)
-             VALUES ($1::text::uuid, $2::text::uuid, $3, 'test', $4)",
-            &[&account_id, &user_id, &project_id, &tokens],
-        )
-        .await
-        .expect("record usage");
-
+        .await;
         let quota_account_id = account_id.clone();
         let result = tokio::task::spawn_blocking(move || {
             check_quota(server_context, &quota_account_id, &user_id)
@@ -1206,37 +1049,22 @@ mod tests {
         .await
         .expect("delete account");
         match result {
-            Ok(()) => true,
-            Err(QuotaError::Exceeded(_)) => false,
+            Ok(()) => Ok(()),
+            Err(QuotaError::Exceeded(message)) => Err(message),
             Err(QuotaError::Db(_)) => panic!("quota check failed"),
         }
     }
 
     #[cfg(not(feature = "self-hosted"))]
     #[tokio::test(flavor = "multi_thread")]
-    async fn the_trial_budget_lasts_until_the_first_real_payment() {
-        // Paid, with the provider's trial date still set.
-        assert!(quota_allows_a_turn(Some("-7 days"), Some((900, true, "paid"))).await);
-        // Partly refunded, as a plan change does, is still a real payment.
+    async fn quota_refuses_a_turn_the_allowance_does_not_cover() {
+        assert_eq!(quota_for("growth", Some((900, true, "paid"))).await, Ok(()));
+        let exhausted = quota_for("growth", None).await.unwrap_err();
+        assert!(exhausted.contains("monthly allowance"), "{exhausted}");
+        let not_included = quota_for("free", None).await.unwrap_err();
         assert!(
-            quota_allows_a_turn(Some("-7 days"), Some((900, true, "partially_refunded"))).await
+            not_included.contains("not included in your plan"),
+            "{not_included}"
         );
-        // Never had a trial: a complimentary account has no orders at all.
-        assert!(quota_allows_a_turn(None, None).await);
-
-        assert!(!quota_allows_a_turn(Some("7 days"), None).await);
-        // The date passed but nothing has been paid.
-        assert!(!quota_allows_a_turn(Some("-7 days"), None).await);
-        assert!(!quota_allows_a_turn(Some("-7 days"), Some((900, false, "pending"))).await);
-        assert!(!quota_allows_a_turn(Some("-7 days"), Some((900, true, "refunded"))).await);
-        // The invoice that starts a trial.
-        assert!(!quota_allows_a_turn(Some("-7 days"), Some((0, true, "paid"))).await);
-    }
-
-    #[test]
-    fn trial_accounts_are_capped_at_five_dollars() {
-        // $5 / ($6 / 1M) = 833_333 tokens, regardless of listed price.
-        assert_eq!(monthly_token_budget("growth", 12_900, true), 833_333);
-        assert_eq!(monthly_token_budget("founder", 0, true), 833_333);
     }
 }
