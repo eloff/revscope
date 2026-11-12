@@ -4,7 +4,7 @@ use fxhash::{FxHashMap, FxHashSet};
 use log::{info, warn};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
+use time::{Date, Month, OffsetDateTime};
 
 use super::attribution;
 use super::schedule::{
@@ -18,6 +18,7 @@ use super::store::{
 use super::sync::{SyncCounts, SyncError, SyncKind, SyncResult};
 use crate::db::{ProjectCache, ProjectConnection};
 use crate::server_context::ServerContext;
+use crate::util::{date_to_unix_utc_midnight, parse_iso_date, rfc3339_to_unix, unix_to_rfc3339};
 
 const PROVIDER: &str = "square";
 const SQUARE_API_BASE_URL: &str = "https://connect.squareup.com/v2";
@@ -218,10 +219,10 @@ async fn sync_payments(
             query.push(("location_id", location_id.to_string()));
         }
         if let Some(since) = since {
-            query.push(("updated_at_begin_time", format_square_time(since)));
+            query.push(("updated_at_begin_time", format_square_time(since)?));
             query.push(("sort_field", "UPDATED_AT".to_string()));
         } else {
-            query.push(("begin_time", format_square_time(0)));
+            query.push(("begin_time", format_square_time(0)?));
         }
 
         let page: ListPaymentsResponse = client.get("payments", &query).await?;
@@ -282,9 +283,9 @@ async fn sync_refunds(
             query.push(("location_id", location_id.to_string()));
         }
         if let Some(since) = since {
-            query.push(("begin_time", format_square_time(since)));
+            query.push(("begin_time", format_square_time(since)?));
         } else {
-            query.push(("begin_time", format_square_time(0)));
+            query.push(("begin_time", format_square_time(0)?));
         }
 
         let page: ListRefundsResponse = client.get("refunds", &query).await?;
@@ -932,115 +933,19 @@ fn parse_optional_square_timestamp(value: Option<&str>) -> SyncResult<Option<i64
 fn parse_square_timestamp(value: Option<&str>) -> SyncResult<i64> {
     let value =
         value.ok_or_else(|| SyncError::Square("Square object is missing timestamp".to_string()))?;
-    parse_rfc3339_timestamp(value)
-}
-
-fn parse_rfc3339_timestamp(value: &str) -> SyncResult<i64> {
-    let (date_part, time_part) = value
-        .split_once('T')
-        .ok_or_else(|| SyncError::Square(format!("invalid Square timestamp {value:?}")))?;
-    let date = parse_date(date_part)?;
-    let (time_part, offset) = parse_time_offset(time_part, value)?;
-    let time = parse_time(time_part, value)?;
-    Ok(PrimitiveDateTime::new(date, time)
-        .assume_offset(offset)
-        .unix_timestamp())
+    rfc3339_to_unix(value)
+        .map_err(|error| SyncError::Square(format!("invalid Square timestamp {value:?}: {error}")))
 }
 
 fn parse_square_date(value: &str) -> SyncResult<i64> {
-    Ok(PrimitiveDateTime::new(parse_date(value)?, Time::MIDNIGHT)
-        .assume_offset(UtcOffset::UTC)
-        .unix_timestamp())
-}
-
-fn parse_date(value: &str) -> SyncResult<Date> {
-    let mut parts = value.split('-');
-    let year = parts
-        .next()
-        .and_then(|part| part.parse::<i32>().ok())
+    let date = parse_iso_date(value)
         .ok_or_else(|| SyncError::Square(format!("invalid Square date {value:?}")))?;
-    let month = parts
-        .next()
-        .and_then(|part| part.parse::<u8>().ok())
-        .and_then(|month| Month::try_from(month).ok())
-        .ok_or_else(|| SyncError::Square(format!("invalid Square date {value:?}")))?;
-    let day = parts
-        .next()
-        .and_then(|part| part.parse::<u8>().ok())
-        .ok_or_else(|| SyncError::Square(format!("invalid Square date {value:?}")))?;
-    if parts.next().is_some() {
-        return Err(SyncError::Square(format!("invalid Square date {value:?}")));
-    }
-    Date::from_calendar_date(year, month, day)
-        .map_err(|_| SyncError::Square(format!("invalid Square date {value:?}")))
+    Ok(date_to_unix_utc_midnight(date))
 }
 
-fn parse_time_offset<'a>(value: &'a str, original: &str) -> SyncResult<(&'a str, UtcOffset)> {
-    if let Some(time) = value.strip_suffix('Z') {
-        return Ok((time, UtcOffset::UTC));
-    }
-    let offset_index = value
-        .char_indices()
-        .skip(1)
-        .find_map(|(index, ch)| (ch == '+' || ch == '-').then_some(index))
-        .ok_or_else(|| SyncError::Square(format!("invalid Square timestamp {original:?}")))?;
-    let (time, offset) = value.split_at(offset_index);
-    let sign = if offset.starts_with('-') { -1 } else { 1 };
-    let mut parts = offset[1..].split(':');
-    let hours = parts
-        .next()
-        .and_then(|part| part.parse::<i8>().ok())
-        .ok_or_else(|| SyncError::Square(format!("invalid Square timestamp {original:?}")))?;
-    let minutes = parts
-        .next()
-        .and_then(|part| part.parse::<i8>().ok())
-        .ok_or_else(|| SyncError::Square(format!("invalid Square timestamp {original:?}")))?;
-    if parts.next().is_some() {
-        return Err(SyncError::Square(format!(
-            "invalid Square timestamp {original:?}"
-        )));
-    }
-    let offset = UtcOffset::from_hms(sign * hours, sign * minutes, 0)
-        .map_err(|_| SyncError::Square(format!("invalid Square timestamp {original:?}")))?;
-    Ok((time, offset))
-}
-
-fn parse_time(value: &str, original: &str) -> SyncResult<Time> {
-    let time = value.split_once('.').map(|(time, _)| time).unwrap_or(value);
-    let mut parts = time.split(':');
-    let hour = parts
-        .next()
-        .and_then(|part| part.parse::<u8>().ok())
-        .ok_or_else(|| SyncError::Square(format!("invalid Square timestamp {original:?}")))?;
-    let minute = parts
-        .next()
-        .and_then(|part| part.parse::<u8>().ok())
-        .ok_or_else(|| SyncError::Square(format!("invalid Square timestamp {original:?}")))?;
-    let second = parts
-        .next()
-        .and_then(|part| part.parse::<u8>().ok())
-        .ok_or_else(|| SyncError::Square(format!("invalid Square timestamp {original:?}")))?;
-    if parts.next().is_some() {
-        return Err(SyncError::Square(format!(
-            "invalid Square timestamp {original:?}"
-        )));
-    }
-    Time::from_hms(hour, minute, second)
-        .map_err(|_| SyncError::Square(format!("invalid Square timestamp {original:?}")))
-}
-
-fn format_square_time(seconds: i64) -> String {
-    let datetime =
-        OffsetDateTime::from_unix_timestamp(seconds).unwrap_or(OffsetDateTime::UNIX_EPOCH);
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        datetime.year(),
-        u8::from(datetime.month()),
-        datetime.day(),
-        datetime.hour(),
-        datetime.minute(),
-        datetime.second()
-    )
+fn format_square_time(seconds: i64) -> SyncResult<String> {
+    unix_to_rfc3339(seconds)
+        .ok_or_else(|| SyncError::Square(format!("invalid sync timestamp {seconds}")))
 }
 
 fn square_amount_to_thousandths(amount: i64, currency: &str) -> i64 {
@@ -1303,7 +1208,7 @@ mod tests {
     const DOLLARS_75: i64 = 75_000;
 
     fn day(value: &str) -> Date {
-        parse_date(value).expect("date")
+        parse_iso_date(value).expect("date")
     }
 
     fn subscription(value: Value) -> SquareSubscription {
@@ -1354,6 +1259,20 @@ mod tests {
     /// into before handing it to the plan resolver.
     fn at(value: &str) -> Option<i64> {
         Some(parse_square_date(value).expect("date"))
+    }
+
+    #[test]
+    fn timestamps_are_read_at_their_offset() {
+        let utc = parse_square_timestamp(Some("2026-01-15T12:00:00.123Z")).expect("utc");
+        let pacific = parse_square_timestamp(Some("2026-01-15T04:00:00-08:00")).expect("offset");
+        assert_eq!(utc, pacific);
+        assert_eq!(at("2026-01-15"), Some(utc - 12 * 3600));
+        assert!(parse_square_timestamp(Some("2026-01-15")).is_err());
+        assert!(parse_square_timestamp(None).is_err());
+        assert_eq!(
+            format_square_time(utc - 12 * 3600).expect("in range"),
+            "2026-01-15T00:00:00Z"
+        );
     }
 
     #[test]

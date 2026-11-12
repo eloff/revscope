@@ -7,7 +7,7 @@ use reqwest::StatusCode;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use time::{Date, Month, OffsetDateTime, UtcOffset};
+use time::{Date, OffsetDateTime, UtcOffset};
 use url::Url;
 
 use super::google_auth::{self, GOOGLE_TOKEN_URL, GoogleToken, GoogleTokenError};
@@ -19,7 +19,7 @@ use crate::db::{
 };
 use crate::server_context::ServerContext;
 use crate::untrusted_keys::UntrustedKeyMap;
-use crate::util::unix_seconds;
+use crate::util::{date_to_unix_utc_midnight, parse_iso_date, unix_seconds};
 
 const GSC_FULL_SYNC_INTERVAL_SECS: i64 = 24 * 60 * 60;
 const GSC_ROW_LIMIT: i32 = 25_000;
@@ -581,6 +581,8 @@ fn write_day_in_transaction(
     snapshot: GscDaySnapshot,
     counts: &mut SyncCounts,
 ) -> SyncResult<()> {
+    // Stored as the UTC midnight of the report day, matching the `date` columns
+    // the dashboard queries.
     let day = date_to_unix_utc_midnight(date);
     let mut query_ids = UntrustedKeyMap::default();
     write_daily_rows(conn, day, snapshot.daily, &mut query_ids, counts)?;
@@ -817,23 +819,6 @@ fn gsc_report_date(unix_seconds: i64) -> SyncResult<Date> {
         .map_err(|error| SyncError::Gsc(error.to_string()))?
         .to_offset(offset)
         .date())
-}
-
-fn parse_iso_date(value: &str) -> Option<Date> {
-    let mut parts = value.split('-');
-    let year = parts.next()?.parse::<i32>().ok()?;
-    let month = Month::try_from(parts.next()?.parse::<u8>().ok()?).ok()?;
-    let day = parts.next()?.parse::<u8>().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Date::from_calendar_date(year, month, day).ok()
-}
-
-/// Report dates are stored as the UTC midnight of the calendar day, matching the
-/// `date` columns the dashboard queries.
-fn date_to_unix_utc_midnight(date: Date) -> i64 {
-    date.midnight().assume_utc().unix_timestamp()
 }
 
 fn format_date(date: Date) -> String {
@@ -1107,7 +1092,8 @@ mod tests {
     }
 
     fn date(year: i32, month: u8, day: u8) -> Date {
-        Date::from_calendar_date(year, Month::try_from(month).expect("month"), day).expect("date")
+        Date::from_calendar_date(year, time::Month::try_from(month).expect("month"), day)
+            .expect("date")
     }
 
     fn aggregate(impressions: i64, clicks: i64, position: f64) -> DailyAggregate {
@@ -1173,19 +1159,6 @@ mod tests {
             gsc_page_path("https://Example.com/docs?q=1", "sc-domain:example.com").expect("page");
         assert_eq!(page.hostname, "example.com");
         assert_eq!(page.path, "/docs");
-    }
-
-    #[test]
-    fn converts_report_date_to_unix_midnight() {
-        assert_eq!(date_to_unix_utc_midnight(date(1970, 1, 2)), 86_400);
-    }
-
-    #[test]
-    fn parses_stored_cursor_date() {
-        assert_eq!(parse_iso_date("2026-08-11"), Some(date(2026, 8, 11)));
-        assert_eq!(parse_iso_date("2026-08-11-01"), None);
-        assert_eq!(parse_iso_date("2026-13-11"), None);
-        assert_eq!(parse_iso_date(""), None);
     }
 
     #[test]

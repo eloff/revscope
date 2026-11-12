@@ -1,5 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use time::{Date, Month};
+
 /// Block on a future from inside a blocking thread. Handlers run under
 /// `tokio::task::spawn_blocking`, which keeps us in the runtime context so we
 /// can drive postgres async helpers without making the caller itself async.
@@ -79,6 +81,24 @@ pub(crate) fn unix_to_rfc3339(unix: i64) -> Option<String> {
 pub(crate) fn rfc3339_to_unix(value: &str) -> Result<i64, time::error::Parse> {
     time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
         .map(|datetime| datetime.unix_timestamp())
+}
+
+/// Parses a `YYYY-MM-DD` calendar date. Field widths are not checked, so
+/// `2026-8-1` is read as 2026-08-01.
+pub(crate) fn parse_iso_date(value: &str) -> Option<Date> {
+    let mut parts = value.split('-');
+    let year = parts.next()?.parse::<i32>().ok()?;
+    let month = Month::try_from(parts.next()?.parse::<u8>().ok()?).ok()?;
+    let day = parts.next()?.parse::<u8>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Date::from_calendar_date(year, month, day).ok()
+}
+
+/// Unix seconds at the UTC midnight that starts `date`.
+pub(crate) fn date_to_unix_utc_midnight(date: Date) -> i64 {
+    date.midnight().assume_utc().unix_timestamp()
 }
 
 /// Public origin of the marketing site and dashboard, used to build links the
@@ -214,6 +234,21 @@ mod tests {
         assert_eq!(formatted, "2026-08-29T10:40:00Z");
         assert_eq!(rfc3339_to_unix(&formatted).ok(), Some(unix));
         assert_eq!(unix_to_rfc3339(i64::MAX), None);
+    }
+
+    #[test]
+    fn parses_iso_dates() {
+        let date = Date::from_calendar_date(2026, Month::August, 11).expect("date");
+        assert_eq!(parse_iso_date("2026-08-11"), Some(date));
+        assert_eq!(parse_iso_date("2026-08-11-01"), None);
+        assert_eq!(parse_iso_date("2026-13-11"), None);
+        assert_eq!(parse_iso_date(""), None);
+    }
+
+    #[test]
+    fn converts_a_date_to_its_utc_midnight() {
+        let date = Date::from_calendar_date(1970, Month::January, 2).expect("date");
+        assert_eq!(date_to_unix_utc_midnight(date), 86_400);
     }
 
     #[test]
