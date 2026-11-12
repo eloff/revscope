@@ -21,6 +21,7 @@ use crate::mcp::authorize::AuthorizationGrant;
 use crate::mcp::token::{McpAccount, mcp_demo_token_from_env, parse_demo_token};
 use crate::mcp::transport::{McpHttpService, build_mcp_service};
 use crate::overview::{DEMO_OVERVIEW_CACHE_ENTRIES, DemoOverviewResponseCache};
+use crate::query_slots::QuerySlots;
 use crate::rate_limit::{AuthRateLimits, PublicWriteRateLimits};
 use crate::request_slots::{PER_SESSION_SLOTS, REQUEST_SLOT_WAIT, RequestSlot, RequestSlots};
 use crate::security_headers::HstsHosts;
@@ -149,6 +150,9 @@ pub struct ServerContext {
     /// Caps concurrent API and MCP work at `available_parallelism() * 4`, and
     /// one session's API work at [`PER_SESSION_SLOTS`].
     request_slots: RequestSlots,
+    /// Caps concurrent ad-hoc SQL from query tokens, MCP and Ask AI, which the
+    /// request slots alone would let one caller monopolize.
+    pub(crate) ad_hoc_query_slots: QuerySlots,
     /// Caps open client connections, idle keep-alives included. Set from
     /// `REVSCOPE_MAX_CONNECTIONS` in [`Self::new`], default 100,000, and
     /// lowered to fit the open file limit.
@@ -244,6 +248,7 @@ impl ServerContext {
                 PER_SESSION_SLOTS,
                 REQUEST_SLOT_WAIT,
             ),
+            ad_hoc_query_slots: QuerySlots::with_default_limits(),
             connection_limit: ConnectionLimit::new(DEFAULT_MAX_CONNECTIONS),
         }
     }

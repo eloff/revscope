@@ -12,6 +12,7 @@
 //! `run_query` names its project and every name it is given is checked against
 //! the grant before anything is opened.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -28,6 +29,7 @@ use crate::projects::{
     account_project_names, fetch_project, parse_project_id_str, resolve_project,
 };
 use crate::query::{QueryError, QueryResponse};
+use crate::rate_limit::ip_key;
 use crate::server_context::ServerContext;
 
 const SERVER_INSTRUCTIONS: &str = "Read-only access to the RevScope analytics databases of one account. Call list_projects for the project names and get_schema for the tables they all share, then run_query against a named project. This server only reads. To create an account, install the tracker on a site, or connect integrations, use the revscope command line tool: https://revscope.co/docs/cli";
@@ -40,6 +42,8 @@ const SERVER_INSTRUCTIONS: &str = "Read-only access to the RevScope analytics da
 pub(crate) struct McpRequest {
     pub(crate) server_context: Arc<ServerContext>,
     pub(crate) grant: McpGrant,
+    /// Who is asking, for charging queries on the shared demo to each reader.
+    pub(crate) client_ip: Option<IpAddr>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -148,9 +152,14 @@ impl McpService {
         }): Parameters<RunQueryRequest>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let (server_context, grant) = {
+        let (server_context, grant, reader) = {
             let request = authorized_request(&context)?;
-            (request.server_context.clone(), request.grant.clone())
+            let reader = request.client_ip.map(ip_key).unwrap_or_default();
+            (
+                request.server_context.clone(),
+                request.grant.clone(),
+                reader,
+            )
         };
 
         let project = match project_name.as_deref() {
@@ -163,7 +172,14 @@ impl McpService {
 
         let project_id = project.id().to_string();
         let result = crate::task::spawn_blocking(server_context.clone(), move || {
-            crate::query::run_project_query(server_context, &project_id, &sql, limit, offset)
+            crate::query::run_project_query(
+                server_context,
+                &project_id,
+                &reader,
+                &sql,
+                limit,
+                offset,
+            )
         })
         .await
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -172,13 +188,12 @@ impl McpService {
             Ok(response) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 format_query_result(&response),
             )])),
-            // A statement the caller wrote badly comes back as tool content, not
-            // a protocol error, so the agent can read the message and fix it.
-            Err(error @ QueryError::Invalid(_)) => {
-                Ok(CallToolResult::error(vec![ContentBlock::text(
-                    error.client_message(),
-                )]))
-            }
+            // A statement the caller wrote badly, or one refused while the server
+            // is busy, comes back as tool content rather than a protocol error,
+            // so the agent can read the message and fix or retry it.
+            Err(error @ (QueryError::Invalid(_) | QueryError::Busy)) => Ok(CallToolResult::error(
+                vec![ContentBlock::text(error.client_message())],
+            )),
             Err(QueryError::Auth(error)) => Err(ErrorData::internal_error(
                 format!("the query could not be run: {error:?}"),
                 None,

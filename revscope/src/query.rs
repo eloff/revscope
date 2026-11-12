@@ -11,6 +11,13 @@
 //! cannot catch. The connection is closed afterward rather than returned to the
 //! pool, so those limits never leak onto dashboard queries.
 //!
+//! An authorizer limits the statement to reading the project's own tables and
+//! views and calling functions that reveal nothing about the server: SQLite's
+//! `pragma_*` and `dbstat` tables would otherwise expose the database's path on
+//! disk and how SQLite was built. How many statements may run at once, per
+//! project, per demo reader and across the server, is set in
+//! [`query_slots`](crate::query_slots).
+//!
 //! Execution also stops early when wall-clock time or approximate buffered
 //! response size exceeds a cap, returning whatever rows were collected with
 //! `has_more` set so the caller can paginate.
@@ -20,16 +27,20 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use fxhash::FxHashSet;
+use parking_lot::Mutex;
 use revscope_api::query::{DEFAULT_LIMIT, MAX_LIMIT, MAX_OFFSET};
 pub(crate) use revscope_api::query::{QueryRequest, QueryResponse};
 use rusqlite::ErrorCode;
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::limits::Limit;
 use rusqlite::types::ValueRef;
 use serde_json::{Number, Value};
 
 use crate::auth::AuthError;
-use crate::authorize::AuthorizedProject;
+use crate::authorize::{AuthorizedProject, is_demo_project_id};
 use crate::db::{ProjectConnection, open_project_database_read};
+use crate::query_slots::SlotOwner;
 use crate::server_context::ServerContext;
 
 const MAX_SQL_LEN: usize = 128 * 1024;
@@ -55,10 +66,24 @@ const SQLITE_LIMIT_VDBE_OP: i32 = 2_500_000;
 /// connection) is rejected before the statement is prepared.
 const ALLOWED_LEADING_KEYWORDS: [&str; 4] = ["SELECT", "WITH", "VALUES", "EXPLAIN"];
 
+/// Built-in tables a statement may read besides the project's own. These two
+/// compute only over their arguments; the rest (`pragma_*`, `dbstat`) describe
+/// the server. SQLite reports `sqlite_schema` by its old name.
+const READABLE_BUILT_IN_TABLES: [&str; 3] = ["sqlite_master", "json_each", "json_tree"];
+
+/// Functions that load code or reveal the SQLite build. Every `sqlite_*`
+/// function is denied too, since they report the build and record offsets.
+const DENIED_FUNCTIONS: [&str; 3] = ["load_extension", "fts3_tokenizer", "fts5_source_id"];
+
+/// The error for a statement that would change the database or connection.
+const READ_ONLY_MESSAGE: &str = "query must be read-only";
+
 #[derive(Debug)]
 pub(crate) enum QueryError {
     Auth(AuthError),
     Invalid(String),
+    /// The project or server already has as many statements running as it may.
+    Busy,
 }
 
 impl QueryError {
@@ -67,6 +92,7 @@ impl QueryError {
     pub(crate) fn client_message(&self) -> String {
         match self {
             Self::Invalid(message) => message.clone(),
+            Self::Busy => "too many queries are running; try again in a few seconds".to_string(),
             Self::Auth(_) => "the query could not be run".to_string(),
         }
     }
@@ -75,11 +101,13 @@ impl QueryError {
 pub(crate) fn query(
     server_context: Arc<ServerContext>,
     project: &AuthorizedProject,
+    reader: &str,
     request: QueryRequest,
 ) -> Result<QueryResponse, QueryError> {
     run_project_query(
         server_context,
         project.id(),
+        reader,
         &request.sql,
         request.limit,
         request.offset,
@@ -88,10 +116,13 @@ pub(crate) fn query(
 
 /// Validates and runs `sql` against a project database. Callers are responsible
 /// for having authorized access to `project_id`; the chat agent does so once per
-/// turn rather than once per statement the model writes.
+/// turn rather than once per statement the model writes. `reader` is a stable
+/// key for who is asking, such as a user id or client network, and is what the
+/// public demo charges slots to.
 pub(crate) fn run_project_query(
     server_context: Arc<ServerContext>,
     project_id: &str,
+    reader: &str,
     sql: &str,
     limit: Option<u32>,
     offset: Option<u32>,
@@ -100,6 +131,10 @@ pub(crate) fn run_project_query(
     validate_sql(sql)?;
     let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let offset = offset.unwrap_or(0).min(MAX_OFFSET);
+    let _slot = server_context
+        .ad_hoc_query_slots
+        .try_acquire(slot_owner(project_id, reader))
+        .ok_or(QueryError::Busy)?;
 
     let mut conn = open_project_database_read(server_context.as_ref(), project_id)
         .map_err(|error| QueryError::Auth(AuthError::Db(error.to_string())))?;
@@ -118,25 +153,103 @@ pub(crate) fn run_project_query(
     result
 }
 
+fn slot_owner(project_id: &str, reader: &str) -> SlotOwner {
+    if is_demo_project_id(project_id) {
+        SlotOwner::DemoReader(reader.to_string())
+    } else {
+        SlotOwner::Project(project_id.to_string())
+    }
+}
+
 #[derive(Clone, Copy)]
 struct QueryLimits {
     timeout: Duration,
     max_response_bytes: usize,
 }
 
-/// Clears the connection progress handler when dropped so pooled connections
-/// do not keep a request-scoped timeout callback.
-struct ClearProgressHandler<'a>(&'a ProjectConnection);
+/// Holds the authorizer, and later the progress handler, for one statement and
+/// clears both when dropped, so neither outlives the request on a pooled
+/// connection. Created before the statement is prepared and dropped after it,
+/// because SQLite reruns the authorizer if it has to prepare the statement again.
+struct AdHocHooks<'a> {
+    conn: &'a ProjectConnection,
+    /// The authorizer's first refusal, as the error message to return.
+    denied: Arc<Mutex<Option<String>>>,
+}
 
-impl Drop for ClearProgressHandler<'_> {
+impl<'a> AdHocHooks<'a> {
+    fn install(conn: &'a ProjectConnection) -> Result<Self, rusqlite::Error> {
+        let readable = readable_tables(conn)?;
+        let denied = Arc::new(Mutex::new(None));
+        let record = denied.clone();
+        conn.authorizer(Some(move |context: AuthContext<'_>| {
+            match refusal(&readable, &context) {
+                None => Authorization::Allow,
+                Some(reason) => {
+                    record.lock().get_or_insert(reason);
+                    Authorization::Deny
+                }
+            }
+        }))?;
+        Ok(Self { conn, denied })
+    }
+
+    fn denied(&self) -> Option<String> {
+        self.denied.lock().clone()
+    }
+}
+
+impl Drop for AdHocHooks<'_> {
     fn drop(&mut self) {
-        let _ = self.0.progress_handler(0, None::<fn() -> bool>);
+        let _ = self.conn.progress_handler(0, None::<fn() -> bool>);
+        let _ = self
+            .conn
+            .authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+    }
+}
+
+/// Lowercased names of the project's tables and views and of
+/// [`READABLE_BUILT_IN_TABLES`]. SQLite reports table names as the schema spells
+/// them, whatever case the statement used.
+fn readable_tables(conn: &ProjectConnection) -> Result<FxHashSet<String>, rusqlite::Error> {
+    let mut statement =
+        conn.prepare("SELECT name FROM main.sqlite_schema WHERE type IN ('table', 'view')")?;
+    let mut tables = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .map(|name| name.map(|name| name.to_ascii_lowercase()))
+        .collect::<Result<FxHashSet<_>, _>>()?;
+    tables.extend(READABLE_BUILT_IN_TABLES.map(str::to_string));
+    Ok(tables)
+}
+
+/// The error message for why the authorizer refuses this step of the
+/// statement, or `None` to allow it. Anything other than selecting, recursing,
+/// reading a readable table and calling an allowed function is refused, so
+/// nothing new SQLite adds slips by.
+fn refusal(readable: &FxHashSet<String>, context: &AuthContext<'_>) -> Option<String> {
+    match context.action {
+        AuthAction::Select | AuthAction::Recursive => None,
+        // A read that names no column, as in `count(*)`, has no database name.
+        AuthAction::Read { table_name, .. } => {
+            let in_main = matches!(context.database_name, None | Some("main"));
+            (!in_main || !readable.contains(&table_name.to_ascii_lowercase()))
+                .then(|| format!("queries may not read {table_name}"))
+        }
+        AuthAction::Function { function_name } => {
+            let name = function_name.to_ascii_lowercase();
+            (name.starts_with("sqlite_") || DENIED_FUNCTIONS.contains(&name.as_str()))
+                .then(|| format!("queries may not call {function_name}()"))
+        }
+        // Everything else writes, or changes the connection or transaction.
+        _ => Some(READ_ONLY_MESSAGE.to_string()),
     }
 }
 
 /// Tighten construct limits that catch prepare-time memory/stack blow-ups the
 /// progress handler cannot. `ATTACH` is already denied from connection harden.
+/// No worker threads keeps a sort to one core, the one its slot accounts for.
 fn apply_ad_hoc_sqlite_limits(conn: &ProjectConnection) -> Result<(), rusqlite::Error> {
+    conn.set_limit(Limit::SQLITE_LIMIT_WORKER_THREADS, 0)?;
     conn.set_limit(Limit::SQLITE_LIMIT_LENGTH, SQLITE_LIMIT_LENGTH)?;
     conn.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, SQLITE_LIMIT_SQL_LENGTH)?;
     conn.set_limit(Limit::SQLITE_LIMIT_COLUMN, SQLITE_LIMIT_COLUMN)?;
@@ -183,14 +296,16 @@ fn run_query(
     limits: QueryLimits,
 ) -> Result<QueryResponse, QueryError> {
     apply_ad_hoc_sqlite_limits(conn).map_err(execution_error)?;
+    let hooks = AdHocHooks::install(conn).map_err(execution_error)?;
 
     // Deliberately not `prepare_cached`: the statement cache is sized for the
     // fixed dashboard queries and ad-hoc SQL would evict them.
-    let mut statement = conn
-        .prepare(sql)
-        .map_err(|error| QueryError::Invalid(format!("invalid query: {error}")))?;
+    let mut statement = conn.prepare(sql).map_err(|error| match hooks.denied() {
+        Some(refusal) => QueryError::Invalid(refusal),
+        None => QueryError::Invalid(format!("invalid query: {error}")),
+    })?;
     if !statement.readonly() {
-        return Err(QueryError::Invalid("query must be read-only".to_string()));
+        return Err(QueryError::Invalid(READ_ONLY_MESSAGE.to_string()));
     }
     let columns: Vec<String> = statement
         .column_names()
@@ -205,7 +320,6 @@ fn run_query(
         Some(move || Instant::now() >= deadline),
     )
     .map_err(execution_error)?;
-    let _clear_progress = ClearProgressHandler(conn);
 
     let mut rows = statement.query([]).map_err(map_start_error)?;
     let mut skipped = 0_u32;
@@ -427,6 +541,8 @@ fn skip_bracket_identifier(bytes: &[u8], index: usize) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::db::project::in_memory_test_connection;
+    use crate::download_db::DEMO_PROJECT_ID;
+    use crate::query_slots::QuerySlot;
 
     fn default_limits() -> QueryLimits {
         QueryLimits {
@@ -455,7 +571,7 @@ mod tests {
     fn invalid_message(error: QueryError) -> String {
         match error {
             QueryError::Invalid(message) => message,
-            QueryError::Auth(error) => panic!("expected invalid query, got {error:?}"),
+            other => panic!("expected invalid query, got {other:?}"),
         }
     }
 
@@ -660,6 +776,11 @@ mod tests {
             SQLITE_LIMIT_COMPOUND_SELECT
         );
         assert_eq!(
+            conn.limit(Limit::SQLITE_LIMIT_WORKER_THREADS)
+                .expect("read worker threads limit"),
+            0
+        );
+        assert_eq!(
             conn.limit(Limit::SQLITE_LIMIT_VDBE_OP)
                 .expect("read vdbe op limit"),
             SQLITE_LIMIT_VDBE_OP
@@ -711,6 +832,125 @@ mod tests {
             invalid_message(error),
             format!("query timed out after {} seconds", QUERY_TIMEOUT.as_secs())
         );
+    }
+
+    #[test]
+    fn refuses_built_in_tables_that_describe_the_server() {
+        let conn = seeded_connection();
+        for (sql, refused) in [
+            (
+                "SELECT * FROM pragma_database_list",
+                "read pragma_database_list",
+            ),
+            (
+                "SELECT * FROM pragma_compile_options",
+                "read pragma_compile_options",
+            ),
+            ("SELECT * FROM dbstat", "read dbstat"),
+            (
+                "SELECT * FROM temp.sqlite_schema",
+                "read sqlite_temp_master",
+            ),
+            ("SELECT sqlite_version()", "call sqlite_version()"),
+            ("SELECT SQLITE_SOURCE_ID()", "call sqlite_source_id()"),
+            ("SELECT load_extension('x')", "call load_extension()"),
+            ("SELECT fts5_source_id()", "call fts5_source_id()"),
+            ("SELECT fts3_tokenizer('simple')", "call fts3_tokenizer()"),
+        ] {
+            let error = run_query(&conn, sql, 10, 0, default_limits()).unwrap_err();
+            assert_eq!(
+                invalid_message(error),
+                format!("queries may not {refused}"),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn allows_the_project_tables_views_and_ordinary_sql() {
+        let conn = seeded_connection();
+        conn.execute("CREATE VIEW names AS SELECT lower(name) AS name FROM t", [])
+            .expect("create view");
+        for sql in [
+            "SELECT upper(name), COUNT(*) FROM T GROUP BY 1",
+            "SELECT name FROM names",
+            "SELECT id, row_number() OVER (ORDER BY id) FROM t",
+            "SELECT count(*) FROM t",
+            "SELECT 1 FROM t",
+            "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 3) \
+             SELECT n FROM r",
+            "SELECT value FROM json_each('[1, 2]')",
+            "SELECT name FROM sqlite_schema",
+            "EXPLAIN QUERY PLAN SELECT id FROM t",
+            "VALUES (1)",
+        ] {
+            run_query(&conn, sql, 10, 0, default_limits())
+                .unwrap_or_else(|error| panic!("{sql}: {}", error.client_message()));
+        }
+    }
+
+    #[test]
+    fn clears_the_authorizer_after_the_statement() {
+        let conn = seeded_connection();
+        run_query(&conn, "SELECT id FROM t", 10, 0, default_limits()).expect("run query");
+        conn.prepare("SELECT * FROM pragma_database_list")
+            .expect("later statements on the connection are not restricted");
+    }
+
+    #[test]
+    fn refuses_a_project_already_running_its_share_of_statements() {
+        let server_context = Arc::new(ServerContext::new_in_memory("query-busy"));
+        let _held = hold_every_slot(&server_context, SlotOwner::Project("2".to_string()));
+        let error = run_project_query(
+            server_context.clone(),
+            "2",
+            "someone else",
+            "SELECT 1",
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(error, QueryError::Busy), "{error:?}");
+    }
+
+    #[test]
+    fn charges_the_demo_to_each_reader() {
+        let server_context = Arc::new(ServerContext::new_in_memory("query-demo-busy"));
+        let _held = hold_every_slot(
+            &server_context,
+            SlotOwner::DemoReader("203.0.113.1".to_string()),
+        );
+        let refused = run_project_query(
+            server_context.clone(),
+            DEMO_PROJECT_ID,
+            "203.0.113.1",
+            "SELECT 1",
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(refused, QueryError::Busy), "{refused:?}");
+        // The demo database isn't loaded in this context, so the other reader
+        // gets past its slot and fails to open it instead.
+        let other = run_project_query(
+            server_context.clone(),
+            DEMO_PROJECT_ID,
+            "203.0.113.2",
+            "SELECT 1",
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(other, QueryError::Auth(_)), "{other:?}");
+    }
+
+    /// Takes slots for `owner` until it is refused one.
+    fn hold_every_slot(server_context: &ServerContext, owner: SlotOwner) -> Vec<QuerySlot<'_>> {
+        let held: Vec<_> =
+            std::iter::from_fn(|| server_context.ad_hoc_query_slots.try_acquire(owner.clone()))
+                .collect();
+        assert!(!held.is_empty(), "the owner had a slot to take");
+        held
     }
 
     #[test]

@@ -67,6 +67,7 @@ mod project_db_sweep;
 mod projects;
 mod query;
 mod query_params;
+mod query_slots;
 mod query_token;
 mod rate_limit;
 mod referrer;

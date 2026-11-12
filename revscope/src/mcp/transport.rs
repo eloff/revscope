@@ -11,6 +11,7 @@
 //! async, and a streaming answer outlives the call that produced it. The blocking
 //! work inside the tools is handed to `spawn_blocking` individually instead.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -60,6 +61,7 @@ pub(crate) fn build_mcp_service() -> McpHttpService {
 
 pub(crate) async fn handle_mcp_request(
     raw_request: &[u8],
+    client_ip: Option<IpAddr>,
     server_context: Arc<ServerContext>,
 ) -> Response {
     let Some(parsed) = parse_request_head(raw_request) else {
@@ -87,6 +89,7 @@ pub(crate) async fn handle_mcp_request(
     let grant = McpRequest {
         server_context: server_context.clone(),
         grant,
+        client_ip,
     };
     let Some(request) =
         build_http_request(&parsed, request_body(raw_request).unwrap_or(&[]), grant)
@@ -225,6 +228,7 @@ mod tests {
         McpRequest {
             server_context: Arc::new(ServerContext::new_in_memory("mcp-transport-test")),
             grant: token::McpGrant::Account(token::McpAccount::for_tests(TEST_ACCOUNT)),
+            client_ip: None,
         }
     }
 
@@ -289,7 +293,7 @@ mod tests {
         let raw = format!(
             "POST /v2/mcp HTTP/1.1\r\nHost: api.revscope.co\r\nAuthorization: Bearer rsm_{secret}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}"
         );
-        let response = handle_mcp_request(raw.as_bytes(), context).await;
+        let response = handle_mcp_request(raw.as_bytes(), None, context).await;
         let headers = String::from_utf8(response.headers).expect("utf8");
         assert!(
             headers.starts_with("HTTP/1.1 503 Service Unavailable"),

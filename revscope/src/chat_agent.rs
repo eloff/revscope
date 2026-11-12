@@ -20,7 +20,8 @@ use tokio::sync::mpsc;
 use crate::auth::AuthError;
 use crate::chat_config::{ChatConfig, REQUEST_TIMEOUT_SECONDS};
 use crate::chat_store::{self, ChatStorage, NewMessage};
-use crate::query::{self, QueryResponse};
+use crate::query::{self, QueryError, QueryResponse};
+use crate::rate_limit::ip_key;
 use crate::schema;
 use crate::server_context::ServerContext;
 
@@ -102,6 +103,9 @@ pub(crate) enum TurnError {
     Storage(AuthError),
     /// The model kept calling tools past the budget.
     StepBudget,
+    /// A query was refused because too many were running. The turn ends there:
+    /// nothing waits between steps, so a retry would only be refused again.
+    Busy,
 }
 
 impl TurnError {
@@ -114,6 +118,9 @@ impl TurnError {
             Self::StepBudget => format!(
                 "I could not answer that within {MAX_STEPS} queries. Try narrowing the question."
             ),
+            Self::Busy => {
+                "Too many queries are running right now. Ask again in a minute.".to_string()
+            }
         }
     }
 }
@@ -124,6 +131,7 @@ impl std::fmt::Display for TurnError {
             Self::Gateway(detail) => write!(f, "gateway: {detail}"),
             Self::Storage(error) => write!(f, "storage: {error:?}"),
             Self::StepBudget => write!(f, "exceeded {MAX_STEPS} tool calls"),
+            Self::Busy => write!(f, "query refused while the server was busy"),
         }
     }
 }
@@ -155,7 +163,13 @@ async fn drive_turn(turn: &ChatTurn, events: &EventSink) -> Result<(), TurnError
 
         messages.push(assistant_tool_call_message(&step.text, &step.tool_calls));
         for call in &step.tool_calls {
-            let outcome = execute_tool_call(turn, call, events).await?;
+            let outcome = match execute_tool_call(turn, call, events).await {
+                Err(TurnError::Busy) => {
+                    save_partial_answer(turn, &answer, &usage).await?;
+                    return Err(TurnError::Busy);
+                }
+                outcome => outcome?,
+            };
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call.id,
@@ -164,12 +178,23 @@ async fn drive_turn(turn: &ChatTurn, events: &EventSink) -> Result<(), TurnError
         }
     }
 
-    // Save whatever prose the model managed before it ran out of steps, so the
-    // transcript matches what the user saw.
-    if !answer.is_empty() {
-        finish_turn(turn, &answer, &usage).await?;
-    }
+    save_partial_answer(turn, &answer, &usage).await?;
     Err(TurnError::StepBudget)
+}
+
+/// Saves whatever prose the model managed before the turn was cut short, so
+/// the transcript matches what the user saw, and meters the turn even when
+/// there was none, since its completions were still paid for.
+async fn save_partial_answer(
+    turn: &ChatTurn,
+    answer: &str,
+    usage: &Usage,
+) -> Result<(), TurnError> {
+    if answer.is_empty() {
+        record_turn_usage(turn, usage).await;
+        return Ok(());
+    }
+    finish_turn(turn, answer, usage).await
 }
 
 /// Runs the model's SQL, streams the table to the browser, records it in the
@@ -197,10 +222,14 @@ async fn execute_tool_call(
 
     let server_context = turn.server_context.clone();
     let project_id = turn.project_id.clone();
+    let reader = match &turn.billing {
+        ChatBilling::Account { user_id, .. } => user_id.clone(),
+        ChatBilling::DemoIp { client_ip } => ip_key(*client_ip),
+    };
     let sql = arguments.sql.clone();
     let (limit, offset) = (arguments.limit, arguments.offset);
     let result = crate::task::spawn_blocking(turn.server_context.clone(), move || {
-        query::run_project_query(server_context, &project_id, &sql, limit, offset)
+        query::run_project_query(server_context, &project_id, &reader, &sql, limit, offset)
     })
     .await
     .map_err(|error| TurnError::Gateway(format!("query task failed: {error}")))?;
@@ -225,6 +254,9 @@ async fn execute_tool_call(
                 json!({ "id": call.id, "title": title, "sql": arguments.sql, "error": message });
             events.send("tool_result", payload.clone()).await;
             store_tool_message(turn, &arguments.sql, &payload).await?;
+            if matches!(error, QueryError::Busy) {
+                return Err(TurnError::Busy);
+            }
             // Handed back rather than raised: the model can usually fix its SQL.
             Ok(format!("The query failed: {message}"))
         }
@@ -278,7 +310,12 @@ async fn finish_turn(turn: &ChatTurn, answer: &str, usage: &Usage) -> Result<(),
     .map_err(|error| TurnError::Gateway(format!("storage task failed: {error}")))?
     .map_err(TurnError::Storage)?;
 
-    // The answer is already delivered, so metering failures are logged only.
+    record_turn_usage(turn, usage).await;
+    Ok(())
+}
+
+/// The answer is already delivered, so metering failures are logged only.
+async fn record_turn_usage(turn: &ChatTurn, usage: &Usage) {
     let usage_result = match &turn.billing {
         ChatBilling::Account {
             account_id,
@@ -312,7 +349,6 @@ async fn finish_turn(turn: &ChatTurn, answer: &str, usage: &Usage) -> Result<(),
             turn.project_id
         );
     }
-    Ok(())
 }
 
 /// System prompt, schema, and the stored conversation so far.

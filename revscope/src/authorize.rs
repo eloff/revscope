@@ -399,7 +399,7 @@ pub(crate) fn authorize_mcp_project(
     AuthorizedProject::from_parsed(&project.id_string())
 }
 
-fn is_demo_project_id(project_id: &str) -> bool {
+pub(crate) fn is_demo_project_id(project_id: &str) -> bool {
     parse_project_id(project_id).ok() == parse_project_id(DEMO_PROJECT_ID).ok()
 }
 

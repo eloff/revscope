@@ -607,8 +607,12 @@ async fn serve_requests<S: AsyncRead + AsyncWrite + Unpin>(
                 request_body(&raw_request).unwrap_or(&[]).to_vec()
             };
             let mut response = if is_mcp {
-                crate::mcp::transport::handle_mcp_request(&raw_request, server_context.clone())
-                    .await
+                crate::mcp::transport::handle_mcp_request(
+                    &raw_request,
+                    client_ip,
+                    server_context.clone(),
+                )
+                .await
             } else if let Some(route) = api_route {
                 let session_key = request_session_key(parsed.cookie, parsed.authorization);
                 match server_context.acquire_request_slot(session_key).await {

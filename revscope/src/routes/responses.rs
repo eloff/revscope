@@ -43,7 +43,7 @@ pub(super) fn too_many_invites(retry_after: Duration) -> Response {
     )
 }
 
-fn rate_limited(retry_after: Duration, message: &str) -> Response {
+pub(super) fn rate_limited(retry_after: Duration, message: &str) -> Response {
     // Rounded up: a client that waits exactly this long must not be refused.
     let seconds = retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0);
     let body = serde_json::to_string(&ErrorBody::new(ErrorCode::RateLimited, message))
