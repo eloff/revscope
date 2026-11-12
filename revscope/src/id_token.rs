@@ -25,6 +25,39 @@ pub(crate) struct Provider {
     pub(crate) unverified_email: &'static str,
     pub(crate) no_account: &'static str,
     pub(crate) already_linked: &'static str,
+    /// The address matches a user, but the provider doesn't host it, so it can't vouch for it.
+    pub(crate) email_not_hosted: &'static str,
+    /// Whether the provider hosts this address, given the token's `hd` claim.
+    /// A provider marks an address verified once, when it is added. Only for an
+    /// address it hosts does that still say who reads it, so only those link to
+    /// an existing user: a former employee's personal account on a work address
+    /// would otherwise join the company's user.
+    hosts_email: fn(email: &str, hosted_domain: Option<&str>) -> bool,
+}
+
+fn email_domain_is(email: &str, domains: &[&str]) -> bool {
+    email
+        .rsplit_once('@')
+        .is_some_and(|(_, domain)| domains.iter().any(|d| domain.eq_ignore_ascii_case(d)))
+}
+
+/// Google's docs: authoritative for Gmail, and for Workspace accounts, which carry `hd`.
+fn google_hosts_email(email: &str, hosted_domain: Option<&str>) -> bool {
+    hosted_domain.is_some_and(|hd| !hd.trim().is_empty())
+        || email_domain_is(email, &["gmail.com", "googlemail.com"])
+}
+
+/// Apple IDs can use any address; Apple hosts only its own and its relay's.
+fn apple_hosts_email(email: &str, _hosted_domain: Option<&str>) -> bool {
+    email_domain_is(
+        email,
+        &[
+            "icloud.com",
+            "me.com",
+            "mac.com",
+            "privaterelay.appleid.com",
+        ],
+    )
 }
 
 pub(crate) const GOOGLE: Provider = Provider {
@@ -37,6 +70,9 @@ pub(crate) const GOOGLE: Provider = Provider {
     unverified_email: "Google hasn't verified your email address yet.",
     no_account: "No RevScope account uses this Google account yet. Sign up first.",
     already_linked: "This Google account already has a RevScope account. Log in instead.",
+    email_not_hosted: "An account with this email already exists. Google can only vouch for Gmail \
+         and Google Workspace addresses, so log in the way you signed up, or use Forgot password.",
+    hosts_email: google_hosts_email,
 };
 
 pub(crate) const APPLE: Provider = Provider {
@@ -49,6 +85,9 @@ pub(crate) const APPLE: Provider = Provider {
     unverified_email: "Apple hasn't verified your email address yet.",
     no_account: "No RevScope account uses this Apple ID yet. Sign up first.",
     already_linked: "This Apple ID already has a RevScope account. Log in instead.",
+    email_not_hosted: "An account with this email already exists. Apple can only vouch for iCloud \
+         addresses, so log in the way you signed up, or use Forgot password.",
+    hosts_email: apple_hosts_email,
 };
 
 /// Google rotates keys every few days and says how long to cache them; this is the fallback. Apple
@@ -80,6 +119,8 @@ pub(crate) struct Identity {
     pub(crate) subject: String,
     pub(crate) email: Option<String>,
     pub(crate) email_verified: bool,
+    /// Verified, and at an address the provider hosts, so it still vouches for who reads it.
+    pub(crate) provider_hosts_email: bool,
     /// Google puts it in the token; Apple only hands it to the browser, on the first sign-in.
     pub(crate) name: Option<String>,
 }
@@ -114,6 +155,9 @@ struct Claims {
     email_verified: bool,
     #[serde(default)]
     name: Option<String>,
+    /// Google's Workspace domain.
+    #[serde(default)]
+    hd: Option<String>,
 }
 
 /// Apple has sent `email_verified` both as a JSON boolean and as the string `"true"`.
@@ -274,10 +318,16 @@ fn identity(
     if claims.sub.is_empty() {
         return Err(SignInError::Refused("empty subject".into()));
     }
+    let email = claims.email.filter(|email| !email.trim().is_empty());
+    let provider_hosts_email = claims.email_verified
+        && email
+            .as_deref()
+            .is_some_and(|email| (provider.hosts_email)(email.trim(), claims.hd.as_deref()));
     Ok(Identity {
         subject: claims.sub,
-        email: claims.email.filter(|email| !email.trim().is_empty()),
+        email,
         email_verified: claims.email_verified,
+        provider_hosts_email,
         name: claims.name.filter(|name| !name.trim().is_empty()),
     })
 }
@@ -320,6 +370,41 @@ mod tests {
 
     fn public_key() -> DecodingKey {
         DecodingKey::from_rsa_pem(PUBLIC_KEY.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn a_provider_vouches_only_for_verified_addresses_it_hosts() {
+        let key = public_key();
+        let google = |email: &str, hd: Option<&str>, verified: bool| {
+            let mut claims = claims("web-client", "https://accounts.google.com", 600);
+            claims["email"] = json!(email);
+            claims["email_verified"] = json!(verified);
+            if let Some(hd) = hd {
+                claims["hd"] = json!(hd);
+            }
+            identity(&token(claims), &key, &GOOGLE, "web-client")
+                .unwrap()
+                .provider_hosts_email
+        };
+        assert!(google("ada@Gmail.com", None, true));
+        assert!(google("ada@googlemail.com", None, true));
+        assert!(google("ada@corp.example", Some("corp.example"), true));
+        assert!(!google("ada@corp.example", None, true));
+        assert!(!google("ada@corp.example", Some(" "), true));
+        assert!(!google("ada@gmail.com", None, false));
+        assert!(!google("ada@gmail.com.evil.example", None, true));
+
+        let apple = |email: &str| {
+            let mut claims = claims("co.revscope.web", "https://appleid.apple.com", 600);
+            claims["email"] = json!(email);
+            claims["hd"] = json!("corp.example");
+            identity(&token(claims), &key, &APPLE, "co.revscope.web")
+                .unwrap()
+                .provider_hosts_email
+        };
+        assert!(apple("ada@icloud.com"));
+        assert!(apple("x1@privaterelay.appleid.com"));
+        assert!(!apple("ada@corp.example"), "Apple's tokens carry no hd");
     }
 
     #[test]

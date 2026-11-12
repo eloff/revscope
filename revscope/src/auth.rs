@@ -41,6 +41,8 @@ pub(crate) enum NewLogin<'a> {
     Identity {
         provider: &'static crate::id_token::Provider,
         subject: &'a str,
+        /// See [`crate::id_token::Identity::provider_hosts_email`].
+        provider_hosts_email: bool,
     },
 }
 
@@ -276,7 +278,11 @@ pub(crate) async fn insert_new_user(
             )
             .await
         }
-        NewLogin::Identity { provider, subject } => {
+        NewLogin::Identity {
+            provider,
+            subject,
+            provider_hosts_email,
+        } => {
             let user_id = insert_user(conn, account_id, user.name, &user.email, None, true).await?;
             let linked = link_identity(conn, provider.id, subject, &user_id).await;
             if !matches!(linked, Ok(true)) {
@@ -288,9 +294,29 @@ pub(crate) async fn insert_new_user(
                 linked?;
                 return Err(AuthError::Conflict(provider.already_linked));
             }
+            if provider_hosts_email {
+                record_email_proof(conn, &user_id, &user.email.normalized).await?;
+            }
             Ok(user_id)
         }
     }
+}
+
+/// Records that `user_id` proved they read `email`, unless their address has
+/// since changed or was proved already.
+pub(crate) async fn record_email_proof(
+    conn: &crate::db::main::Connection,
+    user_id: &str,
+    email: &str,
+) -> Result<(), AuthError> {
+    conn.execute(
+        "UPDATE users SET email_verified_at = NOW()
+         WHERE id = $1::text::uuid AND email = $2 AND email_verified_at IS NULL",
+        &[&user_id, &email],
+    )
+    .await
+    .map_err(map_query_error)?;
+    Ok(())
 }
 
 /// Lets `subject` at `provider` sign in as `user_id`. A subject already linked

@@ -56,6 +56,30 @@ pub const APPLE_ISSUER: &str = "https://appleid.apple.com";
 
 /// An ID token the test server accepts as coming from `issuer`.
 pub fn id_token(issuer: &str, subject: &str, email: Option<&str>, verified: Value) -> String {
+    id_token_with(issuer, subject, email, verified, serde_json::json!({}))
+}
+
+/// A Google ID token from a Workspace account on `email`'s domain, which
+/// Google vouches for.
+pub fn workspace_id_token(subject: &str, email: &str) -> String {
+    let domain = email.rsplit_once('@').expect("email has a domain").1;
+    id_token_with(
+        GOOGLE_ISSUER,
+        subject,
+        Some(email),
+        serde_json::json!(true),
+        serde_json::json!({ "hd": domain }),
+    )
+}
+
+/// [`id_token`] with `extra` claims added.
+pub fn id_token_with(
+    issuer: &str,
+    subject: &str,
+    email: Option<&str>,
+    verified: Value,
+    extra: Value,
+) -> String {
     let exp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock after epoch")
@@ -73,6 +97,9 @@ pub fn id_token(issuer: &str, subject: &str, email: Option<&str>, verified: Valu
     }
     if issuer == GOOGLE_ISSUER {
         claims["name"] = serde_json::json!("Grace Hopper");
+    }
+    for (name, value) in extra.as_object().expect("extra claims are an object") {
+        claims[name] = value.clone();
     }
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
     header.kid = Some(SIGN_IN_KEY_ID.to_owned());

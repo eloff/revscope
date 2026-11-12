@@ -13,7 +13,7 @@ use std::net::TcpListener;
 use std::sync::{Mutex, Once};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use common::{GOOGLE_ISSUER, HttpResponse, TestServer, id_token};
+use common::{GOOGLE_ISSUER, HttpResponse, TestServer, id_token, workspace_id_token};
 use serde_json::{Value, json};
 
 const SIGNUP_PATH: &str = "/v2/public/auth/signup";
@@ -22,6 +22,7 @@ const LOGOUT_PATH: &str = "/v2/public/auth/logout";
 const FORGOT_PASSWORD_PATH: &str = "/v2/public/auth/forgot-password";
 const RESET_PASSWORD_PATH: &str = "/v2/public/auth/reset-password";
 const ID_TOKEN_PATH: &str = "/v2/public/auth/id-token";
+const EMAIL_NOT_PROVEN: &str = "An account with this email already exists. To connect this sign-in, use Forgot password to set a new password, then try again. That confirms the email is yours and signs out your other devices and connected tools.";
 const ME_PATH: &str = "/v2/session/me";
 const PASSWORD: &str = "a-long-enough-password";
 const NEW_PASSWORD: &str = "another-long-enough-password";
@@ -212,12 +213,36 @@ async fn a_reset_link_proves_the_email_so_a_provider_can_join_the_password_user(
     assert_eq!(
         google_sign_in(&server, &subject, &account.email)
             .await?
-            .status_code(),
-        409,
+            .json::<Value>()["error"],
+        json!(EMAIL_NOT_PROVEN),
         "nothing has proved this signup owns the address"
     );
 
     set_password_by_email(&server, &account.email, NEW_PASSWORD).await?;
+
+    // A signup would count as a new customer and start a checkout for it.
+    let from_signup = server
+        .post_json(
+            ID_TOKEN_PATH,
+            &json!({
+                "provider": "google",
+                "id_token": workspace_id_token(&subject, &account.email),
+                "signup": {
+                    "account_name": format!("other-{}", account.account_name),
+                    "plan": "free",
+                    "events": "",
+                    "billing": "monthly",
+                },
+            })
+            .to_string(),
+            &[],
+        )
+        .await?;
+    assert_eq!(from_signup.status_code(), 409, "{}", from_signup.body_str());
+    assert_eq!(
+        from_signup.json::<Value>()["error"],
+        json!("An account with this email already exists. Log in with this sign-in instead.")
+    );
 
     let linked = google_sign_in(&server, &subject, &account.email).await?;
     assert_eq!(linked.status_code(), 200, "{}", linked.body_str());
@@ -289,8 +314,8 @@ async fn an_invite_link_does_not_prove_the_email() -> io::Result<()> {
     assert_eq!(
         google_sign_in(&server, &subject, &email)
             .await?
-            .status_code(),
-        409,
+            .json::<Value>()["error"],
+        json!(EMAIL_NOT_PROVEN),
         "an invite nobody has accepted"
     );
 
@@ -301,8 +326,8 @@ async fn an_invite_link_does_not_prove_the_email() -> io::Result<()> {
     assert_eq!(
         google_sign_in(&server, &subject, &email)
             .await?
-            .status_code(),
-        409,
+            .json::<Value>()["error"],
+        json!(EMAIL_NOT_PROVEN),
         "an invite link the inviter may have used"
     );
 
@@ -831,12 +856,13 @@ async fn set_password_by_email(server: &TestServer, email: &str, password: &str)
     Ok(())
 }
 
+/// Signs in with a Google account Google vouches for `email` on.
 async fn google_sign_in(
     server: &TestServer,
     subject: &str,
     email: &str,
 ) -> io::Result<HttpResponse> {
-    let token = id_token(GOOGLE_ISSUER, subject, Some(email), json!(true));
+    let token = workspace_id_token(subject, email);
     server
         .post_json(
             ID_TOKEN_PATH,

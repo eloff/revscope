@@ -7,7 +7,9 @@ use std::io;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use common::{APPLE_ISSUER, GOOGLE_ISSUER, SIGN_IN_CLIENT_ID, TestServer, id_token};
+use common::{
+    APPLE_ISSUER, GOOGLE_ISSUER, SIGN_IN_CLIENT_ID, TestServer, id_token, workspace_id_token,
+};
 use serde_json::{Value, json};
 
 const ID_TOKEN_PATH: &str = "/v2/public/auth/id-token";
@@ -156,7 +158,8 @@ async fn a_sign_in_never_takes_over_a_user_who_has_not_proved_their_email() -> i
     let server = TestServer::spawn("id-token-no-email-link").await?;
     let slug = unique_slug("a");
     let website = format!("{slug}.example");
-    let email = format!("{slug}@example.com");
+    // An address Apple hosts, so only the missing proof stops the link.
+    let email = format!("{slug}@icloud.com");
     // Nothing proves this signup owns the address: it could be anyone's.
     let response = server
         .post_json(
@@ -214,16 +217,16 @@ async fn a_sign_in_never_takes_over_a_user_who_has_not_proved_their_email() -> i
 }
 
 #[tokio::test]
-async fn a_second_provider_with_the_same_email_joins_the_same_user() -> io::Result<()> {
+async fn a_second_provider_joins_the_user_only_at_an_address_it_hosts() -> io::Result<()> {
     let server = TestServer::spawn("id-token-second-provider").await?;
     let slug = unique_slug("p");
     let website = format!("{slug}.example");
-    let email = format!("{slug}@example.com");
-    let google = id_token(GOOGLE_ISSUER, &slug, Some(&email), json!(true));
+    let email = format!("{slug}@icloud.com");
+    let apple = id_token(APPLE_ISSUER, &slug, Some(&email), json!("true"));
     let response = server
         .post_json(
             ID_TOKEN_PATH,
-            &json!({ "provider": "google", "id_token": google, "signup": signup_fields(&website) })
+            &json!({ "provider": "apple", "id_token": apple, "signup": signup_fields(&website) })
                 .to_string(),
             &[],
         )
@@ -231,19 +234,37 @@ async fn a_second_provider_with_the_same_email_joins_the_same_user() -> io::Resu
     assert_eq!(response.status_code(), 200, "{}", response.body_str());
     let user_id = response.json::<Value>()["user_id"].clone();
 
-    let apple = id_token(APPLE_ISSUER, &slug, Some(&email), json!("true"));
+    // A personal Google account can carry an iCloud address it verified once.
+    let google = id_token(GOOGLE_ISSUER, &slug, Some(&email), json!(true));
+    let refused = server
+        .post_json(
+            ID_TOKEN_PATH,
+            &json!({ "provider": "google", "id_token": google }).to_string(),
+            &[],
+        )
+        .await?;
+    assert_eq!(refused.status_code(), 409, "{}", refused.body_str());
+    assert_eq!(
+        refused.json::<Value>()["error"],
+        json!(
+            "An account with this email already exists. Google can only vouch for Gmail and Google Workspace addresses, so log in the way you signed up, or use Forgot password."
+        )
+    );
+
+    // Not realistic for iCloud, but it is how Google says it hosts an address.
+    let hosted = workspace_id_token(&slug, &email);
     // The second time finds the link rather than making it.
     for _ in 0..2 {
         let response = server
             .post_json(
                 ID_TOKEN_PATH,
-                &json!({ "provider": "apple", "id_token": apple }).to_string(),
+                &json!({ "provider": "google", "id_token": hosted }).to_string(),
                 &[],
             )
             .await?;
         assert_eq!(response.status_code(), 200, "{}", response.body_str());
         assert_eq!(response.json::<Value>()["user_id"], user_id);
-        assert_eq!(last_login_method(&response), Some("apple"));
+        assert_eq!(last_login_method(&response), Some("google"));
     }
 
     delete_account(&server, &website).await;
@@ -251,12 +272,123 @@ async fn a_second_provider_with_the_same_email_joins_the_same_user() -> io::Resu
 }
 
 #[tokio::test]
-async fn only_a_first_login_at_a_provider_from_the_login_page_joins_a_user() -> io::Result<()> {
+async fn a_provider_login_at_an_address_it_does_not_host_proves_nothing() -> io::Result<()> {
+    let server = TestServer::spawn("id-token-unhosted-proof").await?;
+    let slug = unique_slug("u");
+    let website = format!("{slug}.example");
+    let email = format!("{slug}@icloud.com");
+    // Whoever added this address to a personal Google account once, perhaps
+    // before it was reassigned.
+    let personal = id_token(GOOGLE_ISSUER, &slug, Some(&email), json!(true));
+    let response = server
+        .post_json(
+            ID_TOKEN_PATH,
+            &json!({ "provider": "google", "id_token": personal, "signup": signup_fields(&website) })
+                .to_string(),
+            &[],
+        )
+        .await?;
+    assert_eq!(response.status_code(), 200, "{}", response.body_str());
+
+    let apple = id_token(APPLE_ISSUER, &slug, Some(&email), json!("true"));
+    let response = server
+        .post_json(
+            ID_TOKEN_PATH,
+            &json!({ "provider": "apple", "id_token": apple }).to_string(),
+            &[],
+        )
+        .await?;
+    assert_eq!(response.status_code(), 409, "{}", response.body_str());
+    assert_eq!(
+        response.json::<Value>()["error"],
+        json!(
+            "An account with this email already exists. To connect this sign-in, use Forgot password to set a new password, then try again. That confirms the email is yours and signs out your other devices and connected tools."
+        )
+    );
+
+    delete_account(&server, &website).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_provider_login_proves_the_email_once_the_provider_hosts_it() -> io::Result<()> {
+    let server = TestServer::spawn("id-token-proof-on-login").await?;
+    let slug = unique_slug("h");
+    let website = format!("{slug}.example");
+    let email = format!("{slug}@corp.example");
+    let personal = id_token(GOOGLE_ISSUER, &slug, Some(&email), json!(true));
+    let response = server
+        .post_json(
+            ID_TOKEN_PATH,
+            &json!({ "provider": "google", "id_token": personal, "signup": signup_fields(&website) })
+                .to_string(),
+            &[],
+        )
+        .await?;
+    assert_eq!(response.status_code(), 200, "{}", response.body_str());
+    let proved = || async {
+        let conn = revscope::db::open_main_database_read(server.context.clone())
+            .await
+            .expect("open main database");
+        conn.query_one(
+            "SELECT email_verified_at IS NOT NULL FROM users WHERE email = $1",
+            &[&email],
+        )
+        .await
+        .expect("user")
+        .get::<_, bool>(0)
+    };
+    assert!(!proved().await, "Google doesn't host this address");
+    let response = server
+        .post_json(
+            ID_TOKEN_PATH,
+            &json!({ "provider": "google", "id_token": personal }).to_string(),
+            &[],
+        )
+        .await?;
+    assert_eq!(response.status_code(), 200, "{}", response.body_str());
+    assert!(!proved().await, "logging in again doesn't change that");
+
+    // A reset wouldn't connect it, so it isn't what the answer suggests.
+    let other_subject = format!("{slug}-workspace");
+    let response = server
+        .post_json(
+            ID_TOKEN_PATH,
+            &json!({ "provider": "google", "id_token": workspace_id_token(&other_subject, &email) })
+                .to_string(),
+            &[],
+        )
+        .await?;
+    assert_eq!(response.status_code(), 409, "{}", response.body_str());
+    assert_eq!(
+        response.json::<Value>()["error"],
+        json!(
+            "An account with this email already uses a different login with this provider. Log in with that one, or use Forgot password."
+        )
+    );
+
+    let response = server
+        .post_json(
+            ID_TOKEN_PATH,
+            &json!({ "provider": "google", "id_token": workspace_id_token(&slug, &email) })
+                .to_string(),
+            &[],
+        )
+        .await?;
+    assert_eq!(response.status_code(), 200, "{}", response.body_str());
+    assert!(proved().await, "the account has joined Workspace");
+
+    delete_account(&server, &website).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn only_a_first_login_at_a_provider_joins_a_user() -> io::Result<()> {
     let server = TestServer::spawn("id-token-link-limits").await?;
     let slug = unique_slug("q");
     let website = format!("{slug}.example");
     let email = format!("{slug}@example.com");
-    let google = id_token(GOOGLE_ISSUER, &slug, Some(&email), json!(true));
+    let google = workspace_id_token(&slug, &email);
     let response = server
         .post_json(
             ID_TOKEN_PATH,
@@ -268,28 +400,21 @@ async fn only_a_first_login_at_a_provider_from_the_login_page_joins_a_user() -> 
     assert_eq!(response.status_code(), 200, "{}", response.body_str());
 
     let other_subject = format!("{slug}-other");
-    let other_google = id_token(GOOGLE_ISSUER, &other_subject, Some(&email), json!(true));
-    let apple = id_token(APPLE_ISSUER, &slug, Some(&email), json!("true"));
-    for (body, error) in [
-        (
-            json!({ "provider": "google", "id_token": other_google }),
-            "An account with this email already uses a different login with this provider. Log in with that one, or use Forgot password.",
-        ),
-        (
-            json!({
-                "provider": "apple",
-                "id_token": apple,
-                "signup": signup_fields(&format!("{slug}-other.example")),
-            }),
-            "An account with this email already exists. Log in with this sign-in instead.",
-        ),
-    ] {
-        let response = server
-            .post_json(ID_TOKEN_PATH, &body.to_string(), &[])
-            .await?;
-        assert_eq!(response.status_code(), 409, "{}", response.body_str());
-        assert_eq!(response.json::<Value>()["error"], json!(error));
-    }
+    let other_google = workspace_id_token(&other_subject, &email);
+    let response = server
+        .post_json(
+            ID_TOKEN_PATH,
+            &json!({ "provider": "google", "id_token": other_google }).to_string(),
+            &[],
+        )
+        .await?;
+    assert_eq!(response.status_code(), 409, "{}", response.body_str());
+    assert_eq!(
+        response.json::<Value>()["error"],
+        json!(
+            "An account with this email already uses a different login with this provider. Log in with that one, or use Forgot password."
+        )
+    );
     let conn = revscope::db::open_main_database_read(server.context.clone())
         .await
         .expect("open main database");

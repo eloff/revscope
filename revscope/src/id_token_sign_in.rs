@@ -7,6 +7,7 @@ use serde::Deserialize;
 use crate::auth::{
     AuthError, AuthSuccess, MIN_USER_NAME_LENGTH, NewAccountRequest, NewLogin, NewUser,
     create_account, issue_session, link_identity, map_query_error, normalize_email,
+    record_email_proof,
 };
 use crate::db::{open_main_database_read, open_main_database_write};
 use crate::id_token::{Identity, MAX_TOKEN_LEN, SignInError, Verifier};
@@ -51,8 +52,8 @@ pub(crate) struct SignedIn {
 }
 
 /// Signs in the user the token's identity belongs to, linking it to the user
-/// with its email if that user has proved the address, or, when `signup` asks,
-/// makes them a new account.
+/// with its email if that user has proved the address and the provider hosts
+/// it, or, when `signup` asks, makes them a new account.
 pub(crate) async fn sign_in(
     server_context: Arc<ServerContext>,
     payload: IdTokenRequest,
@@ -68,6 +69,15 @@ pub(crate) async fn sign_in(
     let conn = open_main_database_read(server_context.clone()).await?;
     if let Some(user_id) = linked_user(&conn, provider.id, identity.subject.as_str()).await? {
         drop(conn);
+        // Users who signed in before proof was recorded, or whose Google
+        // account has since joined Workspace, gain it as they log in.
+        if identity.provider_hosts_email
+            && let Some(email) = identity.email.as_deref()
+        {
+            let email = normalize_email(email)?;
+            let conn = open_main_database_write(server_context.clone()).await?;
+            record_email_proof(&conn, &user_id, &email.normalized).await?;
+        }
         return logged_in(server_context, provider.id, &user_id).await;
     }
 
@@ -81,14 +91,14 @@ pub(crate) async fn sign_in(
     if !identity.email_verified {
         return Err(AuthError::InvalidRequest(provider.unverified_email));
     }
-    // Linked by email only to a user a reset link or a provider has vouched
-    // for. Nothing proves a password signup or an invite owns its address, so
-    // whoever made that user first would share the account with its real owner.
+    // Linked by email only when both sides vouch for the address now: the user
+    // proved it with a reset link or a provider that hosts it, and so does this
+    // sign-in. Nothing proves a password signup or an invite owns its address,
+    // so whoever made that user first would share the account with its owner.
     let existing = conn
         .query_opt(
             "SELECT u.id::text,
-                    u.email_verified_at IS NOT NULL
-                    OR EXISTS (SELECT 1 FROM user_identities i WHERE i.user_id = u.id),
+                    u.email_verified_at IS NOT NULL,
                     EXISTS (
                         SELECT 1 FROM user_identities i
                         WHERE i.user_id = u.id AND i.provider = $2
@@ -101,13 +111,17 @@ pub(crate) async fn sign_in(
         .map_err(map_query_error)?;
     drop(conn);
     if let Some(row) = existing {
-        if !row.get::<_, bool>(1) {
-            return Err(AuthError::Conflict(EMAIL_NOT_PROVEN));
+        // These two first, since a reset, which the next one asks for, can't help.
+        if !identity.provider_hosts_email {
+            return Err(AuthError::Conflict(provider.email_not_hosted));
         }
         // One person's login at a provider is the one already linked; another
         // subject claiming the address is someone else, or a mailbox reassigned.
         if row.get::<_, bool>(2) {
             return Err(AuthError::Conflict(EMAIL_HAS_OTHER_LOGIN));
+        }
+        if !row.get::<_, bool>(1) {
+            return Err(AuthError::Conflict(EMAIL_NOT_PROVEN));
         }
         // The signup page would otherwise count this as a new customer and
         // start a checkout for a plan against the existing account.
@@ -146,6 +160,7 @@ pub(crate) async fn sign_in(
         login: NewLogin::Identity {
             provider,
             subject: identity.subject.as_str(),
+            provider_hosts_email: identity.provider_hosts_email,
         },
     };
     Ok(SignedIn {
