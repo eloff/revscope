@@ -68,27 +68,6 @@ export const adminTag = style([tag, { background: "#dbeafe", color: "#1e40af" }]
 
 export const youTag = style([tag, { background: "#f3f4f6", color: "#374151" }]);
 
-export const rowButton = style({
-  padding: "6px 12px",
-  border: "1px solid #d1d5db",
-  borderRadius: "6px",
-  background: "white",
-  color: "#111827",
-  fontSize: "0.85rem",
-  cursor: "pointer",
-  selectors: {
-    "&:hover": {
-      background: "#f9fafb",
-    },
-    "&:disabled": {
-      opacity: 0.6,
-      cursor: "not-allowed",
-    },
-  },
-});
-
-export const removeButton = style([rowButton, { color: "#b91c1c", borderColor: "#fecaca" }]);
-
 export const editPanel = style({
   marginTop: "12px",
   paddingTop: "12px",

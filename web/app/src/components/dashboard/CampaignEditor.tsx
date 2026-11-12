@@ -1,6 +1,7 @@
 /// <reference types="solid-js" />
 import { createEffect, createSignal, For, Index, onCleanup, Show } from "solid-js";
 import type { CampaignPreviewResponse, CampaignRule } from "../../lib/campaignsApi";
+import { primaryButton, secondaryButton } from "../buttons.css";
 import {
   addConditionButton,
   conditionsBlock,
@@ -13,10 +14,8 @@ import {
   mutedText,
   orDivider,
   previewBox,
-  primaryButton,
   removeButton,
   ruleRow,
-  secondaryButton,
   textInput,
 } from "./Campaigns.css";
 import { paramLabel, RULE_PARAM_KEYS } from "./campaignLabels";

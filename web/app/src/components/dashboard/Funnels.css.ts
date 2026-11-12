@@ -109,55 +109,6 @@ export const funnelActions = style({
   justifyContent: "flex-end",
 });
 
-export const funnelButton = style({
-  padding: "8px 12px",
-  border: "1px solid #d1d5db",
-  borderRadius: "8px",
-  background: "#ffffff",
-  color: "#111827",
-  font: "inherit",
-  fontSize: "0.88rem",
-  fontWeight: 600,
-  cursor: "pointer",
-  selectors: {
-    "&:disabled": {
-      color: "#9ca3af",
-      background: "#f9fafb",
-      cursor: "not-allowed",
-    },
-    "&:hover:not(:disabled)": {
-      background: "#f3f4f6",
-    },
-  },
-});
-
-export const funnelPrimaryButton = style([
-  funnelButton,
-  {
-    borderColor: "#2563eb",
-    background: "#2563eb",
-    color: "#ffffff",
-    selectors: {
-      "&:hover:not(:disabled)": {
-        background: "#1d4ed8",
-      },
-    },
-  },
-]);
-
-export const funnelDangerButton = style([
-  funnelButton,
-  {
-    borderColor: "#fecaca",
-    color: "#b91c1c",
-    selectors: {
-      "&:hover:not(:disabled)": {
-        background: "#fef2f2",
-      },
-    },
-  },
-]);
-
 export const funnelEmptyState = style({
   padding: "42px 20px",
   border: "1px dashed #d1d5db",

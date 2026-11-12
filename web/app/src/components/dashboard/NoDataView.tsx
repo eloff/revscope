@@ -1,14 +1,8 @@
 /// <reference types="solid-js" />
 import { appPath, docsUrl } from "@revscope/web-shared/links";
 import { Show } from "solid-js";
-import {
-  container,
-  description,
-  heading,
-  links,
-  primaryLink,
-  secondaryLink,
-} from "./NoDataView.css";
+import { primaryButton, secondaryButton } from "../buttons.css";
+import { container, description, heading, links } from "./NoDataView.css";
 
 export type NoDataViewVariant = "date-range" | "payment-activity" | "crawlers";
 
@@ -58,12 +52,12 @@ export default function NoDataView(props: NoDataViewProps) {
       <h3 class={heading}>{copy().heading}</h3>
       <p class={description}>{copy().description}</p>
       <div class={links}>
-        <a class={primaryLink} href={copy().primary.href}>
+        <a class={primaryButton} href={copy().primary.href}>
           {copy().primary.label}
         </a>
         <Show when={copy().secondary}>
           {(link) => (
-            <a class={secondaryLink} href={link().href}>
+            <a class={secondaryButton} href={link().href}>
               {link().label}
             </a>
           )}

@@ -1,4 +1,5 @@
 import { style } from "@vanilla-extract/css";
+import { buttonIcon, secondaryButton } from "../buttons.css";
 
 export const header = style({
   display: "flex",
@@ -20,18 +21,6 @@ export const headerNote = style({
   margin: 0,
   fontSize: "0.9rem",
   color: "#6b7280",
-});
-
-export const addButton = style({
-  padding: "9px 14px",
-  border: 0,
-  borderRadius: "8px",
-  background: "#111827",
-  color: "white",
-  fontSize: "0.9rem",
-  fontWeight: 600,
-  fontFamily: "inherit",
-  cursor: "pointer",
 });
 
 export const grid = style({
@@ -65,16 +54,29 @@ export const cardHeader = style({
   alignItems: "center",
   justifyContent: "space-between",
   gap: "8px",
-  padding: 0,
+  margin: "-6px -6px 0",
+  padding: "6px",
   border: 0,
+  borderRadius: "8px",
   background: "none",
   fontFamily: "inherit",
   textAlign: "left",
   cursor: "pointer",
+  selectors: {
+    "&:focus-visible": {
+      outline: "2px solid #2563eb",
+      outlineOffset: "0",
+    },
+  },
 });
 
 export const cardTitle = style({
   overflow: "hidden",
+  selectors: {
+    [`${cardHeader}:hover &`]: {
+      color: "#1d4ed8",
+    },
+  },
   fontSize: "1rem",
   fontWeight: 600,
   color: "#111827",
@@ -82,11 +84,36 @@ export const cardTitle = style({
   whiteSpace: "nowrap",
 });
 
-export const cardOpen = style({
-  flex: "0 0 auto",
-  fontSize: "0.85rem",
-  color: "#2563eb",
-});
+// The whole header is the button, so the chip only looks like one and follows the header's hover.
+export const cardOpen = style([
+  secondaryButton,
+  {
+    gap: "4px",
+    padding: "5px 8px 5px 10px",
+    fontSize: "0.82rem",
+    color: "#374151",
+    transition: "background 120ms ease, border-color 120ms ease, color 120ms ease",
+    selectors: {
+      [`${cardHeader}:hover &`]: {
+        borderColor: "#93c5fd",
+        background: "#eff6ff",
+        color: "#1d4ed8",
+      },
+    },
+  },
+]);
+
+export const cardOpenIcon = style([
+  buttonIcon,
+  {
+    transition: "transform 120ms ease",
+    selectors: {
+      [`${cardHeader}:hover &`]: {
+        transform: "translateX(2px)",
+      },
+    },
+  },
+]);
 
 export const cardTiles = style({
   display: "grid",

@@ -22,6 +22,7 @@ import {
   type SegmentFilters,
   segmentFiltersKey,
 } from "../../lib/segmentFilters";
+import { primaryButton } from "../buttons.css";
 import CampaignDetails from "./CampaignDetails";
 import CampaignEditor, {
   type CampaignDraft,
@@ -48,7 +49,6 @@ import {
   paramKey,
   paramValue,
   placeholderValue,
-  primaryButton,
   suggestionChip,
   suggestionList,
   suggestionsCard,

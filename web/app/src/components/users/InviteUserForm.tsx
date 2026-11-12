@@ -4,12 +4,12 @@ import { validateEmail, validateUserName } from "@revscope/web-shared/authValida
 import type { ProjectOption } from "@revscope/web-shared/projectSelection";
 import { createSignal, Show } from "solid-js";
 import { inviteUser } from "../../lib/usersApi";
+import { primaryButton } from "../buttons.css";
 import {
   field,
   fieldGrid,
   fieldLabel,
   input,
-  saveButton,
   section,
   sectionDescription,
   sectionTitle,
@@ -126,7 +126,7 @@ export default function InviteUserForm(props: InviteUserFormProps) {
           onChange={setAccess}
         />
         <div>
-          <button type="submit" class={saveButton} disabled={sending()}>
+          <button type="submit" class={primaryButton} disabled={sending()}>
             {sending() ? "Inviting…" : "Invite"}
           </button>
         </div>
@@ -150,7 +150,11 @@ export default function InviteUserForm(props: InviteUserFormProps) {
                 aria-label="Invite link"
                 value={invite().url}
               />
-              <button type="button" class={saveButton} onClick={() => void copyLink(invite().url)}>
+              <button
+                type="button"
+                class={primaryButton}
+                onClick={() => void copyLink(invite().url)}
+              >
                 {copied() ? "Copied" : "Copy"}
               </button>
             </div>

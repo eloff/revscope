@@ -10,16 +10,10 @@ import {
 } from "@revscope/web-shared/loginDialogStyles";
 import { createSignal, Show } from "solid-js";
 import { revokeMcpTokens } from "../lib/settingsApi";
-import {
-  dialogActions,
-  dialogSecondary,
-  statusError,
-  statusMessage,
-  statusSuccess,
-} from "./Settings.css";
+import { destructiveButton, secondaryButton } from "./buttons.css";
+import { dialogActions, statusError, statusMessage, statusSuccess } from "./Settings.css";
 import {
   dangerActions,
-  dangerButton,
   dangerDescription,
   dangerItem,
   dangerItemTitle,
@@ -84,7 +78,7 @@ export default function SettingsDangerZone(props: SettingsDangerZoneProps) {
           year; this deletes those tokens. Agents may keep working for up to five minutes.
         </p>
         <div class={dangerActions}>
-          <button type="button" class={dangerButton} onClick={() => setConfirming(true)}>
+          <button type="button" class={destructiveButton} onClick={() => setConfirming(true)}>
             Revoke all MCP tokens
           </button>
           <Show when={errorMessage()}>
@@ -115,7 +109,7 @@ export default function SettingsDangerZone(props: SettingsDangerZoneProps) {
             <div class={dialogActions}>
               <button
                 type="button"
-                class={dangerButton}
+                class={destructiveButton}
                 disabled={revoking()}
                 onClick={() => void handleRevoke()}
               >
@@ -123,7 +117,7 @@ export default function SettingsDangerZone(props: SettingsDangerZoneProps) {
               </button>
               <button
                 type="button"
-                class={dialogSecondary}
+                class={secondaryButton}
                 disabled={revoking()}
                 onClick={() => setConfirming(false)}
               >

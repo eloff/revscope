@@ -18,6 +18,7 @@ import {
   startGaImport,
   takePendingConnection,
 } from "../lib/gaImportApi";
+import { primaryButton, secondaryButton } from "./buttons.css";
 import {
   connectOptions,
   dateRow,
@@ -37,10 +38,8 @@ import {
   field,
   fieldHelp,
   fieldLabel,
-  inlineButton,
   input,
   keyInput,
-  saveButton,
   section,
   sectionDescription,
   sectionTitle,
@@ -277,7 +276,7 @@ export default function GoogleAnalyticsImport(props: Props) {
                       <div>
                         <button
                           type="button"
-                          class={saveButton}
+                          class={primaryButton}
                           disabled={busy()}
                           onClick={() => void connectWithGoogle()}
                         >
@@ -327,7 +326,7 @@ export default function GoogleAnalyticsImport(props: Props) {
                       <div>
                         <button
                           type="button"
-                          class={inlineButton}
+                          class={secondaryButton}
                           disabled={busy() || !serviceAccountJson().trim()}
                           onClick={() => void connectWithKey()}
                         >
@@ -352,7 +351,7 @@ export default function GoogleAnalyticsImport(props: Props) {
                       <div>
                         <button
                           type="button"
-                          class={inlineButton}
+                          class={secondaryButton}
                           onClick={() => setConnection(null)}
                         >
                           Connect again
@@ -467,7 +466,7 @@ export default function GoogleAnalyticsImport(props: Props) {
                     <div>
                       <button
                         type="button"
-                        class={saveButton}
+                        class={primaryButton}
                         disabled={busy() || !propertyId() || rangeProblem() !== ""}
                         onClick={() => void start()}
                       >
@@ -509,7 +508,7 @@ export default function GoogleAnalyticsImport(props: Props) {
                           fallback={
                             <button
                               type="button"
-                              class={inlineButton}
+                              class={secondaryButton}
                               disabled={busy()}
                               onClick={() =>
                                 confirmingDelete() === item.id
@@ -523,7 +522,7 @@ export default function GoogleAnalyticsImport(props: Props) {
                         >
                           <button
                             type="button"
-                            class={inlineButton}
+                            class={secondaryButton}
                             disabled={busy()}
                             onClick={() => void cancel(item.id)}
                           >

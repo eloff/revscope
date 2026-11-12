@@ -20,26 +20,6 @@ export const dangerDescription = style({
   color: "#7f1d1d",
 });
 
-export const dangerButton = style({
-  padding: "10px 18px",
-  border: 0,
-  borderRadius: "8px",
-  background: "#dc2626",
-  color: "white",
-  fontSize: "0.95rem",
-  fontWeight: 600,
-  cursor: "pointer",
-  selectors: {
-    "&:hover": {
-      background: "#b91c1c",
-    },
-    "&:disabled": {
-      opacity: 0.6,
-      cursor: "not-allowed",
-    },
-  },
-});
-
 export const dangerActions = style({
   display: "flex",
   alignItems: "center",

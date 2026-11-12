@@ -2,10 +2,10 @@
 import { createSignal, For, Show } from "solid-js";
 import type { CampaignSpendEntry, CampaignSpendInput } from "../../lib/campaignsApi";
 import { formatRevenueAmount } from "../../lib/dashboardApi";
+import { secondaryButton } from "../buttons.css";
 import {
   detailsCard,
   mutedText,
-  secondaryButton,
   sectionLabel,
   spendHeader,
   spendItem,

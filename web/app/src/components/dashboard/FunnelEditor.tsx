@@ -8,6 +8,7 @@ import type {
   SaveFunnelStep,
 } from "../../lib/funnelsApi";
 import { sourceFilterParam } from "../../lib/segmentFilters";
+import { primaryButton, secondaryButton } from "../buttons.css";
 import { useDashboardState } from "./dashboardPeriodContext";
 import {
   funnelAddButton,
@@ -36,14 +37,7 @@ import {
 } from "./FunnelEditor.css";
 import FunnelPageStepCard from "./FunnelPageStepCard";
 import FunnelStepVisitorCount from "./FunnelStepVisitorCount";
-import {
-  funnelActions,
-  funnelButton,
-  funnelDescription,
-  funnelHeader,
-  funnelPrimaryButton,
-  funnelTitle,
-} from "./Funnels.css";
+import { funnelActions, funnelDescription, funnelHeader, funnelTitle } from "./Funnels.css";
 import {
   type EditorStep,
   editorStepIsComplete,
@@ -241,12 +235,17 @@ export default function FunnelEditor(props: FunnelEditorProps) {
           </p>
         </div>
         <div class={funnelActions}>
-          <button type="button" class={funnelButton} onClick={props.onCancel} disabled={saving()}>
+          <button
+            type="button"
+            class={secondaryButton}
+            onClick={props.onCancel}
+            disabled={saving()}
+          >
             Cancel
           </button>
           <button
             type="button"
-            class={funnelPrimaryButton}
+            class={primaryButton}
             onClick={() => void save()}
             disabled={saving() || props.optionsLoading}
           >

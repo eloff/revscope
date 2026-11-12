@@ -17,14 +17,13 @@ import {
   saveFunnel,
 } from "../../lib/funnelsApi";
 import { hasSegmentFilters, segmentFiltersKey } from "../../lib/segmentFilters";
+import { dangerButton, secondaryButton } from "../buttons.css";
 import { useDashboardState } from "./dashboardPeriodContext";
 import FunnelChart from "./FunnelChart";
 import FunnelEditor, { type FunnelDraft } from "./FunnelEditor";
 import {
   funnelActions,
   funnelAddTabButton,
-  funnelButton,
-  funnelDangerButton,
   funnelDescription,
   funnelDocsLink,
   funnelEmptyState,
@@ -376,14 +375,14 @@ export default function Funnels(props: FunnelsProps) {
                         <div class={funnelActions}>
                           <button
                             type="button"
-                            class={funnelButton}
+                            class={secondaryButton}
                             onClick={() => openEditor(funnel())}
                           >
                             Edit
                           </button>
                           <button
                             type="button"
-                            class={funnelDangerButton}
+                            class={dangerButton}
                             onClick={() => void deleteSelected(funnel())}
                           >
                             Delete

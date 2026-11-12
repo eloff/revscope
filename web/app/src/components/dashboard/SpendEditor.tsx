@@ -1,14 +1,13 @@
 /// <reference types="solid-js" />
 import { createSignal, Index, Show } from "solid-js";
 import type { CampaignSpendInput, CampaignSpendKind } from "../../lib/campaignsApi";
+import { primaryButton, secondaryButton } from "../buttons.css";
 import {
   addConditionButton,
   editorActions,
   equalsText,
   mutedText,
-  primaryButton,
   removeButton,
-  secondaryButton,
   spendAmountField,
   spendAmountInput,
   spendDateInput,

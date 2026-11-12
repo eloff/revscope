@@ -93,23 +93,6 @@ export const input = style({
   fontFamily: "inherit",
 });
 
-export const checkButton = style({
-  padding: "10px 16px",
-  borderRadius: "8px",
-  border: "none",
-  background: "#111827",
-  color: "#ffffff",
-  fontSize: "0.95rem",
-  fontWeight: 600,
-  cursor: "pointer",
-  selectors: {
-    "&:disabled": {
-      opacity: 0.55,
-      cursor: "not-allowed",
-    },
-  },
-});
-
 export const findings = style({
   listStyle: "none",
   margin: "12px 0 0",

@@ -10,18 +10,11 @@ import {
 } from "@revscope/web-shared/loginDialogStyles";
 import { createSignal, Show } from "solid-js";
 import { deleteProject } from "../lib/projectsApi";
-import {
-  dialogActions,
-  dialogSecondary,
-  fieldLabel,
-  input,
-  statusError,
-  statusMessage,
-} from "./Settings.css";
+import { destructiveButton, secondaryButton } from "./buttons.css";
+import { dialogActions, fieldLabel, input, statusError, statusMessage } from "./Settings.css";
 import {
   confirmField,
   dangerActions,
-  dangerButton,
   dangerDescription,
   dangerItem,
   dangerItemTitle,
@@ -82,7 +75,7 @@ export default function SettingsDeleteProject(props: SettingsDeleteProjectProps)
       <div class={dangerActions}>
         <button
           type="button"
-          class={dangerButton}
+          class={destructiveButton}
           disabled={props.onlyProject}
           onClick={() => setConfirming(true)}
         >
@@ -125,10 +118,14 @@ export default function SettingsDeleteProject(props: SettingsDeleteProjectProps)
                 <p class={`${statusMessage} ${statusError}`}>{errorMessage()}</p>
               </Show>
               <div class={dialogActions}>
-                <button type="submit" class={dangerButton} disabled={deleting() || !nameMatches()}>
+                <button
+                  type="submit"
+                  class={destructiveButton}
+                  disabled={deleting() || !nameMatches()}
+                >
                   {deleting() ? "Deleting…" : "Delete project"}
                 </button>
-                <button type="button" class={dialogSecondary} disabled={deleting()} onClick={close}>
+                <button type="button" class={secondaryButton} disabled={deleting()} onClick={close}>
                   Cancel
                 </button>
               </div>

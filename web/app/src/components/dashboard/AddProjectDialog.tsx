@@ -14,15 +14,8 @@ import {
 import { projectNameFromWebsite, validateProjectName } from "@revscope/web-shared/projectName";
 import { createSignal, Show } from "solid-js";
 import { type CreatedProject, createProject } from "../../lib/projectsApi";
-import {
-  dialogActions,
-  dialogPrimary,
-  dialogSecondary,
-  fieldLabel,
-  input,
-  statusError,
-  statusMessage,
-} from "../Settings.css";
+import { primaryButton, secondaryButton } from "../buttons.css";
+import { dialogActions, fieldLabel, input, statusError, statusMessage } from "../Settings.css";
 import { dialogField, dialogPreview } from "./ProjectsOverview.css";
 
 type AddProjectDialogProps = {
@@ -110,12 +103,12 @@ export default function AddProjectDialog(props: AddProjectDialogProps) {
                 <div class={dialogActions}>
                   <button
                     type="submit"
-                    class={dialogPrimary}
+                    class={primaryButton}
                     disabled={saving() || nameError() !== null}
                   >
                     {saving() ? "Adding…" : "Add project"}
                   </button>
-                  <button type="button" class={dialogSecondary} disabled={saving()} onClick={close}>
+                  <button type="button" class={secondaryButton} disabled={saving()} onClick={close}>
                     Cancel
                   </button>
                 </div>
@@ -133,7 +126,7 @@ export default function AddProjectDialog(props: AddProjectDialogProps) {
                 <div class={dialogActions}>
                   <button
                     type="button"
-                    class={dialogPrimary}
+                    class={primaryButton}
                     onClick={() => {
                       const projectId = project().id;
                       close();
@@ -142,7 +135,7 @@ export default function AddProjectDialog(props: AddProjectDialogProps) {
                   >
                     Open project
                   </button>
-                  <button type="button" class={dialogSecondary} onClick={close}>
+                  <button type="button" class={secondaryButton} onClick={close}>
                     Close
                   </button>
                 </div>

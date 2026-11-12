@@ -45,6 +45,7 @@ import {
   saveSettings,
   timezoneOptions,
 } from "../lib/settingsApi";
+import { dangerButton, primaryButton, secondaryButton } from "./buttons.css";
 import GoogleAnalyticsImport from "./GoogleAnalyticsImport";
 import { content as selectContent, item as selectItem } from "./ProjectSelect.css";
 import ServiceAccountSteps, { ExternalLink } from "./ServiceAccountSteps";
@@ -53,16 +54,12 @@ import {
   connectionStatus,
   connectionStatusConnected,
   dialogActions,
-  dialogDanger,
-  dialogPrimary,
-  dialogSecondary,
   field,
   fieldGrid,
   fieldHelp,
   fieldLabel,
   header,
   heading,
-  inlineButton,
   input,
   integrationStatus,
   keyInput,
@@ -70,7 +67,6 @@ import {
   message,
   optionalTag,
   page,
-  saveButton,
   secretRow,
   section,
   sectionDescription,
@@ -515,7 +511,7 @@ export default function Settings() {
             <button
               id={fieldId}
               type="button"
-              class={inlineButton}
+              class={secondaryButton}
               onClick={() => {
                 setForm("integrations", type, column, {
                   dirty: true,
@@ -550,7 +546,7 @@ export default function Settings() {
           <Show when={state().masked}>
             <button
               type="button"
-              class={inlineButton}
+              class={secondaryButton}
               onClick={() => {
                 setForm("integrations", type, column, {
                   dirty: false,
@@ -880,7 +876,7 @@ export default function Settings() {
                 <div class={actionsBar}>
                   <button
                     type="button"
-                    class={saveButton}
+                    class={primaryButton}
                     disabled={saving() || !dirty()}
                     onClick={() => void handleSave()}
                   >
@@ -948,16 +944,16 @@ export default function Settings() {
             <div class={dialogActions}>
               <button
                 type="button"
-                class={dialogPrimary}
+                class={primaryButton}
                 disabled={saving()}
                 onClick={() => void onSaveAndContinue()}
               >
                 {saving() ? "Saving…" : "Save changes"}
               </button>
-              <button type="button" class={dialogDanger} onClick={onDiscardAndContinue}>
+              <button type="button" class={dangerButton} onClick={onDiscardAndContinue}>
                 Discard changes
               </button>
-              <button type="button" class={dialogSecondary} onClick={dismissPending}>
+              <button type="button" class={secondaryButton} onClick={dismissPending}>
                 Cancel
               </button>
             </div>

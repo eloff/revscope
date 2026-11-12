@@ -181,22 +181,6 @@ export const maskedValue = style({
   letterSpacing: "0.04em",
 });
 
-export const inlineButton = style({
-  flexShrink: 0,
-  padding: "8px 12px",
-  borderRadius: "8px",
-  border: "1px solid #d1d5db",
-  background: "white",
-  color: "#374151",
-  fontSize: "0.85rem",
-  cursor: "pointer",
-  selectors: {
-    "&:hover": {
-      background: "#f9fafb",
-    },
-  },
-});
-
 export const tabsRoot = style({
   width: "100%",
 });
@@ -267,23 +251,6 @@ export const actionsBar = style({
   background: "linear-gradient(to top, #ffffff 70%, rgba(255, 255, 255, 0))",
 });
 
-export const saveButton = style({
-  padding: "10px 18px",
-  border: 0,
-  borderRadius: "8px",
-  background: "#111827",
-  color: "white",
-  fontSize: "0.95rem",
-  fontWeight: 600,
-  cursor: "pointer",
-  selectors: {
-    "&:disabled": {
-      opacity: 0.6,
-      cursor: "not-allowed",
-    },
-  },
-});
-
 export const statusMessage = style({
   margin: 0,
   fontSize: "0.9rem",
@@ -314,34 +281,4 @@ export const dialogActions = style({
   flexWrap: "wrap",
   gap: "8px",
   marginTop: "16px",
-});
-
-export const dialogPrimary = style({
-  padding: "9px 14px",
-  border: 0,
-  borderRadius: "8px",
-  background: "#111827",
-  color: "white",
-  fontSize: "0.9rem",
-  cursor: "pointer",
-});
-
-export const dialogSecondary = style({
-  padding: "9px 14px",
-  borderRadius: "8px",
-  border: "1px solid #d1d5db",
-  background: "white",
-  color: "#374151",
-  fontSize: "0.9rem",
-  cursor: "pointer",
-});
-
-export const dialogDanger = style({
-  padding: "9px 14px",
-  borderRadius: "8px",
-  border: "1px solid #fca5a5",
-  background: "white",
-  color: "#dc2626",
-  fontSize: "0.9rem",
-  cursor: "pointer",
 });

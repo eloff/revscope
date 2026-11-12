@@ -11,21 +11,13 @@ import {
 import type { ProjectOption } from "@revscope/web-shared/projectSelection";
 import { createSignal, Show } from "solid-js";
 import { type AccountUser, removeUser, updateUserAccess } from "../../lib/usersApi";
-import {
-  dialogActions,
-  dialogSecondary,
-  saveButton,
-  statusError,
-  statusMessage,
-} from "../Settings.css";
-import { dangerButton } from "../SettingsDangerZone.css";
+import { dangerButton, destructiveButton, primaryButton, secondaryButton } from "../buttons.css";
+import { dialogActions, statusError, statusMessage } from "../Settings.css";
 import {
   adminTag,
   editActions,
   editPanel,
   pendingTag,
-  removeButton,
-  rowButton,
   userAccessSummary,
   userActions,
   userEmail,
@@ -127,12 +119,12 @@ export default function UserRow(props: UserRowProps) {
         <span class={userAccessSummary}>{projectAccessLabel(props.user, props.projects)}</span>
         <Show when={!props.isSelf && !editing()}>
           <div class={userActions}>
-            <button type="button" class={rowButton} onClick={startEditing}>
+            <button type="button" class={secondaryButton} onClick={startEditing}>
               Edit access
             </button>
             <button
               type="button"
-              class={removeButton}
+              class={dangerButton}
               onClick={() => {
                 setErrorMessage("");
                 setConfirmingRemove(true);
@@ -153,12 +145,17 @@ export default function UserRow(props: UserRowProps) {
             onChange={setDraft}
           />
           <div class={editActions}>
-            <button type="button" class={saveButton} disabled={busy()} onClick={() => void save()}>
+            <button
+              type="button"
+              class={primaryButton}
+              disabled={busy()}
+              onClick={() => void save()}
+            >
               {busy() ? "Saving…" : "Save access"}
             </button>
             <button
               type="button"
-              class={rowButton}
+              class={secondaryButton}
               disabled={busy()}
               onClick={() => setEditing(false)}
             >
@@ -191,7 +188,7 @@ export default function UserRow(props: UserRowProps) {
             <div class={dialogActions}>
               <button
                 type="button"
-                class={dangerButton}
+                class={destructiveButton}
                 disabled={busy()}
                 onClick={() => void remove()}
               >
@@ -199,7 +196,7 @@ export default function UserRow(props: UserRowProps) {
               </button>
               <button
                 type="button"
-                class={dialogSecondary}
+                class={secondaryButton}
                 disabled={busy()}
                 onClick={() => setConfirmingRemove(false)}
               >

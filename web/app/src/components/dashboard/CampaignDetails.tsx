@@ -2,6 +2,7 @@
 import { For, Show } from "solid-js";
 import type { CampaignCount, CampaignListItem, CampaignSpendInput } from "../../lib/campaignsApi";
 import { formatPercentRatio } from "../../lib/dashboardApi";
+import { dangerButton, secondaryButton } from "../buttons.css";
 import CampaignSpend from "./CampaignSpend";
 import {
   breakdownBar,
@@ -13,7 +14,6 @@ import {
   conditionChip,
   conditionList,
   conditionOperator,
-  dangerButton,
   detailsActions,
   detailsCard,
   detailsLayout,
@@ -22,7 +22,6 @@ import {
   paramKey,
   paramValue,
   ruleNote,
-  secondaryButton,
   sectionLabel,
   statItem,
   statList,

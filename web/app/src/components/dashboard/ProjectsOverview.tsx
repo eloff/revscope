@@ -7,11 +7,12 @@ import {
 } from "@revscope/web-shared/projectSelection";
 import { createSignal, For, Show } from "solid-js";
 import { periodInTimeZone } from "../../lib/dateRange";
+import { buttonIcon, primaryButton } from "../buttons.css";
 import AddProjectDialog from "./AddProjectDialog";
 import { useDashboardState } from "./dashboardPeriodContext";
 import { message } from "./messages.css";
 import ProjectOverviewCard, { type ProjectOverviewCache } from "./ProjectOverviewCard";
-import { addButton, grid, header, headerNote, headerTitle } from "./ProjectsOverview.css";
+import { grid, header, headerNote, headerTitle } from "./ProjectsOverview.css";
 
 type ProjectsOverviewProps = {
   session: AuthSession;
@@ -46,7 +47,15 @@ export default function ProjectsOverview(props: ProjectsOverviewProps) {
               </p>
             }
           >
-            <button type="button" class={addButton} onClick={() => setAdding(true)}>
+            <button type="button" class={primaryButton} onClick={() => setAdding(true)}>
+              <svg class={buttonIcon} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path
+                  d="M8 3v10M3 8h10"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                />
+              </svg>
               Add project
             </button>
           </Show>

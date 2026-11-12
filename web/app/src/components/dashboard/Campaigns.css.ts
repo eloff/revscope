@@ -37,66 +37,6 @@ export const mutedText = style({
   lineHeight: 1.45,
 });
 
-const buttonBase = style({
-  display: "inline-flex",
-  alignItems: "center",
-  gap: "6px",
-  padding: "8px 12px",
-  border: "1px solid #d1d5db",
-  borderRadius: "8px",
-  background: "#ffffff",
-  color: "#111827",
-  font: "inherit",
-  fontSize: "0.88rem",
-  fontWeight: 600,
-  whiteSpace: "nowrap",
-  cursor: "pointer",
-  selectors: {
-    "&:disabled": {
-      color: "#9ca3af",
-      background: "#f9fafb",
-      cursor: "not-allowed",
-    },
-    "&:hover:not(:disabled)": {
-      background: "#f3f4f6",
-    },
-  },
-});
-
-export const secondaryButton = buttonBase;
-
-export const primaryButton = style([
-  buttonBase,
-  {
-    borderColor: "#2563eb",
-    background: "#2563eb",
-    color: "#ffffff",
-    selectors: {
-      "&:hover:not(:disabled)": {
-        background: "#1d4ed8",
-      },
-      "&:disabled": {
-        borderColor: "#93c5fd",
-        background: "#93c5fd",
-        color: "#ffffff",
-      },
-    },
-  },
-]);
-
-export const dangerButton = style([
-  buttonBase,
-  {
-    borderColor: "#fecaca",
-    color: "#b91c1c",
-    selectors: {
-      "&:hover:not(:disabled)": {
-        background: "#fef2f2",
-      },
-    },
-  },
-]);
-
 export const suggestionsCard = style({
   display: "flex",
   flexDirection: "column",

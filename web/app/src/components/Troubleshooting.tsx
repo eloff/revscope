@@ -23,11 +23,11 @@ import {
   type TroubleshootingIngestResponse,
   type TroubleshootingStatusResponse,
 } from "../lib/troubleshootingApi";
+import { primaryButton } from "./buttons.css";
 import {
   badge,
   badgeError,
   badgeOk,
-  checkButton,
   docsLink,
   emptyState,
   errorMessage,
@@ -324,7 +324,7 @@ export default function Troubleshooting() {
                 />
                 <button
                   type="button"
-                  class={checkButton}
+                  class={primaryButton}
                   disabled={checking() || !url().trim() || !projectId()}
                   onClick={() => void onCheck()}
                 >
