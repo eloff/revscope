@@ -106,11 +106,35 @@ pub struct MeResponse {
     pub plan: String,
     pub is_admin: bool,
     pub gravatar_url: String,
+    /// Months of history the account's dashboards show, counted back from
+    /// today; absent when they show all of it. Older data is kept, just not shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_retention_months: Option<i64>,
+    /// A paid subscription that ended because it wasn't paid for, which moved the
+    /// account onto the free plan. Absent once a new subscription is paid for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpaid_subscription: Option<UnpaidSubscription>,
     /// Only on a signup or login that asked for it, and only then: the server keeps
     /// just its hash. Send it as `Authorization: Bearer`. Revoked by logout, and by
     /// a password reset, like any other session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_token: Option<String>,
+}
+
+/// The terms of a subscription that ended unpaid, and what restoring them costs:
+/// one billing period at those terms, starting a new period the day it's paid.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnpaidSubscription {
+    pub plan: String,
+    /// `None` means the plan is unmetered.
+    pub events_monthly_limit: Option<i32>,
+    /// `monthly` or `yearly`.
+    pub billing_period: String,
+    pub amount_cents: i32,
+    /// Lowercase ISO 4217, e.g. `usd`.
+    pub currency: String,
+    /// When the account moved onto the free plan, in unix seconds.
+    pub ended_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -45,6 +45,7 @@ import { ImportedCoverageProvider, ImportedDataNotice } from "./ImportedCoverage
 import { message } from "./messages.css";
 import type { ProjectOverviewCache } from "./ProjectOverviewCard";
 import ProjectsOverview from "./ProjectsOverview";
+import UnpaidSubscriptionBanner from "./UnpaidSubscriptionBanner";
 
 export type DashboardLayout = "page" | "embedded" | "fullscreen";
 
@@ -145,6 +146,12 @@ export default function DashboardShellContent(props: DashboardShellProps) {
     <div class={SHELL_CLASS[layout()]}>
       <Show when={authReady()} fallback={<p class={message}>Loading analytics…</p>}>
         <Show when={canLoad()} fallback={<p class={message}>Log in to view analytics.</p>}>
+          <Show when={!props.publicAccess}>
+            <UnpaidSubscriptionBanner
+              unpaid={authUser()?.unpaid_subscription}
+              retentionMonths={authUser()?.data_retention_months}
+            />
+          </Show>
           <DashboardFilters
             showBrand={layout() !== "embedded"}
             showAccount={layout() !== "embedded"}

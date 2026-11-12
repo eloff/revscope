@@ -20,7 +20,8 @@
     "./SocialSignIn": "./src/SocialSignIn.tsx",
     "./browserTimezone": "./src/browserTimezone.ts",
     "./projectName": "./src/projectName.ts",
-    "./ProjectNameFields": "./src/ProjectNameFields.tsx"
+    "./ProjectNameFields": "./src/ProjectNameFields.tsx",
+    "./subscriptionLabels": "./src/subscriptionLabels.ts"
   },
   "dependencies": {
     "@ark-ui/solid": "^5.39.3",

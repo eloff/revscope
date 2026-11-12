@@ -11,9 +11,11 @@ import {
   useContext,
 } from "solid-js";
 import {
+  clampRangeToRetention,
   type DateRangeSeconds,
   DEFAULT_DATE_SHORTCUT,
   EMPTY_DATE_RANGE,
+  oldestRetainedStart,
   shortcutToRange,
 } from "../../lib/dateRange";
 import {
@@ -58,8 +60,11 @@ type DashboardStateContextValue = {
    * it prints agree with the buckets the server builds.
    */
   timeZone: Accessor<string>;
+  /** The selected range, never starting before {@link oldestStart}. */
   range: Accessor<DateRangeSeconds>;
   setRange: (range: DateRangeSeconds) => void;
+  /** The first instant the plan's retention shows, or `null` for no limit. */
+  oldestStart: Accessor<number | null>;
   /** False during SSR and the first client paint; true after onMount sets the real range. */
   rangeReady: Accessor<boolean>;
   segments: Accessor<SegmentFilters>;
@@ -89,6 +94,8 @@ export type DashboardStateProviderProps = ParentProps<{
   timeZone?: Accessor<string>;
   /** A period the viewer already chose, carried over from another project. */
   initialRange?: DateRangeSeconds;
+  /** Months of history the project's plan shows; `null` or absent for all of it. */
+  retentionMonths?: Accessor<number | null>;
 }>;
 
 export function DashboardStateProvider(props: DashboardStateProviderProps) {
@@ -99,7 +106,14 @@ export function DashboardStateProvider(props: DashboardStateProviderProps) {
     segments: EMPTY_SEGMENT_FILTERS,
   });
   const [rangeReady, setRangeReady] = createSignal(false);
-  const range = createMemo(() => filters().range);
+  // Clock-dependent like the range, so it waits for mount too.
+  const oldestStart = createMemo(() =>
+    rangeReady() ? oldestRetainedStart(timeZone(), props.retentionMonths?.() ?? null) : null,
+  );
+  // Clamped on read rather than on every write, so a default, a carried-over
+  // range, and a shifted one all stay inside retention, and a plan that keeps
+  // more shows the range as it was chosen.
+  const range = createMemo(() => clampRangeToRetention(timeZone(), filters().range, oldestStart()));
   // The project's zone arrives with the account, which lands after mount, so the
   // default range is realigned when it does. Only while the user hasn't picked a
   // range of their own — moving one they chose out from under them would be worse
@@ -210,6 +224,7 @@ export function DashboardStateProvider(props: DashboardStateProviderProps) {
     timeZone,
     range,
     setRange,
+    oldestStart,
     rangeReady,
     segments,
     addCountryFilter,

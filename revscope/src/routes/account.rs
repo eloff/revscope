@@ -226,6 +226,8 @@ fn me_response(current_user: &MeSuccess) -> MeResponse {
         plan: current_user.user.plan.clone(),
         is_admin: current_user.user.is_admin,
         gravatar_url: current_user.gravatar_url.clone(),
+        data_retention_months: current_user.user.retention_months,
+        unpaid_subscription: current_user.unpaid_subscription.clone(),
         api_token: None,
     }
 }

@@ -128,6 +128,7 @@ mod tests {
             name: "Test".to_string(),
             email: "test@example.com".to_string(),
             plan: "starter".to_string(),
+            retention_months: Some(12),
             is_admin: true,
             projects: crate::user_access::ProjectScope::All,
         }

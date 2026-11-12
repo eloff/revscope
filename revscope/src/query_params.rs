@@ -1,9 +1,11 @@
 //! Query-string parameters shared by the report routes, and the sorting and
 //! paging they control.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use crate::comparison;
+use crate::plan_retention::retained_range;
 
 /// The `key=value` pairs of a request target's query string, as sent: values
 /// are not percent-decoded, and a pair without `=` is skipped.
@@ -50,6 +52,33 @@ pub(crate) fn parse_report_query<'a>(
 /// The required date range of a report with no parameters of its own.
 pub(crate) fn parse_date_range_query(target: &str) -> Result<(i64, i64), &'static str> {
     parse_report_query(target, |_key, _value| Ok(()))?.validate()
+}
+
+/// `target` with its `start` moved up to `oldest`, so a report parsed from it
+/// shows nothing older than the plan keeps. Every repeat of `start` is
+/// replaced, since the parsers read the last. A range missing its bounds is
+/// passed on as is for the report's own parser to refuse.
+pub(crate) fn retained_target(
+    target: &str,
+    oldest: Option<i64>,
+) -> Result<Cow<'_, str>, &'static str> {
+    let range = parse_report_query(target, |_key, _value| Ok(()))?;
+    let (Some(start), Some(end)) = (range.start, range.end) else {
+        return Ok(Cow::Borrowed(target));
+    };
+    let (retained_start, _) = retained_range(start, end, oldest)?;
+    if retained_start == start {
+        return Ok(Cow::Borrowed(target));
+    }
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let mut pairs: Vec<String> = query
+        .split('&')
+        .filter(|pair| pair.split_once('=').is_none_or(|(key, _)| key != "start"))
+        .filter(|pair| !pair.is_empty())
+        .map(str::to_string)
+        .collect();
+    pairs.push(format!("start={retained_start}"));
+    Ok(Cow::Owned(format!("{path}?{}", pairs.join("&"))))
 }
 
 /// A paged, sorted report's `offset`, `order_by` and `direction` parameters.
@@ -187,6 +216,33 @@ mod tests {
             Some("bad")
         );
         assert_eq!(parse_date_range_query("/x?end=5"), Err("start is required"));
+    }
+
+    #[test]
+    fn a_start_older_than_retention_moves_up_to_it() {
+        assert_eq!(
+            retained_target("/x?start=10&bucket=day&start=5&end=50", Some(20)).as_deref(),
+            Ok("/x?bucket=day&end=50&start=20")
+        );
+        let unchanged = retained_target("/x?start=30&end=50", Some(20)).expect("in range");
+        assert!(matches!(unchanged, Cow::Borrowed("/x?start=30&end=50")));
+        assert!(matches!(
+            retained_target("/x?start=10&end=50", None),
+            Ok(Cow::Borrowed(_))
+        ));
+    }
+
+    #[test]
+    fn a_range_wholly_older_than_retention_is_refused() {
+        assert_eq!(
+            retained_target("/x?start=10&end=20", Some(20)),
+            Err(crate::plan_retention::RANGE_OLDER_THAN_RETENTION)
+        );
+        // Left for the report's parser to name what's missing.
+        assert!(matches!(
+            retained_target("/x?end=20", Some(30)),
+            Ok(Cow::Borrowed("/x?end=20"))
+        ));
     }
 
     #[test]

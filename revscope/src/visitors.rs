@@ -173,12 +173,19 @@ pub(crate) fn visitors(
     fetch_visitors(server_context, project.id(), &query)
 }
 
+/// The session's journey, or not found when it landed before `oldest`, the
+/// first second the plan's retention shows.
 pub(crate) fn visitor_journey(
     server_context: Arc<ServerContext>,
     project: &AuthorizedProject,
     query: VisitorJourneyQuery,
+    oldest: Option<i64>,
 ) -> Result<VisitorJourneyResponse, AuthError> {
-    fetch_visitor_journey(server_context, project.id(), &query)
+    let journey = fetch_visitor_journey(server_context, project.id(), &query)?;
+    if oldest.is_some_and(|oldest| journey.visitor.viewed_at < oldest) {
+        return Err(AuthError::InvalidRequest("visitor not found"));
+    }
+    Ok(journey)
 }
 
 fn fetch_visitors(

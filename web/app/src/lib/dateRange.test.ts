@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clampRangeToMaxDays,
+  clampRangeToRetention,
   dateValueToUnixEndExclusive,
   dateValueToUnixStart,
   isDateRangeReady,
   MAX_RANGE_DAYS,
+  oldestRetainedStart,
   periodInTimeZone,
   rangeDayCount,
   rangeEndIncludesCurrentDay,
@@ -213,5 +215,41 @@ describe("periodInTimeZone", () => {
     expect(periodInTimeZone(picked, "UTC", "Asia/Tokyo")).toEqual(
       rangeInTimeZone(picked, "UTC", "Asia/Tokyo"),
     );
+  });
+});
+
+describe("retention", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // Already 11 November in UTC, still the 10th in New York.
+    vi.setSystemTime(new Date("2026-11-11T03:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("starts on the same day N months back, in the project's zone", () => {
+    expect(oldestRetainedStart("UTC", 3)).toBe(utc("2026-08-11T00:00:00"));
+    expect(oldestRetainedStart("America/New_York", 3)).toBe(utc("2026-08-10T04:00:00"));
+    expect(oldestRetainedStart("UTC", null)).toBeNull();
+  });
+
+  it("moves a range's start up to the oldest day kept", () => {
+    const oldest = utc("2026-08-11T00:00:00");
+    const range = { start: utc("2026-01-01T00:00:00"), end: utc("2026-11-12T00:00:00") };
+    expect(clampRangeToRetention("UTC", range, oldest)).toEqual({ start: oldest, end: range.end });
+    const inside = { start: utc("2026-10-01T00:00:00"), end: range.end };
+    expect(clampRangeToRetention("UTC", inside, oldest)).toBe(inside);
+    expect(clampRangeToRetention("UTC", range, null)).toBe(range);
+  });
+
+  it("turns a range wholly before retention into its oldest day", () => {
+    const oldest = utc("2026-08-11T00:00:00");
+    const range = { start: utc("2026-01-01T00:00:00"), end: utc("2026-02-01T00:00:00") };
+    expect(clampRangeToRetention("UTC", range, oldest)).toEqual({
+      start: oldest,
+      end: oldest + DAY,
+    });
   });
 });

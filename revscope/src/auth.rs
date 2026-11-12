@@ -89,6 +89,9 @@ pub(crate) struct SessionUser {
     pub(crate) name: String,
     pub(crate) email: String,
     pub(crate) plan: String,
+    /// What the account's dashboards may show, from
+    /// [`crate::plan_retention::account_retention_months`].
+    pub(crate) retention_months: Option<i64>,
     pub(crate) is_admin: bool,
     pub(crate) projects: ProjectScope,
 }
@@ -102,6 +105,9 @@ pub(crate) struct MeSuccess {
     /// ordered by name.
     pub(crate) projects: Vec<(String, ProjectInfo)>,
     pub(crate) gravatar_url: String,
+    /// What the account owes for a subscription that ended unpaid. Only admins
+    /// see it, since only they can pay it.
+    pub(crate) unpaid_subscription: Option<revscope_api::auth::UnpaidSubscription>,
 }
 
 /// A signup the user can fix in the form and that wrote nothing: a field the
@@ -843,7 +849,8 @@ async fn load_session_user(
     let generation = server_context.session_cache.generation();
     let row = conn
         .query_opt(
-            "SELECT
+            &format!(
+                "SELECT
                 u.id::text,
                 u.account_id::text,
                 u.name,
@@ -855,7 +862,8 @@ async fn load_session_user(
                 u.is_admin,
                 CASE WHEN u.all_projects THEN NULL ELSE ARRAY(
                     SELECT up.project_id FROM user_projects up WHERE up.user_id = u.id
-                ) END
+                ) END,
+                {}
              FROM sessions s
              INNER JOIN users u ON u.id = s.user_id
              INNER JOIN accounts a ON a.id = u.account_id
@@ -864,18 +872,26 @@ async fn load_session_user(
              WHERE s.token_hash = $1
              AND s.expires_at > NOW()
              LIMIT 1",
+                crate::plan_retention::RETENTION_STATUS_SQL
+            ),
             &[&token.hash()],
         )
         .await
         .map_err(map_query_error)?
         .ok_or(AuthError::InvalidSession)?;
 
+    let plan: String = row.get(4);
+    let subscription_status: Option<String> = row.get(8);
     let user = SessionUser {
         user_id: row.get(0),
         account_id: row.get(1),
         name: row.get(2),
         email: row.get(3),
-        plan: row.get(4),
+        retention_months: crate::plan_retention::account_retention_months(
+            &plan,
+            subscription_status.as_deref(),
+        ),
+        plan,
         is_admin: row.get(6),
         projects: ProjectScope::from_ids(row.get(7)),
     };
@@ -924,10 +940,22 @@ pub(crate) async fn me(
         })
         .collect();
 
+    #[cfg(feature = "billing")]
+    let unpaid_subscription = if user.is_admin {
+        crate::billing::lapse::unpaid_subscription(&conn, &user.account_id)
+            .await
+            .map_err(map_query_error)?
+    } else {
+        None
+    };
+    #[cfg(not(feature = "billing"))]
+    let unpaid_subscription = None;
+
     Ok(MeSuccess {
         gravatar_url: gravatar_url(user.email.as_str()),
         user,
         projects,
+        unpaid_subscription,
     })
 }
 

@@ -85,24 +85,33 @@ fn normalize_hostnames(hostnames: Vec<String>) -> Result<Vec<String>, AuthError>
     Ok(normalized)
 }
 
-async fn load_plan(
+/// The months of history the project's account keeps, read fresh.
+async fn load_retention_months(
     server_context: Arc<ServerContext>,
     project_key: i32,
-) -> Result<String, AuthError> {
+) -> Result<Option<i64>, AuthError> {
     let conn = open_main_database_read(server_context).await?;
     let row = conn
         .query_opt(
-            "SELECT sub.plan_type::text
+            &format!(
+                "SELECT sub.plan_type::text, {}
              FROM projects p
              JOIN account_subscriptions sub
                 ON sub.account_id = p.account_id AND sub.ended_at IS NULL
              WHERE p.id = $1",
+                crate::plan_retention::RETENTION_STATUS_SQL
+            ),
             &[&project_key],
         )
         .await
         .map_err(AuthError::from)?
         .ok_or(AuthError::NotFound("no such project"))?;
-    Ok(row.get(0))
+    let plan: String = row.get(0);
+    let status: Option<String> = row.get(1);
+    Ok(crate::plan_retention::account_retention_months(
+        &plan,
+        status.as_deref(),
+    ))
 }
 
 pub(crate) fn start_import(
@@ -128,8 +137,8 @@ pub(crate) fn start_import(
         .date_of(unix_seconds())
         .ok_or(AuthError::Temporary("couldn't read the current date"))?;
     // Read fresh: this is a hard limit, and a session can hold a plan since changed.
-    let plan = block_on(load_plan(server_context.clone(), project.key()))?;
-    let oldest_allowed = oldest_retained_date(&plan, today);
+    let retention_months = block_on(load_retention_months(server_context.clone(), project.key()))?;
+    let oldest_allowed = oldest_retained_date(retention_months, today);
     let read_conn = open_project_database_read(server_context.as_ref(), project.id())?;
     let first_tracked = store::first_tracked_second(&read_conn)
         .map_err(crate::auth::map_row_error)?

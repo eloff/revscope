@@ -137,7 +137,10 @@ pub(crate) fn plan_includes_paid_features(plan: &str, subscription_status: Optio
     match plan {
         // Never billed, so it has no subscription status.
         "enterprise" => true,
-        "starter" | "growth" | "founder" | "founder_friends" => {
+        // Granted once its promo subscription went live, and never taken back
+        // for want of payment; a cancellation moves the account to free instead.
+        "founder_friends" => true,
+        "starter" | "growth" | "founder" => {
             matches!(
                 subscription_status,
                 Some("trialing" | "active" | "past_due")

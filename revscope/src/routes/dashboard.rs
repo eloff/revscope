@@ -28,14 +28,14 @@ fn report<Q, R: Serialize>(
     parse: impl FnOnce(&str) -> Result<Q, &'static str>,
     report: impl FnOnce(Arc<ServerContext>, &AuthorizedProject, Q) -> Result<R, AuthError>,
 ) -> RouteResult {
-    let query = request.query(parse)?;
+    let query = request.retained_query(project, parse)?;
     project_json(report(request.context(), project, query), context)
 }
 
 /// Like [`report`], but serves the public demo's unfiltered overviews from
 /// cache.
 pub(super) fn overview(request: &ApiRequest, project: &AuthorizedProject) -> RouteResult {
-    let query = request.query(overview::parse_overview_query)?;
+    let query = request.retained_query(project, overview::parse_overview_query)?;
     let server_context = request.context();
     if let Some(body) =
         overview::take_cached_demo_overview(&server_context, request.project_id(), &query)
@@ -64,22 +64,28 @@ pub(super) fn conversions(request: &ApiRequest, project: &AuthorizedProject) -> 
 }
 
 pub(super) fn payment_activity(request: &ApiRequest, project: &AuthorizedProject) -> RouteResult {
+    // A fixed window back from now rather than a range the query names.
+    let oldest = request.oldest_retained_second(project);
     report(
         request,
         project,
         "payment_activity",
         payment_activity::parse_payment_activity_query,
-        payment_activity::payment_activity,
+        |context, project, query| {
+            payment_activity::payment_activity(context, project, query, oldest)
+        },
     )
 }
 
 pub(super) fn payment_journey(request: &ApiRequest, project: &AuthorizedProject) -> RouteResult {
+    // A journey is one payment, named by id rather than by a range.
+    let oldest = request.oldest_retained_second(project);
     report(
         request,
         project,
         "payment_journey",
         payment_journey::parse_payment_journey_query,
-        payment_journey::payment_journey,
+        |context, project, query| payment_journey::payment_journey(context, project, query, oldest),
     )
 }
 
@@ -154,12 +160,14 @@ pub(super) fn visitors(request: &ApiRequest, project: &AuthorizedProject) -> Rou
 }
 
 pub(super) fn visitor_journey(request: &ApiRequest, project: &AuthorizedProject) -> RouteResult {
+    // A journey is one session, named by id rather than by a range.
+    let oldest = request.oldest_retained_second(project);
     report(
         request,
         project,
         "visitor_journey",
         visitors::parse_visitor_journey_query,
-        visitors::visitor_journey,
+        |context, project, query| visitors::visitor_journey(context, project, query, oldest),
     )
 }
 

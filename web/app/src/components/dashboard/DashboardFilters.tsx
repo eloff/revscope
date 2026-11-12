@@ -17,6 +17,7 @@ import {
 import revscopeLogo from "../../assets/revscope-logo.svg";
 import {
   clampRangeToMaxDays,
+  clampRangeToRetention,
   DATE_SHORTCUT_OPTIONS,
   type DateRangeSeconds,
   type DateShortcut,
@@ -182,6 +183,7 @@ export default function DashboardFilters(props: DashboardFiltersProps) {
     timeZone,
     range,
     setRange,
+    oldestStart,
     rangeReady,
     segments,
     removeCountryFilter,
@@ -277,6 +279,21 @@ export default function DashboardFilters(props: DashboardFiltersProps) {
     return value ? parseDate(dateValueToIso(value)) : undefined;
   });
 
+  // The first day the plan's retention shows; nothing before it can be picked.
+  const oldestDate = createMemo(() => {
+    const start = oldestStart();
+    return start === null ? null : unixStartToDateValue(timeZone(), start);
+  });
+  const minDate = createMemo(() => {
+    const value = oldestDate();
+    return value ? parseDate(dateValueToIso(value)) : undefined;
+  });
+
+  const canShiftPrevious = createMemo(() => {
+    const start = oldestStart();
+    return rangeReady() && (start === null || range().start > start);
+  });
+
   const canShiftNext = createMemo(() => {
     const todayValue = today();
     if (!rangeReady() || !todayValue) {
@@ -301,9 +318,13 @@ export default function DashboardFilters(props: DashboardFiltersProps) {
     return formatDayCountLabel(rangeDayCount(range()));
   });
 
+  // The provider clamps too; doing it here keeps the picker showing what it does.
+  const retained = (next: DateRangeSeconds) =>
+    clampRangeToRetention(timeZone(), next, oldestStart());
+
   const selectShortcut = (next: DateShortcut) => {
     setShortcut(next);
-    const nextRange = shortcutToRange(next, timeZone());
+    const nextRange = retained(shortcutToRange(next, timeZone()));
     setCalendarOpen(false);
     setPendingStartValue(null);
     setRange(nextRange);
@@ -321,7 +342,7 @@ export default function DashboardFilters(props: DashboardFiltersProps) {
       setPickerValue(dateValues);
       return;
     }
-    const clampedRange = clampRangeToMaxDays(nextRange);
+    const clampedRange = retained(clampRangeToMaxDays(nextRange));
     setPendingStartValue(null);
     setCalendarOpen(false);
     setRange(clampedRange);
@@ -337,10 +358,12 @@ export default function DashboardFilters(props: DashboardFiltersProps) {
 
   const selectCalendarDay = (day: DateValueLike, visibleMonthStart: DateValueLike) => {
     const todayValue = today();
+    const oldest = oldestDate();
     if (
       !todayValue ||
       !isSameCalendarMonth(day, visibleMonthStart) ||
-      isBeforeDate(todayValue, day)
+      isBeforeDate(todayValue, day) ||
+      (oldest && isBeforeDate(day, oldest))
     ) {
       return;
     }
@@ -381,19 +404,25 @@ export default function DashboardFilters(props: DashboardFiltersProps) {
   };
 
   const shiftRange = (direction: -1 | 1) => {
-    if (!rangeReady() || (direction === 1 && !canShiftNext())) {
+    if (
+      !rangeReady() ||
+      (direction === 1 && !canShiftNext()) ||
+      (direction === -1 && !canShiftPrevious())
+    ) {
       return;
     }
     const todayValue = today();
     if (!todayValue) {
       return;
     }
-    const nextRange = shiftDateRange(timeZone(), range(), direction);
+    let nextRange = shiftDateRange(timeZone(), range(), direction);
     if (direction === 1) {
       const todayEndExclusive = dateValueToUnixEndExclusive(timeZone(), todayValue);
       if (nextRange.end > todayEndExclusive) {
         nextRange.end = todayEndExclusive;
       }
+    } else {
+      nextRange = retained(nextRange);
     }
     setShortcut("custom");
     setPendingStartValue(null);
@@ -436,7 +465,8 @@ export default function DashboardFilters(props: DashboardFiltersProps) {
           type="button"
           class={periodNavButtonPrev}
           aria-label="Previous period"
-          disabled={!rangeReady() || dateRangeDisabled()}
+          disabled={!canShiftPrevious() || dateRangeDisabled()}
+          title={canShiftPrevious() ? undefined : "Older data is outside your plan's retention"}
           onClick={() => shiftRange(-1)}
         >
           <span class={periodNavIcon} aria-hidden="true">
@@ -457,6 +487,7 @@ export default function DashboardFilters(props: DashboardFiltersProps) {
               }
               setCalendarOpen(details.open);
             }}
+            min={minDate()}
             max={maxDate()}
             value={pickerDateValues()}
             onValueChange={onPickerChange}

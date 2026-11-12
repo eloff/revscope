@@ -1,5 +1,6 @@
-//! A daily task that reports refunds still owed, on the hosted service, and deletes
-//! rows the main Postgres database no longer needs:
+//! A daily task that, on the hosted service, moves accounts whose subscription
+//! ended without a webhook saying so onto the free plan and reports refunds
+//! still owed, and that deletes rows the main Postgres database no longer needs:
 //! expired tokens and sessions, old ingest errors, invites that lapsed, and MCP
 //! client registrations that never got a token.
 
@@ -37,6 +38,13 @@ pub async fn run_main_db_cleanup(server_context: Arc<ServerContext>) {
     }
     if let Err(error) = crate::ingest::delete_expired_errors(server_context.clone()).await {
         report_error!("errors.cleanup", "expired error cleanup failed: {error:?}");
+    }
+    #[cfg(feature = "billing")]
+    if let Err(error) = crate::billing::lapse::sweep(server_context.clone()).await {
+        report_error!(
+            "billing.lapse_sweep",
+            "could not check for subscriptions that have ended: {error}"
+        );
     }
     #[cfg(feature = "billing")]
     if let Err(error) = crate::billing::owed_refunds::report_unsettled(server_context.clone()).await

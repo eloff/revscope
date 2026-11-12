@@ -46,6 +46,28 @@ export type AuthSession = {
   /** Admins see billing and manage the account's users. */
   is_admin: boolean;
   gravatar_url?: string;
+  /**
+   * Months of history the dashboards show, counted back from today; `null`
+   * when they show all of it.
+   */
+  data_retention_months: number | null;
+  /**
+   * A paid subscription that ended unpaid and moved the account onto the free
+   * plan. Sent to admins only, since only they can pay it.
+   */
+  unpaid_subscription: UnpaidSubscription | null;
+};
+
+/** What restoring a subscription that ended unpaid costs: one period of it, from the day it's paid. */
+export type UnpaidSubscription = {
+  plan: string;
+  /** `null` means the plan is unmetered. */
+  events_monthly_limit: number | null;
+  billing_period: string;
+  amount_cents: number;
+  currency: string;
+  /** When the account moved onto the free plan, in unix seconds. */
+  ended_at: number;
 };
 
 type StoredAuthSession = {
@@ -88,6 +110,48 @@ function isProjectsRecord(value: unknown): value is Record<string, AuthProject> 
   );
 }
 
+function parseUnpaidSubscription(value: unknown): UnpaidSubscription | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const unpaid = value as Record<string, unknown>;
+  if (
+    typeof unpaid.plan !== "string" ||
+    !(unpaid.events_monthly_limit === null || typeof unpaid.events_monthly_limit === "number") ||
+    typeof unpaid.billing_period !== "string" ||
+    typeof unpaid.amount_cents !== "number" ||
+    typeof unpaid.currency !== "string" ||
+    typeof unpaid.ended_at !== "number"
+  ) {
+    return null;
+  }
+  return {
+    plan: unpaid.plan,
+    events_monthly_limit: unpaid.events_monthly_limit,
+    billing_period: unpaid.billing_period,
+    amount_cents: unpaid.amount_cents,
+    currency: unpaid.currency,
+    ended_at: unpaid.ended_at,
+  };
+}
+
+function unpaidSubscriptionsEqual(
+  left: UnpaidSubscription | null,
+  right: UnpaidSubscription | null,
+): boolean {
+  if (!left || !right) {
+    return left === right;
+  }
+  return (
+    left.plan === right.plan &&
+    left.events_monthly_limit === right.events_monthly_limit &&
+    left.billing_period === right.billing_period &&
+    left.amount_cents === right.amount_cents &&
+    left.currency === right.currency &&
+    left.ended_at === right.ended_at
+  );
+}
+
 /** Validates a `/v2/session/me` payload, from the network or from localStorage. */
 export function parseAuthSession(value: unknown): AuthSession | null {
   if (typeof value !== "object" || value === null) {
@@ -116,6 +180,10 @@ export function parseAuthSession(value: unknown): AuthSession | null {
     plan: payload.plan,
     is_admin: payload.is_admin,
     gravatar_url: typeof payload.gravatar_url === "string" ? payload.gravatar_url : undefined,
+    // Absent means unlimited, as from a server that keeps everything.
+    data_retention_months:
+      typeof payload.data_retention_months === "number" ? payload.data_retention_months : null,
+    unpaid_subscription: parseUnpaidSubscription(payload.unpaid_subscription),
   };
 }
 
@@ -194,6 +262,8 @@ function authSessionsEqual(left: AuthSession | null, right: AuthSession): boolea
     left.plan === right.plan &&
     left.is_admin === right.is_admin &&
     left.gravatar_url === right.gravatar_url &&
+    left.data_retention_months === right.data_retention_months &&
+    unpaidSubscriptionsEqual(left.unpaid_subscription, right.unpaid_subscription) &&
     projectsEqual(left.projects, right.projects)
   );
 }

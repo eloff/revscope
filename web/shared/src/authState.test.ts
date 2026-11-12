@@ -68,6 +68,31 @@ describe("parseAuthSession", () => {
     expect(parseAuthSession({ ...session, gravatar_url: 5, extra: true })).toEqual(session);
   });
 
+  it("reads retention and an unpaid subscription, treating their absence as none", async () => {
+    const { parseAuthSession } = await loadAuthState();
+    const unpaid = {
+      plan: "growth",
+      events_monthly_limit: 1_000_000,
+      billing_period: "monthly",
+      amount_cents: 17_200,
+      currency: "usd",
+      ended_at: 1_794_000_000,
+    };
+    const session = testSession({ data_retention_months: 3, unpaid_subscription: unpaid });
+    expect(parseAuthSession(session)).toEqual(session);
+
+    const older = Object.fromEntries(
+      Object.entries(session).filter(
+        ([key]) => key !== "data_retention_months" && key !== "unpaid_subscription",
+      ),
+    );
+    expect(parseAuthSession(older)).toEqual(testSession());
+    expect(
+      parseAuthSession({ ...session, unpaid_subscription: { ...unpaid, amount_cents: "172" } })
+        ?.unpaid_subscription,
+    ).toBeNull();
+  });
+
   it.each([
     ["null", null],
     ["a string", "user"],

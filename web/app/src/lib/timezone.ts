@@ -163,6 +163,19 @@ export function addCivilDays(date: CivilDate, days: number): CivilDate {
   };
 }
 
+/**
+ * The same day `months` earlier, or the last day of that month when it is
+ * shorter, as the server's retention counts it (31 August less 6 months is
+ * 28 February).
+ */
+export function subtractCivilMonths(date: CivilDate, months: number): CivilDate {
+  const monthIndex = date.year * 12 + (date.month - 1) - months;
+  const year = Math.floor(monthIndex / 12);
+  const month = monthIndex - year * 12 + 1;
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return { year, month, day: Math.min(date.day, daysInMonth) };
+}
+
 /** Day of the week for a civil date, 0 = Sunday. */
 export function civilWeekday(date: CivilDate): number {
   return new Date(Date.UTC(date.year, date.month - 1, date.day)).getUTCDay();

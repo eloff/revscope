@@ -60,12 +60,19 @@ pub(crate) fn parse_payment_journey_query(
     })
 }
 
+/// The payment's journey, or not found when it was paid before `oldest`, the
+/// first second the plan's retention shows.
 pub(crate) fn payment_journey(
     server_context: Arc<ServerContext>,
     project: &AuthorizedProject,
     query: PaymentJourneyQuery,
+    oldest: Option<i64>,
 ) -> Result<PaymentJourneyResponse, AuthError> {
-    fetch_payment_journey(server_context, project.id(), &query)
+    let journey = fetch_payment_journey(server_context, project.id(), &query)?;
+    if oldest.is_some_and(|oldest| journey.payment.paid_at < oldest) {
+        return Err(AuthError::InvalidRequest("payment not found"));
+    }
+    Ok(journey)
 }
 
 fn fetch_payment_journey(

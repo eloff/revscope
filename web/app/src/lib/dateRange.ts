@@ -6,6 +6,7 @@ import {
   startOfZonedDayFrom,
   startOfZonedMonth,
   startOfZonedWeek,
+  subtractCivilMonths,
   zonedDate,
 } from "./timezone";
 
@@ -62,6 +63,37 @@ export function clampRangeToMaxDays(range: DateRangeSeconds): DateRangeSeconds {
   return {
     start: range.end - maxDuration,
     end: range.end,
+  };
+}
+
+/**
+ * The first instant a plan keeping `months` of history shows, today in
+ * `timeZone`; `null` when it keeps everything. Matches the server's limit, so
+ * nothing the picker offers is refused.
+ */
+export function oldestRetainedStart(timeZone: string, months: number | null): number | null {
+  if (months === null) {
+    return null;
+  }
+  const today = zonedDate(timeZone, nowUnixSeconds());
+  return startOfZonedDayFrom(timeZone, subtractCivilMonths(today, months));
+}
+
+/**
+ * `range` with its start moved up to `oldestStart`. A range that ends before
+ * then becomes the oldest day there is.
+ */
+export function clampRangeToRetention(
+  timeZone: string,
+  range: DateRangeSeconds,
+  oldestStart: number | null,
+): DateRangeSeconds {
+  if (oldestStart === null || range.start >= oldestStart || !isDateRangeReady(range)) {
+    return range;
+  }
+  return {
+    start: oldestStart,
+    end: range.end > oldestStart ? range.end : addZonedDays(timeZone, oldestStart, 1),
   };
 }
 

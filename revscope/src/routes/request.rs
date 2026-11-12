@@ -5,7 +5,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::auth::{AuthError, SessionCookie};
-use crate::authorize::Account;
+use crate::authorize::{Account, AuthorizedProject};
 use crate::http::{ParsedRequest, Response};
 use crate::server_context::ServerContext;
 
@@ -59,6 +59,32 @@ impl ApiRequest<'_> {
         parse: impl FnOnce(&str) -> Result<Q, &'static str>,
     ) -> Result<Q, Response> {
         parse(self.target()).map_err(bad_request)
+    }
+
+    /// Like [`Self::query`], for a report on `project`: a `start` older than
+    /// the project's retention is moved up to it before `parse` reads it.
+    pub(crate) fn retained_query<Q>(
+        &self,
+        project: &AuthorizedProject,
+        parse: impl FnOnce(&str) -> Result<Q, &'static str>,
+    ) -> Result<Q, Response> {
+        let target = crate::query_params::retained_target(
+            self.target(),
+            self.oldest_retained_second(project),
+        )
+        .map_err(bad_request)?;
+        parse(&target).map_err(bad_request)
+    }
+
+    /// The first second `project`'s reports may show, or `None` for all of it.
+    pub(crate) fn oldest_retained_second(&self, project: &AuthorizedProject) -> Option<i64> {
+        let months = project.retention_months()?;
+        let timezone = crate::timezone::project_timezone(self.context(), project.key());
+        crate::plan_retention::oldest_retained_second(
+            Some(months),
+            &timezone,
+            crate::util::unix_seconds(),
+        )
     }
 
     pub(crate) fn json_body<T: DeserializeOwned>(

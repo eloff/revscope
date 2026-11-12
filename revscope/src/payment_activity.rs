@@ -135,24 +135,28 @@ pub(crate) fn parse_payment_activity_query(
     })
 }
 
+/// `oldest` is the first second the plan's retention shows; the window starts
+/// no earlier, so older days and months read as empty.
 pub(crate) fn payment_activity(
     server_context: Arc<ServerContext>,
     project: &AuthorizedProject,
     query: PaymentActivityQuery,
+    oldest: Option<i64>,
 ) -> Result<PaymentActivityResponse, AuthError> {
-    fetch_payment_activity(server_context, project, &query)
+    fetch_payment_activity(server_context, project, &query, oldest)
 }
 
 fn fetch_payment_activity(
     server_context: Arc<ServerContext>,
     project: &AuthorizedProject,
     query: &PaymentActivityQuery,
+    oldest: Option<i64>,
 ) -> Result<PaymentActivityResponse, AuthError> {
     let timezone = timezone::project_timezone(server_context.clone(), project.key());
     let conn = open_project_database_read(server_context.as_ref(), project.id())
         .map_err(|error| AuthError::Db(error.to_string()))?;
     let end = i64::from(seconds_since_epoch());
-    let start = end - WINDOW_DAYS * DAY_SECONDS;
+    let start = (end - WINDOW_DAYS * DAY_SECONDS).max(oldest.unwrap_or(i64::MIN));
     build_payment_activity_response(&conn, start, end, &timezone, &query.segments)
 }
 

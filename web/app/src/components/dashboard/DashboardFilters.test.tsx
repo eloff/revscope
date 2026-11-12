@@ -19,6 +19,7 @@ afterEach(() => vi.useRealTimers());
 function renderFilters(
   props: Parameters<typeof DashboardFilters>[0] = {},
   initialRange?: { start: number; end: number },
+  retentionMonths: number | null = null,
 ) {
   let state!: ReturnType<typeof useDashboardState>;
   const Capture = () => {
@@ -26,7 +27,11 @@ function renderFilters(
     return null;
   };
   render(() => (
-    <DashboardStateProvider timeZone={() => NY} initialRange={initialRange}>
+    <DashboardStateProvider
+      timeZone={() => NY}
+      initialRange={initialRange}
+      retentionMonths={() => retentionMonths}
+    >
       <Capture />
       <DashboardFilters showAccount={false} {...props} />
     </DashboardStateProvider>
@@ -51,6 +56,19 @@ describe("DashboardFilters", () => {
 
     state().setRange({ start: midnight(2026, 4, 11), end: midnight(2026, 4, 21) });
     expect(screen.getByRole("button", { name: "Next period" })).toBeDisabled();
+  });
+
+  it("keeps the range inside the plan's retention", async () => {
+    // Three months before 20 April.
+    const oldest = midnight(2026, 1, 20);
+    const state = renderFilters({}, { start: midnight(2025, 12, 1), end: midnight(2026, 2, 1) }, 3);
+    expect(state().oldestStart()).toBe(oldest);
+    expect(state().range()).toEqual({ start: oldest, end: midnight(2026, 2, 1) });
+    expect(screen.getByRole("button", { name: "Previous period" })).toBeDisabled();
+
+    state().setRange({ start: midnight(2026, 2, 1), end: midnight(2026, 2, 15) });
+    await userEvent.click(screen.getByRole("button", { name: "Previous period" }));
+    expect(state().range()).toEqual({ start: oldest, end: midnight(2026, 2, 1) });
   });
 
   it("keeps period boundaries on local midnight across a DST change", async () => {

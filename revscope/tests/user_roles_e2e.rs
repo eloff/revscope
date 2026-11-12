@@ -87,7 +87,19 @@ async fn admins_invite_scope_and_remove_the_rest_of_the_account() -> io::Result<
 
     // Reads reach only the project they were given. The rest answer 404, as
     // for a project that doesn't exist, while the session stays live.
-    let overview = |id: i32| format!("/v2/read/projects/{id}/overview?start=0&end=86400");
+    // Yesterday, inside every plan's retention.
+    let today = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_secs()
+        / 86_400
+        * 86_400;
+    let overview = |id: i32| {
+        format!(
+            "/v2/read/projects/{id}/overview?start={}&end={today}",
+            today - 86_400
+        )
+    };
     assert_eq!(
         get(&server, &overview(second_id), &limited.cookie)
             .await?

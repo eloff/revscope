@@ -66,7 +66,7 @@ pub(crate) fn list_imports(
     let latest_allowed = today
         .checked_sub(1.day())
         .map_err(|_| AuthError::Temporary("couldn't read the current date"))?;
-    let oldest_allowed = oldest_retained_date(&project.admin().user().plan, today);
+    let oldest_allowed = oldest_retained_date(project.admin().user().retention_months, today);
     let default_start = oldest_allowed.unwrap_or(GA4_LAUNCH);
 
     let conn = open_project_database_read(server_context.as_ref(), project.id())?;

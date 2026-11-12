@@ -70,7 +70,7 @@ pub(super) fn save_settings(request: &ApiRequest, project: &AdminProject) -> Rou
 }
 
 pub(super) fn coverage(request: &ApiRequest, project: &AuthorizedProject) -> RouteResult {
-    let query = request.query(ga_import::parse_coverage_query)?;
+    let query = request.retained_query(project, ga_import::parse_coverage_query)?;
     project_json(
         ga_import::imported_coverage(request.context(), project, query),
         "imported_coverage",

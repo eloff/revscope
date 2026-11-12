@@ -10,6 +10,7 @@ import {
   startOfZonedDayFrom,
   startOfZonedMonth,
   startOfZonedWeek,
+  subtractCivilMonths,
   zonedDate,
   zonedDateTime,
 } from "./timezone";
@@ -151,5 +152,25 @@ describe("offset labels", () => {
     expect(formatUtcOffset("UTC", winter)).toBe("UTC+0");
     expect(formatUtcOffset("Europe/London", winter)).toBe("UTC+0");
     expect(formatUtcOffset("Europe/London", summer)).toBe("UTC+1");
+  });
+});
+
+describe("subtractCivilMonths", () => {
+  it("keeps the day, or the month's last when it is shorter", () => {
+    expect(subtractCivilMonths({ year: 2026, month: 11, day: 11 }, 3)).toEqual({
+      year: 2026,
+      month: 8,
+      day: 11,
+    });
+    expect(subtractCivilMonths({ year: 2026, month: 8, day: 31 }, 6)).toEqual({
+      year: 2026,
+      month: 2,
+      day: 28,
+    });
+    expect(subtractCivilMonths({ year: 2026, month: 2, day: 15 }, 12)).toEqual({
+      year: 2025,
+      month: 2,
+      day: 15,
+    });
   });
 });

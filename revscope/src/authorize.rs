@@ -63,6 +63,8 @@ impl Deref for AdminAccount {
 pub(crate) struct AuthorizedProject {
     id: String,
     key: i32,
+    /// Months of history the dashboard may show; `None` for no limit.
+    retention_months: Option<i64>,
 }
 
 impl AuthorizedProject {
@@ -74,11 +76,17 @@ impl AuthorizedProject {
         self.key
     }
 
+    pub(crate) fn retention_months(&self) -> Option<i64> {
+        self.retention_months
+    }
+
+    /// No retention limit: only the dashboard's reads are held to the plan's.
     fn from_parsed(project_id: &str) -> Result<Self, AuthError> {
         let key = parse_project_id(project_id)?;
         Ok(Self {
             id: crate::projects::normalize_project_id(project_id),
             key,
+            retention_months: None,
         })
     }
 }
@@ -255,18 +263,30 @@ pub(crate) fn authorize_session_project_mut(
 }
 
 /// Own project when signed in, otherwise the public demo only.
-/// Used by `/v2/read/projects/{id}/…`.
+/// Used by `/v2/read/projects/{id}/…`. An own project is read within the
+/// account's retention; the demo, read by anyone, has none.
 pub(crate) fn authorize_read_project(
     server_context: Arc<ServerContext>,
     account: Option<&Account>,
     project_id: &str,
 ) -> Result<AuthorizedProject, AuthError> {
-    if let Some(account) = account {
-        ensure_project_access_or_public(server_context, &account.user, project_id)?;
-    } else {
-        ensure_project_is_public(server_context, project_id)?;
+    let mut retention_months = None;
+    match account {
+        Some(account) => {
+            match ensure_project_access(server_context.clone(), &account.user, project_id) {
+                Ok(()) => retention_months = account.user.retention_months,
+                Err(AuthError::NoProjectAccess) => {
+                    ensure_project_is_public(server_context, project_id)?
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        None => ensure_project_is_public(server_context, project_id)?,
     }
-    AuthorizedProject::from_parsed(project_id)
+    Ok(AuthorizedProject {
+        retention_months,
+        ..AuthorizedProject::from_parsed(project_id)?
+    })
 }
 
 /// Session or project-scoped query token. Used by `/v2/query/projects/{id}/…`.
@@ -414,19 +434,6 @@ pub(crate) fn ensure_project_access(
     }
 }
 
-/// Own projects, or the public demo.
-pub(crate) fn ensure_project_access_or_public(
-    server_context: Arc<ServerContext>,
-    user: &SessionUser,
-    project_id: &str,
-) -> Result<(), AuthError> {
-    match ensure_project_access(server_context.clone(), user, project_id) {
-        Ok(()) => Ok(()),
-        Err(AuthError::NoProjectAccess) => ensure_project_is_public(server_context, project_id),
-        Err(error) => Err(error),
-    }
-}
-
 /// Blocks mutations against the reserved public demo project.
 pub(crate) fn ensure_project_not_public(
     server_context: Arc<ServerContext>,
@@ -566,6 +573,7 @@ mod tests {
             name: "Test".to_string(),
             email: "test@example.com".to_string(),
             plan: "starter".to_string(),
+            retention_months: Some(12),
             is_admin: false,
             projects: ProjectScope::All,
         }

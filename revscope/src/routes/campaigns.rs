@@ -14,7 +14,7 @@ use super::responses::{bad_request, map_project_auth_error};
 const CONTEXT: &str = "campaigns";
 
 pub(super) fn campaigns(request: &ApiRequest, project: &AuthorizedProject) -> RouteResult {
-    let query = request.query(campaigns::parse_campaigns_query)?;
+    let query = request.retained_query(project, campaigns::parse_campaigns_query)?;
     project_json(
         campaigns::campaigns(request.context(), project, query),
         CONTEXT,
@@ -47,7 +47,7 @@ pub(super) fn delete_campaign(
 
 /// Reports on unsaved campaign rules, so a draft can be seen before it is saved.
 pub(super) fn campaign_preview(request: &ApiRequest, project: &AuthorizedProject) -> RouteResult {
-    let query = request.query(campaigns::parse_campaigns_query)?;
+    let query = request.retained_query(project, campaigns::parse_campaigns_query)?;
     let payload =
         request.json_body::<CampaignPreviewRequest>("invalid campaign preview payload")?;
     let payload = campaigns::normalize_preview_request(payload).map_err(bad_request)?;
