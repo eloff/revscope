@@ -212,6 +212,7 @@ The repository has these parts:
 | `revscope/`            | The Rust backend: event ingest, the query API, accounts, and integrations. SQLite per project, Postgres for accounts. |
 | `web/`                 | A pnpm workspace with the web app (`web/app`, Astro and Solid) and its auth client (`web/shared`).              |
 | `cli/`                 | The `revscope` command line tool, which calls only the HTTP API.                                                |
+| `mcp-bridge/`          | A Docker bridge to the hosted MCP server, for MCP clients that only run local servers.                          |
 | `crates/revscope-api/` | The HTTP contract the backend and the CLI share: request and response types, route paths, and limits.           |
 | `e2e/`                 | Playwright tests that drive the public demo dashboard. They only read.                                          |
 
@@ -256,18 +257,13 @@ see its options.
 
 ### Tests and checks
 
-| Part        | Commands                                                                                      |
-| ----------- | --------------------------------------------------------------------------------------------- |
-| `tracker/`  | `pnpm check` (lint, and verifies the file is valid ES5), `pnpm test`, `pnpm build` (commit its output) |
-| `revscope/` | `cargo fmt`, then `cargo clippy` and `cargo test` with and without `--features self-hosted`   |
-| `web/`      | `pnpm tsc` (type check), `pnpm check` (lint and format), `pnpm test`, `pnpm build`, `pnpm build:bundle` |
-| `e2e/`      | `pnpm tsc`, `pnpm check`, `pnpm test` (see [CONTRIBUTING.md](CONTRIBUTING.md#browser-tests))  |
-| `cli/`      | `cargo fmt`, `cargo clippy`, `cargo test`, and in `cli/npm` `npm test`                        |
-| `crates/`   | `cargo fmt`, `cargo clippy`, `cargo test`, then the checks of `revscope/` and `cli/`          |
+[CONTRIBUTING.md](CONTRIBUTING.md#checks) lists the checks to run for each part.
+`web/` also has `pnpm build` and `pnpm build:bundle`, which builds the web app
+bundle that the self-hosted binary embeds.
 
 The backend's end-to-end tests in `revscope/tests/` need Postgres. They read
 `DATABASE_URL` from the environment or from `revscope/.e2e.env`. Point it at a
-database used only for tests. CI runs all of the above on every pull request.
+database used only for tests. CI runs the checks on every pull request.
 
 To try the tracker against a local backend, see the example site in
 `tracker/example` and the steps at the end of
@@ -293,10 +289,11 @@ The backend answers on several hostnames: `api.revscope.co` for the API,
 customers point a CNAME at to use their own domain. With `REVSCOPE_LISTEN_TLS`
 set, the backend gets and renews Let's Encrypt certificates for `eu1` and `api`
 (the default `REVSCOPE_TLS_DOMAINS`) and for customers' domains itself. It orders
-for a customer's domain only on a plan that includes one (Starter and up) and once that domain resolves to the same address as
-the first of those hostnames, and it limits how many it
-orders per account and overall, apart from the first attempt at renewing
-each certificate.
+a certificate for a customer's domain only on a plan that includes one (Starter
+and up), and only once that domain resolves to the same address as the first of
+those hostnames. It limits how many certificates it orders per account and
+overall. The first attempt at renewing a certificate doesn't count toward
+those limits.
 `REVSCOPE_REQUIRE_CLOUDFLARE=true` makes the server answer plain HTTP only from
 Cloudflare's IP ranges, so it can't be reached around the Cloudflare proxy that
 way.

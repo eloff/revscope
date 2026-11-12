@@ -1,6 +1,6 @@
-To install the tracker script on your site, add near the top of each page
-(ideally inside `<head>`). The queue stub is required so commands issued before
-the tracker initializes are replayed safely. It also loads the tracker script:
+To install the tracker on your site, add this stub near the top of each page,
+ideally inside `<head>`. It loads the tracker script, and queues commands
+issued before the tracker is ready so they can be replayed:
 
 ```html
 <script>

@@ -48,7 +48,7 @@ revscope query "SELECT p.path, COUNT(*) AS views
 | `logout` | Revokes the credential on the server and forgets it here. |
 | `whoami` | Shows the signed-in user and their projects. |
 | `password-reset` | Emails a link for setting the account's password. |
-| `projects list`, `create` | Lists projects, or adds one, named after its website or `--project-name`. The free plan allows one. |
+| `projects list`, `create` | Lists projects, or adds one, named after its website or `--project-name`. The free and Starter plans allow one. |
 | `settings show`, `set` | Time zone, payment success path, and custom domain (Starter plans and up). |
 | `install snippet` | Prints the tracker snippet, pointing at this project's server. |
 | `install status` | Recent events, including those not saved yet, and integration sync status. |
@@ -69,7 +69,7 @@ Run `revscope <command> --help` for every flag. Commands that work on a project 
 
 `signup` without a password gives the CLI a token and nothing else, which suits an agent acting for someone. To open the dashboard, the account's owner runs `revscope password-reset --email ...` and follows the link. Setting a password signs out every session, including the CLI's, so run `revscope login` afterwards. MCP and query tokens made earlier keep working until revoked, so whoever claims an account made by someone else should review those, and its users.
 
-`login` with no flags uses a browser, which works for anyone who can sign in on the website, including accounts made with Google or Apple. The browser must be on the same machine, since it returns to a port there; `--no-browser` only skips opening it. On a machine with no browser, use `REVSCOPE_TOKEN`.
+`login` with no flags uses a browser, which works for anyone who can sign in on the website, including accounts made with Google or Apple. The browser must be on the same machine, since it returns to a port there; `--no-browser` only skips opening it. On a machine with no browser, use `revscope login --email ... --password-stdin` if the account has a password, or set `REVSCOPE_TOKEN` to the token from a machine that is signed in.
 
 `signup` and `login` refuse while a live credential is stored, or while `REVSCOPE_TOKEN` is set, since replacing a token can lose the only way into its account. Set `REVSCOPE_CONFIG_DIR` to keep accounts apart. `revscope logout` ends the token for good, so on an account with no password, the only way back is then a reset email.
 
