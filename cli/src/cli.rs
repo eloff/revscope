@@ -277,10 +277,13 @@ pub struct ShopifyArgs {
     /// The store's myshopify.com domain, not a custom domain.
     #[arg(long, value_parser = literal)]
     pub shop: Option<String>,
-    /// An admin access token, or `-` for stdin. Requires read_orders and
+    /// The client ID of a Dev Dashboard app installed on the store with read_orders and
     /// read_own_subscription_contracts.
+    #[arg(long, value_parser = literal)]
+    pub client_id: Option<String>,
+    /// The app's client secret, or `-` for stdin.
     #[arg(long, value_parser = non_blank)]
-    pub admin_token: Option<String>,
+    pub client_secret: Option<String>,
     #[command(flatten)]
     pub wait: WaitArg,
 }

@@ -90,19 +90,19 @@ impl PaymentIntegration {
 }
 
 /// SQL selecting `columns` from the `integration_type` integrations due for a
-/// sync, as [`load_due_payment_integrations`] describes. `extra_condition`
-/// is ANDed into the filter for providers that need more stored state.
+/// sync, as [`load_due_payment_integrations`] describes. `stored_condition`
+/// picks the rows holding what the provider syncs with.
 pub(super) fn due_payment_integrations_sql(
     columns: &str,
     integration_type: &'static str,
-    extra_condition: &str,
+    stored_condition: &str,
 ) -> String {
     format!(
         "SELECT {columns}
          FROM integrations
          WHERE disabled_at IS NULL
             AND integration_type = '{integration_type}'::integration_type
-            AND encrypted_api_key IS NOT NULL{extra_condition}
+            AND {stored_condition}
             AND (last_sync_completed_at IS NULL
                  OR last_sync_completed_at < NOW() - INTERVAL '{SYNC_THROTTLE_SECS} seconds')
          ORDER BY
@@ -134,7 +134,7 @@ pub(super) async fn load_due_payment_integrations(
                  EXTRACT(EPOCH FROM last_full_sync_success_at)::BIGINT,
                  credentials_version",
                 integration_type,
-                "",
+                "encrypted_api_key IS NOT NULL",
             ),
             &[],
         )

@@ -494,8 +494,10 @@ async fn every_integration_in_the_catalog_can_be_connected_and_disconnected() ->
             "shopify",
             "--shop",
             "a.myshopify.com",
-            "--admin-token",
-            "shpat_0000000000",
+            "--client-id",
+            "client_0000000000",
+            "--client-secret",
+            "shpss_0000000000",
         ],
         &["square", "--access-token", "square_0000000000"],
         &["lemon-squeezy", "--api-key", "lemon_0000000000"],
@@ -545,10 +547,11 @@ async fn every_integration_in_the_catalog_can_be_connected_and_disconnected() ->
         "{listed}"
     );
 
-    // Rotating one key keeps the shop, which the server would otherwise write as NULL.
+    // Rotating the secret keeps the shop and client ID, which the server would
+    // otherwise write as NULL.
     cli.run_with_stdin(
-        &["integrations", "connect", "shopify", "--admin-token", "-"],
-        "shpat_1111111111\n",
+        &["integrations", "connect", "shopify", "--client-secret", "-"],
+        "shpss_1111111111\n",
     )
     .await
     .assert_ok();
@@ -558,7 +561,11 @@ async fn every_integration_in_the_catalog_can_be_connected_and_disconnected() ->
         shopify["api_key_masked"]
             .as_str()
             .unwrap()
-            .ends_with("1111"),
+            .ends_with("0000"),
+        "{shopify}"
+    );
+    assert!(
+        shopify["secret_masked"].as_str().unwrap().ends_with("1111"),
         "{shopify}"
     );
 
@@ -608,8 +615,8 @@ async fn every_integration_in_the_catalog_can_be_connected_and_disconnected() ->
             "integrations",
             "connect",
             "shopify",
-            "--admin-token",
-            "shpat_2222222222",
+            "--client-secret",
+            "shpss_2222222222",
         ])
         .await;
     incomplete.assert_exit(2);

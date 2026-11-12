@@ -170,39 +170,27 @@ query RevScopeSubscriptionContracts($first: Int!, $after: String, $query: String
 "#;
 
 /// Loads Shopify integrations that are due for sync. `external_account_id`
-/// stores the shop domain and `encrypted_api_key` stores the Admin API token.
+/// stores the shop domain, `encrypted_api_key` the Dev Dashboard app's client
+/// ID, and `encrypted_secret` its client secret.
 pub(crate) async fn load_due_integrations(
     server_context: Arc<ServerContext>,
 ) -> SyncResult<Vec<ShopifyIntegration>> {
     let conn = open_main_database_read(server_context).await?;
-    let rows = conn
-        .query(
-            &due_payment_integrations_sql(
-                "id,
-                 project_id::text AS project_id,
-                 external_account_id,
-                 encrypted_api_key,
-                 EXTRACT(EPOCH FROM last_sync_success_at)::BIGINT,
-                 EXTRACT(EPOCH FROM last_full_sync_success_at)::BIGINT,
-                 credentials_version",
-                PROVIDER,
-                "\n            AND external_account_id IS NOT NULL",
-            ),
-            &[],
-        )
-        .await?;
+    let rows = conn.query(&due_integrations_sql(), &[]).await?;
 
     Ok(rows
         .iter()
         .map(|row| {
-            let last_success_started_at: Option<i64> = row.get(4);
-            let last_full_success_started_at: Option<i64> = row.get(5);
+            let last_success_started_at: Option<i64> = row.get(5);
+            let last_full_success_started_at: Option<i64> = row.get(6);
             ShopifyIntegration {
                 id: row.get(0),
                 project_id: row.get(1),
-                shop_domain: row.get(2),
-                encrypted_api_key: row.get(3),
-                credentials_version: row.get(6),
+                // Blank, the sync reports the missing domain like a missing credential.
+                shop_domain: row.get::<_, Option<String>>(2).unwrap_or_default(),
+                encrypted_client_id: row.get(3),
+                encrypted_client_secret: row.get(4),
+                credentials_version: row.get(7),
                 last_success_started_at,
                 sync_kind: sync_kind(
                     last_full_success_started_at,
@@ -211,6 +199,24 @@ pub(crate) async fn load_due_integrations(
             }
         })
         .collect())
+}
+
+fn due_integrations_sql() -> String {
+    due_payment_integrations_sql(
+        "id,
+         project_id::text AS project_id,
+         external_account_id,
+         encrypted_api_key,
+         encrypted_secret,
+         EXTRACT(EPOCH FROM last_sync_success_at)::BIGINT,
+         EXTRACT(EPOCH FROM last_full_sync_success_at)::BIGINT,
+         credentials_version",
+        PROVIDER,
+        // Any one credential counts as connected, so a row missing the shop or the
+        // other credential still loads and the sync reports which, instead of the
+        // connection sitting silently idle.
+        "(encrypted_api_key IS NOT NULL OR encrypted_secret IS NOT NULL)",
+    )
 }
 
 pub(crate) async fn run_sync_with_retries(
@@ -236,7 +242,8 @@ pub(crate) struct ShopifyIntegration {
     id: i32,
     project_id: String,
     shop_domain: String,
-    encrypted_api_key: Option<Vec<u8>>,
+    encrypted_client_id: Option<Vec<u8>>,
+    encrypted_client_secret: Option<Vec<u8>>,
     credentials_version: i64,
     last_success_started_at: Option<i64>,
     sync_kind: SyncKind,
@@ -248,16 +255,23 @@ async fn sync_integration(
 ) -> SyncResult<SyncCounts> {
     let project =
         super::sync::ensure_project_cached(server_context.clone(), &integration.project_id).await?;
-    let access_token = decrypt_secret(
-        integration.encrypted_api_key.as_deref(),
-        SyncError::MissingShopifyCredential("access token"),
-        || SyncError::InvalidShopifyCredential("access token"),
+    let client_id = decrypt_secret(
+        integration.encrypted_client_id.as_deref(),
+        SyncError::MissingShopifyCredential("client ID"),
+        || SyncError::InvalidShopifyCredential("client ID"),
     )?;
-    let client = ShopifyClient::new(
+    let client_secret = decrypt_secret(
+        integration.encrypted_client_secret.as_deref(),
+        SyncError::MissingShopifyCredential("client secret"),
+        || SyncError::InvalidShopifyCredential("client secret"),
+    )?;
+    let client = ShopifyClient::connect(
         server_context.http.clone(),
-        integration.shop_domain.clone(),
-        access_token,
-    )?;
+        &integration.shop_domain,
+        &client_id,
+        &client_secret,
+    )
+    .await?;
     let since = Some(payment_sync_since(
         integration.sync_kind,
         integration.last_success_started_at,
@@ -442,11 +456,24 @@ struct ShopifyClient {
 }
 
 impl ShopifyClient {
-    fn new(client: reqwest::Client, shop_domain: String, access_token: String) -> SyncResult<Self> {
-        let endpoint = shopify_graphql_endpoint(&shop_domain)?;
+    /// Trades the app's client credentials for an Admin API token. A token lasts
+    /// 24 hours, far longer than a sync, so each sync attempt gets a fresh one
+    /// rather than storing it.
+    async fn connect(
+        client: reqwest::Client,
+        shop_domain: &str,
+        client_id: &str,
+        client_secret: &str,
+    ) -> SyncResult<Self> {
+        let shop_domain = normalize_shop_domain(shop_domain)?;
+        let request = token_request(&client, &shop_domain, client_id, client_secret)?;
+        let response = client.execute(request).await?;
+        let status = response.status();
+        let text = response.text().await?;
+        let access_token = access_token_from_response(status, &text)?;
         Ok(Self {
             client,
-            endpoint,
+            endpoint: graphql_endpoint(&shop_domain),
             access_token,
         })
     }
@@ -480,11 +507,89 @@ impl ShopifyClient {
     }
 }
 
-fn shopify_graphql_endpoint(shop_domain: &str) -> SyncResult<String> {
-    let shop_domain = normalize_shop_domain(shop_domain)?;
-    Ok(format!(
-        "https://{shop_domain}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
-    ))
+fn graphql_endpoint(shop_domain: &str) -> String {
+    format!("https://{shop_domain}/admin/api/{SHOPIFY_API_VERSION}/graphql.json")
+}
+
+/// Shopify's client credentials grant, which takes no scope: the token carries
+/// whatever the store granted the installed app.
+fn token_request(
+    client: &reqwest::Client,
+    shop_domain: &str,
+    client_id: &str,
+    client_secret: &str,
+) -> SyncResult<reqwest::Request> {
+    let body = serde_urlencoded::to_string([
+        ("grant_type", "client_credentials"),
+        ("client_id", client_id),
+        ("client_secret", client_secret),
+    ])
+    .map_err(|error| SyncError::Shopify(format!("encoding Shopify token request: {error}")))?;
+    Ok(client
+        .post(format!("https://{shop_domain}/admin/oauth/access_token"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(body)
+        .build()?)
+}
+
+#[derive(Deserialize)]
+struct TokenResponse {
+    access_token: String,
+}
+
+#[derive(Deserialize)]
+struct TokenError {
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+fn access_token_from_response(status: reqwest::StatusCode, body: &str) -> SyncResult<String> {
+    if status.is_success() {
+        return serde_json::from_str::<TokenResponse>(body)
+            .map(|token| token.access_token)
+            .map_err(|error| {
+                SyncError::Shopify(format!(
+                    "Shopify's token response had no access token ({error}): {}",
+                    truncate_chars(body, MAX_ERROR_BODY_CHARS)
+                ))
+            });
+    }
+    let error = serde_json::from_str::<TokenError>(body).ok();
+    let code = error.as_ref().and_then(|error| error.error.as_deref());
+    // Shopify's own wording for this one doesn't say what to do about it.
+    if code == Some("shop_not_permitted") {
+        return Err(SyncError::Shopify(
+            "Shopify only issues tokens to an app in the same organization as the store. \
+             Create the app in the Dev Dashboard of the organization that owns this store."
+                .to_string(),
+        ));
+    }
+    let detail = error
+        .as_ref()
+        .and_then(|error| {
+            error
+                .error_description
+                .as_deref()
+                .or(error.error.as_deref())
+        })
+        .map(str::to_string)
+        .unwrap_or_else(|| truncate_chars(body, MAX_ERROR_BODY_CHARS).to_string());
+    // Only a rejection should send someone to rotate credentials; an outage or
+    // throttle says nothing about them.
+    // Shopify answers most OAuth errors with 400, so there it's the code that
+    // says whether the credentials were the problem.
+    let message = match (status.as_u16(), code) {
+        (401 | 403, _) | (400, Some("invalid_client")) => {
+            format!("Shopify refused the client ID and secret with {status}: {detail}")
+        }
+        (400, _) => format!("Shopify rejected the token request with {status}: {detail}"),
+        (404, _) => format!(
+            "Shopify answered the token request with {status}: {detail}. \
+             Check the shop domain and client ID."
+        ),
+        _ => format!("Shopify token request failed with {status}: {detail}"),
+    };
+    Err(SyncError::Shopify(message))
 }
 
 fn normalize_shop_domain(shop_domain: &str) -> SyncResult<String> {
@@ -497,9 +602,9 @@ fn normalize_shop_domain(shop_domain: &str) -> SyncResult<String> {
 }
 
 /// The `<shop>.myshopify.com` host of a domain or URL, or `None` for any other
-/// host. Syncs send the Admin token here from inside our network, so a
-/// customer-chosen host must not be reachable, including through rows saved
-/// before this check existed.
+/// host. Syncs send the app's client secret and the token it buys here from
+/// inside our network, so a customer-chosen host must not be reachable,
+/// including through rows saved before this check existed.
 pub(crate) fn myshopify_host(value: &str) -> Option<String> {
     let host = hostname_from_input(value.trim().trim_end_matches('/'))?;
     let shop = host.strip_suffix(MYSHOPIFY_SUFFIX)?;
@@ -1054,14 +1159,242 @@ mod tests {
 
     #[test]
     fn builds_shopify_graphql_endpoint() {
+        for value in ["example.myshopify.com", "https://example.myshopify.com/"] {
+            assert_eq!(
+                graphql_endpoint(&normalize_shop_domain(value).unwrap()),
+                "https://example.myshopify.com/admin/api/2026-07/graphql.json"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_the_token_shopify_grants() {
+        let body = r#"{"access_token":"shpat_abc","scope":"read_orders","expires_in":86399}"#;
         assert_eq!(
-            shopify_graphql_endpoint("example.myshopify.com").unwrap(),
-            "https://example.myshopify.com/admin/api/2026-07/graphql.json"
+            access_token_from_response(reqwest::StatusCode::OK, body).unwrap(),
+            "shpat_abc"
+        );
+    }
+
+    #[test]
+    fn a_refused_token_request_says_why() {
+        let error = access_token_from_response(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"error":"invalid_client","error_description":"Client authentication failed"}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("refused the client ID and secret"),
+            "{error}"
+        );
+        assert!(error.contains("Client authentication failed"), "{error}");
+        assert!(error.contains("400"), "{error}");
+    }
+
+    /// The rows `due_integrations_sql` picks among these, with every other
+    /// project's Shopify row hidden so its batch limit can't crowd them out.
+    async fn due_among(conn: &crate::db::main::Connection, project_ids: &[i32]) -> Vec<i32> {
+        enum Probe {
+            Db(tokio_postgres::Error),
+            Due(Vec<i32>),
+        }
+        impl From<tokio_postgres::Error> for Probe {
+            fn from(error: tokio_postgres::Error) -> Self {
+                Self::Db(error)
+            }
+        }
+        // Rolled back by returning `Err`, so the hiding never reaches other tests.
+        let probe = conn
+            .in_transaction(async |conn| -> Result<(), Probe> {
+                conn.execute(
+                    "UPDATE integrations SET disabled_at = NOW()
+                     WHERE integration_type = 'shopify' AND NOT project_id = ANY($1)",
+                    &[&project_ids],
+                )
+                .await?;
+                let rows = conn.query(&due_integrations_sql(), &[]).await?;
+                Err(Probe::Due(rows.iter().map(|row| row.get(0)).collect()))
+            })
+            .await;
+        match probe {
+            Err(Probe::Due(ids)) => ids,
+            Err(Probe::Db(error)) => panic!("query due integrations: {error}"),
+            Ok(()) => unreachable!(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_connection_missing_its_shop_or_a_credential_still_loads_to_report_it() {
+        let (_server_context, conn) = crate::test_utils::main_test_db("shopify-due").await;
+        let account_id = crate::test_utils::insert_test_account(&conn, "shopify_due").await;
+        let secret = crate::crypto::encrypt(b"shpss_x");
+        let client_id = crate::crypto::encrypt(b"client_x");
+        struct Case<'a> {
+            name: &'a str,
+            shop: Option<&'a str>,
+            client_id: Option<&'a Vec<u8>>,
+            secret: Option<&'a Vec<u8>>,
+            due: bool,
+        }
+        let shop = Some("a.myshopify.com");
+        let cases = [
+            Case {
+                name: "secret_only",
+                shop,
+                client_id: None,
+                secret: Some(&secret),
+                due: true,
+            },
+            Case {
+                name: "id_only",
+                shop,
+                client_id: Some(&client_id),
+                secret: None,
+                due: true,
+            },
+            Case {
+                name: "no_shop",
+                shop: None,
+                client_id: Some(&client_id),
+                secret: Some(&secret),
+                due: true,
+            },
+            Case {
+                name: "neither",
+                shop,
+                client_id: None,
+                secret: None,
+                due: false,
+            },
+        ];
+        let mut project_ids = Vec::new();
+        let mut expected = Vec::new();
+        for case in cases {
+            let name = format!("p{}{}", account_id.replace('-', ""), case.name);
+            let project_id: i32 = conn
+                .query_one(
+                    "INSERT INTO projects (account_id, name) VALUES ($1::text::uuid, $2) RETURNING id",
+                    &[&account_id, &name],
+                )
+                .await
+                .expect("insert project")
+                .get(0);
+            let integration_id: i32 = conn
+                .query_one(
+                    "INSERT INTO integrations
+                        (project_id, integration_type, external_account_id,
+                         encrypted_api_key, encrypted_secret)
+                     VALUES ($1, 'shopify', $2, $3, $4)
+                     RETURNING id",
+                    &[&project_id, &case.shop, &case.client_id, &case.secret],
+                )
+                .await
+                .expect("insert integration")
+                .get(0);
+            project_ids.push(project_id);
+            if case.due {
+                expected.push(integration_id);
+            }
+        }
+
+        let mut loaded = due_among(&conn, &project_ids).await;
+        conn.execute(
+            "DELETE FROM accounts WHERE id = $1::text::uuid",
+            &[&account_id],
+        )
+        .await
+        .expect("delete account");
+        loaded.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(loaded, expected);
+    }
+
+    #[test]
+    fn another_400_does_not_blame_the_credentials() {
+        let error = access_token_from_response(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"error":"invalid_request","error_description":"The app isn't installed"}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("rejected the token request"), "{error}");
+        assert!(error.contains("isn't installed"), "{error}");
+        assert!(!error.contains("client ID and secret"), "{error}");
+    }
+
+    #[test]
+    fn a_success_without_a_token_says_it_came_from_shopify() {
+        let error = access_token_from_response(reqwest::StatusCode::OK, "<html>Closed</html>")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Shopify's token response"), "{error}");
+        assert!(error.contains("<html>Closed</html>"), "{error}");
+    }
+
+    #[test]
+    fn a_missing_store_points_at_the_domain_not_the_secret() {
+        let error = access_token_from_response(reqwest::StatusCode::NOT_FOUND, "Not Found")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Check the shop domain"), "{error}");
+        assert!(!error.contains("refused"), "{error}");
+    }
+
+    #[test]
+    fn an_outage_or_throttle_does_not_blame_the_credentials() {
+        for status in [
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            let error = access_token_from_response(status, "try later")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("token request failed"), "{error}");
+            assert!(!error.contains("refused"), "{error}");
+        }
+    }
+
+    #[test]
+    fn asks_for_a_token_with_the_client_credentials_grant() {
+        let request = token_request(
+            &reqwest::Client::new(),
+            "example.myshopify.com",
+            "the id",
+            "shpss_&secret",
+        )
+        .unwrap();
+        assert_eq!(request.method(), reqwest::Method::POST);
+        assert_eq!(
+            request.url().as_str(),
+            "https://example.myshopify.com/admin/oauth/access_token"
         );
         assert_eq!(
-            shopify_graphql_endpoint("https://example.myshopify.com/").unwrap(),
-            "https://example.myshopify.com/admin/api/2026-07/graphql.json"
+            request.headers()["content-type"],
+            "application/x-www-form-urlencoded"
         );
+        let body = request.body().and_then(reqwest::Body::as_bytes).unwrap();
+        let mut form: Vec<(String, String)> = serde_urlencoded::from_bytes(body).unwrap();
+        form.sort();
+        assert_eq!(
+            form,
+            [
+                ("client_id".to_string(), "the id".to_string()),
+                ("client_secret".to_string(), "shpss_&secret".to_string()),
+                ("grant_type".to_string(), "client_credentials".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_store_outside_the_apps_organization_says_where_to_create_the_app() {
+        let error = access_token_from_response(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"error":"shop_not_permitted","error_description":"Client credentials cannot be performed on this shop."}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("Dev Dashboard"), "{error}");
     }
 
     #[test]
@@ -1108,13 +1441,13 @@ mod tests {
             "example.myshopify.com@evil.example",
         ] {
             assert_eq!(myshopify_host(value), None, "{value}");
-            assert!(shopify_graphql_endpoint(value).is_err(), "{value}");
+            assert!(normalize_shop_domain(value).is_err(), "{value}");
         }
     }
 
     #[test]
     fn an_empty_shop_domain_says_so() {
-        let error = shopify_graphql_endpoint("  ").unwrap_err().to_string();
+        let error = normalize_shop_domain("  ").unwrap_err().to_string();
         assert!(error.contains("no shop domain"), "{error}");
     }
 

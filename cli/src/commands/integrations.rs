@@ -109,8 +109,8 @@ fn given(command: &ConnectCommand) -> Result<Given> {
         ConnectCommand::Shopify(args) => Ok(Given {
             integration: integrations::SHOPIFY,
             external_account_id: args.shop.clone(),
-            api_key: secret_value(&args.admin_token, "admin token")?,
-            secret: None,
+            api_key: args.client_id.clone(),
+            secret: secret_value(&args.client_secret, "client secret")?,
             wait: args.wait.wait,
         }),
         ConnectCommand::SearchConsole(args) => {
@@ -548,7 +548,15 @@ mod tests {
     fn each_command_saves_exactly_the_columns_its_catalog_entry_lists() {
         let commands: [&[&str]; 8] = [
             &["stripe", "--secret-key", "k"],
-            &["shopify", "--shop", "a.myshopify.com", "--admin-token", "k"],
+            &[
+                "shopify",
+                "--shop",
+                "a.myshopify.com",
+                "--client-id",
+                "id",
+                "--client-secret",
+                "k",
+            ],
             &["square", "--access-token", "k"],
             &["lemon-squeezy", "--api-key", "k"],
             &["polar", "--access-token", "k"],
@@ -606,19 +614,21 @@ mod tests {
 
     #[test]
     fn a_first_connection_needs_every_field() {
-        let given = given(&parse_connect(&["shopify", "--admin-token", "k"])).unwrap();
+        let given = given(&parse_connect(&["shopify", "--client-secret", "k"])).unwrap();
         let shopify = integrations::find(integrations::SHOPIFY).unwrap();
         let error = check_complete(shopify, &given, None)
             .unwrap_err()
             .to_string();
         assert!(error.contains("Shop domain"), "{error}");
+        assert!(error.contains("Client ID"), "{error}");
+        assert!(!error.contains("Client secret"), "{error}");
     }
 
     #[test]
     fn rotating_one_field_relies_on_the_stored_ones() {
-        let given = given(&parse_connect(&["shopify", "--admin-token", "k"])).unwrap();
+        let given = given(&parse_connect(&["shopify", "--client-secret", "k"])).unwrap();
         let shopify = integrations::find(integrations::SHOPIFY).unwrap();
-        let stored = view(Some("a.myshopify.com"), Some("***"), None);
+        let stored = view(Some("a.myshopify.com"), Some("***"), Some("***"));
         assert!(check_complete(shopify, &given, Some(&stored)).is_ok());
     }
 

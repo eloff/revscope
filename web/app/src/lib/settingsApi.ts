@@ -70,9 +70,14 @@ export const INTEGRATION_META: Record<IntegrationType, IntegrationTypeMeta> = {
       },
       {
         column: "api_key",
-        label: "Admin access token",
-        placeholder: "shpat_…",
-        help: "Requires read_orders and read_own_subscription_contracts scopes.",
+        label: "Client ID",
+        help: "From a Dev Dashboard app installed on the store with read_orders and read_own_subscription_contracts scopes.",
+        secret: true,
+      },
+      {
+        column: "secret",
+        label: "Client secret",
+        placeholder: "shpss_…",
         secret: true,
       },
     ],

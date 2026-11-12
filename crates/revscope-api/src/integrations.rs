@@ -77,9 +77,17 @@ pub const INTEGRATIONS: &[Integration] = &[
             },
             Field {
                 column: Column::ApiKey,
-                label: "Admin access token",
-                example: Some("shpat_..."),
-                help: Some("Requires read_orders and read_own_subscription_contracts scopes."),
+                label: "Client ID",
+                example: None,
+                help: Some(
+                    "From a Dev Dashboard app installed on the store with read_orders and read_own_subscription_contracts scopes.",
+                ),
+            },
+            Field {
+                column: Column::Secret,
+                label: "Client secret",
+                example: Some("shpss_..."),
+                help: None,
             },
         ],
     },
