@@ -50,6 +50,9 @@ pub(crate) const PASSWORD_RESET_TTL_SECONDS: i32 = 60 * 60;
 /// only works for that new user, so it can wait a few days to be accepted.
 pub(crate) const INVITE_TTL_SECONDS: i32 = 7 * 24 * 60 * 60;
 
+/// Confirms an address and grants nothing else, so it can wait to be clicked.
+pub(crate) const EMAIL_VERIFICATION_TTL_SECONDS: i32 = 7 * 24 * 60 * 60;
+
 /// Long enough to start a download later in the working day, short enough that
 /// a leaked URL stops working the same day.
 pub(crate) const DOWNLOAD_TOKEN_TTL_SECONDS: u32 = 12 * 60 * 60;
@@ -84,7 +87,12 @@ const CHALLENGE_MAC_LEN: usize = 16;
 const CHALLENGE_HEX_LEN: usize = CHALLENGE_EXPIRY_HEX_LEN + CHALLENGE_MAC_LEN * 2;
 
 /// Postgres tables whose rows are tokens with an `expires_at` column.
-const EXPIRING_TOKEN_TABLES: [&str; 3] = ["sessions", "password_reset_tokens", "api_tokens"];
+const EXPIRING_TOKEN_TABLES: [&str; 4] = [
+    "sessions",
+    "password_reset_tokens",
+    "api_tokens",
+    "email_verification_tokens",
+];
 
 /// A 128 bit random secret, written as 32 lowercase hex characters.
 #[derive(Clone, Copy, PartialEq, Eq)]

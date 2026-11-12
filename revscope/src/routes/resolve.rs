@@ -15,6 +15,8 @@ pub(crate) enum ApiRoute {
     Logout,
     ForgotPassword,
     ResetPassword,
+    VerifyEmail,
+    ResendVerification,
     IdTokenSignIn,
     SignInProviders,
     Me,
@@ -222,6 +224,7 @@ fn resolve_public_route<'a>(segments: &mut impl Iterator<Item = &'a str>) -> Opt
         (Some("auth"), Some("logout"), None) => Some(ApiRoute::Logout),
         (Some("auth"), Some("forgot-password"), None) => Some(ApiRoute::ForgotPassword),
         (Some("auth"), Some("reset-password"), None) => Some(ApiRoute::ResetPassword),
+        (Some("auth"), Some("verify-email"), None) => Some(ApiRoute::VerifyEmail),
         (Some("auth"), Some("id-token"), None) => Some(ApiRoute::IdTokenSignIn),
         (Some("auth"), Some("providers"), None) => Some(ApiRoute::SignInProviders),
         #[cfg(feature = "billing")]
@@ -243,7 +246,11 @@ fn resolve_session_route<'a>(
 ) -> Option<(ApiRoute, Option<String>)> {
     let first = segments.next()?;
     let route = match first {
-        "me" if segments.next().is_none() => ApiRoute::Me,
+        "me" => match (segments.next(), segments.next()) {
+            (None, _) => ApiRoute::Me,
+            (Some("verify-email"), None) => ApiRoute::ResendVerification,
+            _ => return None,
+        },
         #[cfg(feature = "billing")]
         "checkout" if segments.next().is_none() => ApiRoute::Checkout,
         #[cfg(feature = "billing")]

@@ -40,6 +40,7 @@ import { createDashboardNavigation } from "./dashboardNavigation";
 import { useDashboardState } from "./dashboardPeriodContext";
 import { createDashboardProjectApi } from "./dashboardProjectApi";
 import { DASHBOARD_TAB_ITEMS, type DashboardTab } from "./dashboardTabs";
+import EmailVerificationBanner from "./EmailVerificationBanner";
 import Funnels from "./Funnels";
 import { ImportedCoverageProvider, ImportedDataNotice } from "./ImportedCoverageContext";
 import { message } from "./messages.css";
@@ -151,6 +152,7 @@ export default function DashboardShellContent(props: DashboardShellProps) {
               unpaid={authUser()?.unpaid_subscription}
               retentionMonths={authUser()?.data_retention_months}
             />
+            <EmailVerificationBanner session={authUser()} />
           </Show>
           <DashboardFilters
             showBrand={layout() !== "embedded"}

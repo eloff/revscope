@@ -48,6 +48,30 @@ pub(crate) async fn send_password_reset_email(
     .await
 }
 
+pub(crate) async fn send_verification_email(
+    http: &reqwest::Client,
+    to_email: &str,
+    to_name: &str,
+    verify_url: &str,
+) -> Result<(), EmailError> {
+    let plain_text = format!(
+        "Confirm this is your email address to finish setting up RevScope:\n{verify_url}\n\nUntil you do, Ask AI, Google Analytics imports and integrations stay off. This link expires in 7 days. If you didn't sign up for RevScope, you can ignore this email."
+    );
+    let html = format!(
+        "<p>Confirm this is your email address to finish setting up RevScope.</p><p><a href=\"{}\">Confirm your email</a></p><p>Until you do, Ask AI, Google Analytics imports and integrations stay off. This link expires in 7 days. If you didn't sign up for RevScope, you can ignore this email.</p>",
+        escape_html_attribute(verify_url),
+    );
+    send_email(
+        http,
+        to_email,
+        to_name,
+        "Confirm your RevScope email",
+        &plain_text,
+        &html,
+    )
+    .await
+}
+
 pub(crate) async fn send_invite_email(
     http: &reqwest::Client,
     to_email: &str,

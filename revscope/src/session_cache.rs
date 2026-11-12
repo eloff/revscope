@@ -106,9 +106,8 @@ impl SessionCache {
     }
 
     /// Every session on one account, as after a plan change, so /me shows the
-    /// new plan at once. Nothing gates on the cached plan: the AI quota reads
-    /// it from Postgres.
-    #[cfg(any(test, feature = "billing"))]
+    /// new plan at once (nothing gates on the cached plan: the AI quota reads
+    /// it from Postgres), or after someone on it confirms their email.
     pub(crate) fn invalidate_account(&self, account_id: &str) {
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.users.retain(|user| user.account_id != account_id);
@@ -131,6 +130,7 @@ mod tests {
             retention_months: Some(12),
             is_admin: true,
             projects: crate::user_access::ProjectScope::All,
+            account_confirmed: true,
         }
     }
 

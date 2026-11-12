@@ -8,6 +8,7 @@ use crate::auth::{
     ResetPasswordRequest, SignupRequest,
 };
 use crate::authorize::Account;
+use crate::email_verification::{self, VerifyEmailRequest};
 use crate::http::Response;
 use crate::rate_limit::{AuthRateLimits, RateLimiter, ip_key};
 use crate::util::block_on;
@@ -110,6 +111,31 @@ pub(super) fn reset_password(request: &ApiRequest) -> RouteResult {
         Err(_) => Err(AuthError::InvalidRequest("invalid reset password payload")),
     };
     ok_or_auth_error(outcome, "reset_password")
+}
+
+pub(super) fn verify_email(request: &ApiRequest) -> RouteResult {
+    let outcome = match serde_json::from_slice::<VerifyEmailRequest>(request.body) {
+        Ok(payload) => block_on(email_verification::verify_email(
+            request.context(),
+            &payload.token,
+        )),
+        Err(_) => Err(AuthError::InvalidRequest("invalid verify email payload")),
+    };
+    ok_or_auth_error(outcome, "verify_email")
+}
+
+pub(super) fn resend_verification(request: &ApiRequest, account: &Account) -> RouteResult {
+    let user = account.user();
+    if !user.account_confirmed {
+        check(
+            &request.context().auth_rate_limits.verification_email_user,
+            &user.user_id,
+        )?;
+        let email = auth::normalize_email(&user.email)
+            .map_err(|error| map_auth_error(error, "resend_verification"))?;
+        email_verification::send_verification(request.context(), email.normalized);
+    }
+    Ok(Response::ok_json(json!({ "ok": true })))
 }
 
 pub(super) fn me(request: &ApiRequest, account: &Account) -> RouteResult {
@@ -225,6 +251,7 @@ fn me_response(current_user: &MeSuccess) -> MeResponse {
         projects,
         plan: current_user.user.plan.clone(),
         is_admin: current_user.user.is_admin,
+        account_confirmed: current_user.user.account_confirmed,
         gravatar_url: current_user.gravatar_url.clone(),
         data_retention_months: current_user.user.retention_months,
         unpaid_subscription: current_user.unpaid_subscription.clone(),

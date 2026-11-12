@@ -640,6 +640,8 @@ async fn signup(server: &TestServer, tag: &str) -> io::Result<TestAccount> {
         )
         .await?;
     assert_eq!(response.status_code(), 200, "{}", response.body_str());
+    // So the owner reaches the routes that wait for a confirmed email too.
+    common::signup::mark_email_verified(server, &format!("{slug}@example.com")).await;
     let body: Value = response.json();
     let project_id = body["projects"][&project_name]["id"]
         .as_str()

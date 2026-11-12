@@ -105,6 +105,12 @@ pub struct MeResponse {
     pub projects: BTreeMap<String, MeProject>,
     pub plan: String,
     pub is_admin: bool,
+    /// Whether someone on the account has confirmed their email address, by a
+    /// link we emailed, a password reset, or signing in with Google or Apple. Until then Ask AI,
+    /// GA imports and integrations answer `email_unverified`. Self-hosted
+    /// servers don't verify, and older servers don't say, so both read as true.
+    #[serde(default = "verified_unless_told_otherwise")]
+    pub account_confirmed: bool,
     pub gravatar_url: String,
     /// Months of history the account's dashboards show, counted back from
     /// today; absent when they show all of it. Older data is kept, just not shown.
@@ -119,6 +125,10 @@ pub struct MeResponse {
     /// a password reset, like any other session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_token: Option<String>,
+}
+
+fn verified_unless_told_otherwise() -> bool {
+    true
 }
 
 /// The terms of a subscription that ended unpaid, and what restoring them costs:

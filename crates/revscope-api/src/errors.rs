@@ -14,6 +14,9 @@ pub enum ErrorCode {
     /// A credential was presented, but it is unknown or expired.
     InvalidSession,
     Forbidden,
+    /// Allowed once someone on the account confirms their email address, by a
+    /// link we email, a password reset, or a Google or Apple sign-in.
+    EmailUnverified,
     NotFound,
     Conflict,
     MethodNotAllowed,

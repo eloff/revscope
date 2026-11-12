@@ -45,6 +45,11 @@ export type AuthSession = {
   plan: string;
   /** Admins see billing and manage the account's users. */
   is_admin: boolean;
+  /**
+   * Whether someone on the account confirmed their email address. Ask AI, GA
+   * imports and integrations wait for it.
+   */
+  account_confirmed: boolean;
   gravatar_url?: string;
   /**
    * Months of history the dashboards show, counted back from today; `null`
@@ -179,6 +184,8 @@ export function parseAuthSession(value: unknown): AuthSession | null {
     projects: payload.projects,
     plan: payload.plan,
     is_admin: payload.is_admin,
+    // Absent from servers that don't verify, and from sessions stored before it was sent.
+    account_confirmed: payload.account_confirmed !== false,
     gravatar_url: typeof payload.gravatar_url === "string" ? payload.gravatar_url : undefined,
     // Absent means unlimited, as from a server that keeps everything.
     data_retention_months:
@@ -261,6 +268,7 @@ function authSessionsEqual(left: AuthSession | null, right: AuthSession): boolea
     left.user_id === right.user_id &&
     left.plan === right.plan &&
     left.is_admin === right.is_admin &&
+    left.account_confirmed === right.account_confirmed &&
     left.gravatar_url === right.gravatar_url &&
     left.data_retention_months === right.data_retention_months &&
     unpaidSubscriptionsEqual(left.unpaid_subscription, right.unpaid_subscription) &&

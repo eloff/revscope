@@ -148,6 +148,13 @@ pub(crate) fn chat(
 
     let caller = grant.caller();
     let project_id = grant.project().id();
+    // The public demo's questions are the demo's, open to anyone signed out too.
+    if let ChatCaller::SignedIn(user) = caller
+        && !crate::authorize::is_demo_project_id(project_id)
+        && let Err(error) = crate::email_verification::require_verified(user)
+    {
+        return map_auth_error(error, "chat");
+    }
     // Before the gateway config check, like the router's authorization, so an
     // anonymous caller without a challenge learns nothing about the config.
     if let ChatCaller::DemoGuest { client_ip } = caller

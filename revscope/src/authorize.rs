@@ -576,6 +576,7 @@ mod tests {
             retention_months: Some(12),
             is_admin: false,
             projects: ProjectScope::All,
+            account_confirmed: true,
         }
     }
 

@@ -731,6 +731,8 @@ async fn signup(server: &TestServer, slug: &str) -> io::Result<TestAccount> {
         )
         .await?;
     assert_eq!(response.status_code(), 200, "{}", response.body_str());
+    // Ask AI waits for a confirmed email.
+    common::signup::mark_email_verified(server, &format!("{slug}@example.com")).await;
     let body: Value = response.json();
     let project_id = body["projects"][&project_name]["id"]
         .as_str()

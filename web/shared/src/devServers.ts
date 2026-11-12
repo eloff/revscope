@@ -22,6 +22,7 @@ export const APP_PATH_PREFIXES = [
   "/settings",
   "/troubleshooting",
   "/reset-password",
+  "/verify-email",
   "/oauth/",
   `/${APP_ASSETS_DIR}/`,
 ];

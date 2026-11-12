@@ -20,6 +20,7 @@
     { "pattern": "revscope.co/settings*", "zone_name": "revscope.co" },
     { "pattern": "revscope.co/troubleshooting*", "zone_name": "revscope.co" },
     { "pattern": "revscope.co/reset-password*", "zone_name": "revscope.co" },
+    { "pattern": "revscope.co/verify-email*", "zone_name": "revscope.co" },
     { "pattern": "revscope.co/oauth/*", "zone_name": "revscope.co" },
     { "pattern": "revscope.co/_app/*", "zone_name": "revscope.co" }
   ]

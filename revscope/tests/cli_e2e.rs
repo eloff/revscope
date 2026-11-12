@@ -181,6 +181,7 @@ impl Cli {
         Account {
             account_name: format!("{slug}.example"),
             project,
+            email,
         }
     }
 }
@@ -194,6 +195,7 @@ impl Drop for Cli {
 struct Account {
     account_name: String,
     project: String,
+    email: String,
 }
 
 #[tokio::test]
@@ -218,6 +220,11 @@ async fn an_agent_signs_up_with_no_password_and_works_from_the_stored_token() ->
     run.assert_ok();
     assert!(run.stdout.contains("Created the account"), "{}", run.stdout);
     assert!(run.stdout.contains("password-reset"), "{}", run.stdout);
+    assert!(
+        run.stdout.contains("stay off until") && run.stdout.contains(&email),
+        "{}",
+        run.stdout
+    );
 
     let stored = std::fs::read_to_string(cli.credentials_file())?;
     let stored: Value = serde_json::from_str(&stored)?;
@@ -239,6 +246,7 @@ async fn an_agent_signs_up_with_no_password_and_works_from_the_stored_token() ->
     me.assert_ok();
     let me = me.json();
     assert_eq!(me["email"], json!(email));
+    assert_eq!(me["account_confirmed"], json!(false));
     assert!(me.get("api_token").is_none(), "{me}");
     let project_name = me["projects"]
         .as_object()
@@ -487,6 +495,8 @@ async fn every_integration_in_the_catalog_can_be_connected_and_disconnected() ->
     let server = TestServer::spawn_on_disk("cli-integrations").await?;
     let cli = Cli::new(&server);
     let account = cli.signup("cli-integrations").await;
+    // Integrations and GA imports wait for a confirmed email.
+    common::signup::mark_email_verified(&server, &account.email).await;
 
     let commands: [&[&str]; 8] = [
         &["stripe", "--secret-key", "sk_test_0000000000"],
@@ -824,6 +834,8 @@ async fn google_analytics_imports_reach_the_server() -> io::Result<()> {
     let server = TestServer::spawn_on_disk("cli-ga").await?;
     let cli = Cli::new(&server);
     let account = cli.signup("cli-ga").await;
+    // Integrations and GA imports wait for a confirmed email.
+    common::signup::mark_email_verified(&server, &account.email).await;
 
     let listed = cli.run(&["--json", "ga-import", "list"]).await;
     listed.assert_ok();
@@ -1101,6 +1113,8 @@ async fn a_new_credential_is_tried_without_waiting_out_the_sync_throttle() -> io
     let server = TestServer::spawn_on_disk("cli-throttle").await?;
     let cli = Cli::new(&server);
     let account = cli.signup("cli-throttle").await;
+    // Integrations and GA imports wait for a confirmed email.
+    common::signup::mark_email_verified(&server, &account.email).await;
     cli.run(&[
         "integrations",
         "connect",
@@ -1194,6 +1208,8 @@ async fn install_status_counts_only_connected_integrations() -> io::Result<()> {
     let server = TestServer::spawn_on_disk("cli-status").await?;
     let cli = Cli::new(&server);
     let account = cli.signup("cli-status").await;
+    // Integrations and GA imports wait for a confirmed email.
+    common::signup::mark_email_verified(&server, &account.email).await;
     cli.run(&[
         "integrations",
         "connect",

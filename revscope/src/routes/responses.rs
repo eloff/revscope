@@ -131,6 +131,11 @@ pub(crate) fn map_auth_error(error: AuthError, context: &str) -> Response {
         AuthError::Forbidden(message) => {
             error_response("403 Forbidden", ErrorCode::Forbidden, message)
         }
+        AuthError::EmailUnverified => error_response(
+            "403 Forbidden",
+            ErrorCode::EmailUnverified,
+            crate::email_verification::EMAIL_UNVERIFIED,
+        ),
         AuthError::NotFound(message) => {
             error_response("404 Not Found", ErrorCode::NotFound, message)
         }

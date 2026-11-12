@@ -1,6 +1,7 @@
 // Shared by several test binaries; each one uses a different subset.
 #![allow(dead_code)]
 
+pub mod mail;
 pub mod signup;
 
 use std::io;

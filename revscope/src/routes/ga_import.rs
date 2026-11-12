@@ -2,6 +2,7 @@
 //! dashboard reads to say when imported data is left out.
 
 use crate::authorize::{AdminProject, AuthorizedProject};
+use crate::email_verification::require_verified;
 use crate::ga_import::{self, ConnectRequest, ImportedDataSettings, StartImportRequest};
 
 use super::request::{ApiRequest, RouteResult, project_json};
@@ -20,7 +21,8 @@ pub(super) fn start(request: &ApiRequest, project: &AdminProject) -> RouteResult
     let payload = request.json_body::<StartImportRequest>("invalid import payload")?;
     request.session_json(
         project.admin(),
-        ga_import::start_import(request.context(), project, payload),
+        require_verified(project.admin().user())
+            .and_then(|()| ga_import::start_import(request.context(), project, payload)),
         CONTEXT,
     )
 }
@@ -46,7 +48,8 @@ pub(super) fn cancel(request: &ApiRequest, project: &AdminProject) -> RouteResul
 pub(super) fn oauth_url(request: &ApiRequest, project: &AdminProject) -> RouteResult {
     request.session_json(
         project.admin(),
-        ga_import::oauth_url(request.context(), project),
+        require_verified(project.admin().user())
+            .and_then(|()| ga_import::oauth_url(request.context(), project)),
         CONTEXT,
     )
 }
@@ -55,7 +58,8 @@ pub(super) fn connect(request: &ApiRequest, project: &AdminProject) -> RouteResu
     let payload = request.json_body::<ConnectRequest>("invalid connect payload")?;
     request.session_json(
         project.admin(),
-        ga_import::connect(request.context(), project, payload),
+        require_verified(project.admin().user())
+            .and_then(|()| ga_import::connect(request.context(), project, payload)),
         CONTEXT,
     )
 }

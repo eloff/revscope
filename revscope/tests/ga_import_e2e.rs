@@ -248,6 +248,8 @@ async fn signup(server: &TestServer) -> io::Result<Account> {
         .await?;
     assert_eq!(response.status_code(), 200, "{}", response.body_str());
     common::signup::mark_subscription_paid(server, &format!("{slug}.example")).await;
+    // Imports wait for a confirmed email.
+    common::signup::mark_email_verified(server, &format!("{slug}@example.com")).await;
     let project_id = response.json::<Value>()["projects"][&project_name]["id"]
         .as_str()
         .expect("project id")

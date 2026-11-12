@@ -8,11 +8,12 @@
 
 mod common;
 
-use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
-use std::sync::{Mutex, Once};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::io;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use common::mail::{
+    RESET_LINK, emails_sent_to, links_sent_to, new_link_sent_to, start_mail_server,
+};
 use common::{GOOGLE_ISSUER, HttpResponse, TestServer, id_token, workspace_id_token};
 use serde_json::{Value, json};
 
@@ -26,9 +27,6 @@ const EMAIL_NOT_PROVEN: &str = "An account with this email already exists. To co
 const ME_PATH: &str = "/v2/session/me";
 const PASSWORD: &str = "a-long-enough-password";
 const NEW_PASSWORD: &str = "another-long-enough-password";
-
-static MAIL_SERVER: Once = Once::new();
-static SENT_EMAILS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
 
 #[tokio::test]
 async fn a_reset_link_sets_a_new_password_and_ends_every_session() -> io::Result<()> {
@@ -63,7 +61,7 @@ async fn a_reset_link_sets_a_new_password_and_ends_every_session() -> io::Result
         )
         .await?;
     assert_eq!(forgot.status_code(), 200, "{}", forgot.body_str());
-    let token = reset_token_sent_to(&account.email).await;
+    let token = new_link_sent_to(&account.email, RESET_LINK, 0).await;
 
     let too_short = reset(&server, &token, "short").await?;
     assert_eq!(too_short.status_code(), 400, "{}", too_short.body_str());
@@ -91,7 +89,9 @@ async fn a_reset_link_sets_a_new_password_and_ends_every_session() -> io::Result
     );
 
     // A reset is how someone locks out whoever had their password, so the
-    // sessions and tokens made under the old one end with it.
+    // sessions signed in under the old one end with it. This first one also
+    // ends query and MCP tokens: until it, whoever signed up with the address
+    // could have been anyone.
     assert_eq!(me_status(&server, &old_cookie).await?, 401);
     let schema = server
         .get_query(&schema_path, &[("Authorization", query_bearer.as_str())])
@@ -116,6 +116,25 @@ async fn a_reset_link_sets_a_new_password_and_ends_every_session() -> io::Result
         json!("password reset link is invalid or expired")
     );
     assert_eq!(me_status(&server, &new_cookie).await?, 200);
+
+    // Later resets leave the tokens made since.
+    let minted = server
+        .post_json(
+            &format!("/v2/session/projects/{}/query-token", account.project_id),
+            "",
+            &[("Cookie", new_cookie.as_str())],
+        )
+        .await?;
+    assert_eq!(minted.status_code(), 200, "{}", minted.body_str());
+    let query_bearer = format!(
+        "Bearer {}",
+        minted.json::<Value>()["token"].as_str().expect("token")
+    );
+    set_password_by_email(&server, &account.email, "yet-another-long-password").await?;
+    let schema = server
+        .get_query(&schema_path, &[("Authorization", query_bearer.as_str())])
+        .await?;
+    assert_eq!(schema.status_code(), 200, "{}", schema.body_str());
 
     delete_account(&server, &account.account_name).await;
     Ok(())
@@ -181,7 +200,7 @@ async fn an_account_signed_up_without_a_password_is_claimed_with_a_reset_link() 
         )
         .await?;
     assert_eq!(forgot.status_code(), 200, "{}", forgot.body_str());
-    let reset_token = reset_token_sent_to(&email).await;
+    let reset_token = new_link_sent_to(&email, RESET_LINK, 0).await;
     assert_eq!(
         reset(&server, &reset_token, NEW_PASSWORD)
             .await?
@@ -373,7 +392,7 @@ async fn an_expired_reset_link_changes_nothing() -> io::Result<()> {
         )
         .await?;
     assert_eq!(forgot.status_code(), 200, "{}", forgot.body_str());
-    let token = reset_token_sent_to(&account.email).await;
+    let token = new_link_sent_to(&account.email, RESET_LINK, 0).await;
 
     // Backdated rather than waited out: the TTL is long.
     let conn = revscope::db::open_main_database_write(server.context.clone())
@@ -756,85 +775,10 @@ async fn a_password_from_before_the_character_rule_can_still_log_in() -> io::Res
     Ok(())
 }
 
-/// Points MailChannels at a local listener for the whole test binary. The
-/// variables are set once, before any server in this binary sends mail.
-fn start_mail_server() {
-    MAIL_SERVER.call_once(|| {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mail server");
-        let addr = listener.local_addr().expect("mail server address");
-        std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                if let Some(email) = read_email(stream) {
-                    SENT_EMAILS.lock().expect("sent emails").push(email);
-                }
-            }
-        });
-        // SAFETY: every test in this binary calls this before it starts a
-        // server, and the `Once` makes the first caller do it alone.
-        unsafe {
-            std::env::set_var("MAILCHANNELS_API_URL", format!("http://{addr}/send"));
-            std::env::set_var("MAILCHANNELS_API_KEY", "test-key");
-            std::env::set_var("MAILCHANNELS_FROM_EMAIL", "noreply@example.com");
-        }
-    });
-}
-
-fn read_email(stream: std::net::TcpStream) -> Option<Value> {
-    let mut reader = BufReader::new(stream);
-    let mut content_length = 0;
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line).ok()?;
-        let line = line.trim_end();
-        if line.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = line.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            content_length = value.trim().parse().ok()?;
-        }
-    }
-    let mut body = vec![0; content_length];
-    reader.read_exact(&mut body).ok()?;
-    let mut stream = reader.into_inner();
-    stream
-        .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-        .ok()?;
-    serde_json::from_slice(&body).ok()
-}
-
-fn emails_sent_to(address: &str) -> Vec<Value> {
-    SENT_EMAILS
-        .lock()
-        .expect("sent emails")
-        .iter()
-        .filter(|email| email["personalizations"][0]["to"][0]["email"] == json!(address))
-        .cloned()
-        .collect()
-}
-
-/// The reset email is sent in the background after the forgot-password
-/// response, so this waits for it to arrive.
-async fn reset_token_sent_to(address: &str) -> String {
-    for _ in 0..250 {
-        if let Some(email) = emails_sent_to(address).pop() {
-            let text = email["content"][0]["value"].as_str().expect("plain text");
-            return text
-                .split("/reset-password?token=")
-                .nth(1)
-                .and_then(|rest| rest.split_whitespace().next())
-                .unwrap_or_else(|| panic!("reset link in {text}"))
-                .to_string();
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    panic!("no reset email was sent to {address}");
-}
-
 /// Requests a reset link for `email` and uses the newest one sent there.
 async fn set_password_by_email(server: &TestServer, email: &str, password: &str) -> io::Result<()> {
-    let already_sent = emails_sent_to(email).len();
+    // An invite may already be waiting in the same inbox.
+    let already_sent = links_sent_to(email, RESET_LINK).len();
     let forgot = server
         .post_json(
             FORGOT_PASSWORD_PATH,
@@ -843,14 +787,7 @@ async fn set_password_by_email(server: &TestServer, email: &str, password: &str)
         )
         .await?;
     assert_eq!(forgot.status_code(), 200, "{}", forgot.body_str());
-    // An invite may already be waiting in the same inbox.
-    for _ in 0..250 {
-        if emails_sent_to(email).len() > already_sent {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    let token = reset_token_sent_to(email).await;
+    let token = new_link_sent_to(email, RESET_LINK, already_sent).await;
     let response = reset(server, &token, password).await?;
     assert_eq!(response.status_code(), 200, "{}", response.body_str());
     Ok(())

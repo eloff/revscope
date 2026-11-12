@@ -96,6 +96,10 @@ pub(crate) struct SessionUser {
     pub(crate) retention_months: Option<i64>,
     pub(crate) is_admin: bool,
     pub(crate) projects: ProjectScope,
+    /// Whether someone on the account has confirmed their email, which the
+    /// features in [`crate::email_verification`] wait for. Always true on a
+    /// self-hosted build, which may have no outgoing email.
+    pub(crate) account_confirmed: bool,
 }
 
 /// The full `/v2/session/me` payload: the session user plus the account's
@@ -129,6 +133,8 @@ pub(crate) enum AuthError {
     InvalidCredentials,
     Conflict(&'static str),
     Forbidden(&'static str),
+    /// Waits for the user to confirm their email; see [`crate::email_verification`].
+    EmailUnverified,
     /// The caller may use the route, but has nothing by that id. Also what a
     /// record owned by someone else reports, so its existence is not revealed.
     NotFound(&'static str),
@@ -190,12 +196,16 @@ pub(crate) async fn signup(
             validate_new_password(password)?;
             password
         };
+    let email = normalize_email(payload.email.as_str())?;
+    let normalized_email = email.normalized.clone();
     let user = NewUser {
         name,
-        email: normalize_email(payload.email.as_str())?,
+        email,
         login: NewLogin::Password(password),
     };
-    create_account(server_context, &payload.account, user).await
+    let success = create_account(server_context.clone(), &payload.account, user).await?;
+    crate::email_verification::send_verification(server_context, normalized_email);
+    Ok(success)
 }
 
 /// Creates the account a signup asked for, with `user` as its first user, and
@@ -778,12 +788,24 @@ pub(crate) async fn reset_password(
                 .query_opt(
                     // A proving link also ends any invite link still out, which
                     // the inviter holds and could otherwise set a password with.
+                    // The first one also ends the user's query and MCP tokens:
+                    // until then anyone could have signed up with the address
+                    // and made some. Later resets leave them, so resetting a
+                    // proven user's password doesn't cut off their agents. CTEs
+                    // share one snapshot, so first_proof reads the user as it
+                    // was before this update.
                     "WITH valid_token AS (
                         SELECT token_hash, user_id, proves_email
                         FROM password_reset_tokens
                         WHERE token_hash = $1
                         AND expires_at > NOW()
                         LIMIT 1
+                     ),
+                     first_proof AS (
+                        SELECT u.id FROM users u
+                        WHERE u.id = (SELECT user_id FROM valid_token)
+                        AND (SELECT proves_email FROM valid_token)
+                        AND u.email_verified_at IS NULL
                      ),
                      updated_user AS (
                         UPDATE users
@@ -815,32 +837,43 @@ pub(crate) async fn reset_password(
                      deleted_api_tokens AS (
                         DELETE FROM api_tokens
                         WHERE user_id IN (SELECT user_id FROM deleted_token)
+                        AND user_id IN (SELECT id FROM first_proof)
                         RETURNING user_id
                      )
-                     SELECT user_id::text FROM deleted_token LIMIT 1",
+                     SELECT user_id::text, EXISTS (SELECT 1 FROM first_proof)
+                     FROM deleted_token LIMIT 1",
                     &[&token_hash, &password_hash],
                 )
                 .await
                 .map_err(map_query_error)?;
             // Rolled back unless the token was spent, so a password is never
             // set by a link the caller is told didn't work.
-            reset.map(|_| ()).ok_or(AuthError::InvalidRequest(
-                "password reset link is invalid or expired",
-            ))
+            reset
+                .map(|row| row.get::<_, bool>(1))
+                .ok_or(AuthError::InvalidRequest(
+                    "password reset link is invalid or expired",
+                ))
         })
         .await;
-    // The reset deletes every session and token of this user, so stop serving
-    // them here. Before looking at the result, since an error can follow a
-    // commit. The token can only name the user read above.
-    crate::user_access::forget_user(&server_context, user_id.as_str());
-    // Grants held only in memory: redeeming one checks neither the session that
-    // asked for it nor the password, so old ones would outlive the reset.
+    // The reset deletes every session of this user, and may confirm the whole
+    // account, so stop serving its cached sessions. Before looking at the
+    // result, since an error can follow a commit. The token can only name the
+    // user read above.
     server_context
-        .mcp_authorization_codes
-        .retain(|grant| grant.user_id != user_id);
-    server_context
-        .download_tokens
-        .retain(|grant| grant.user_id != user_id);
+        .session_cache
+        .invalidate_account(account_id.as_str());
+    // Unknown after an error, so assumed: dropping grants costs a retry at most.
+    if updated.as_ref().map_or(true, |first_proof| *first_proof) {
+        crate::user_access::forget_user(&server_context, user_id.as_str());
+        // Held only in memory, and redeeming one checks neither the session
+        // that asked for it nor the password.
+        server_context
+            .mcp_authorization_codes
+            .retain(|grant| grant.user_id != user_id);
+        server_context
+            .download_tokens
+            .retain(|grant| grant.user_id != user_id);
+    }
     updated?;
 
     Ok(())
@@ -889,7 +922,16 @@ async fn load_session_user(
                 CASE WHEN u.all_projects THEN NULL ELSE ARRAY(
                     SELECT up.project_id FROM user_projects up WHERE up.user_id = u.id
                 ) END,
-                {}
+                {},
+                EXISTS (
+                    SELECT 1 FROM users member
+                    WHERE member.account_id = u.account_id
+                    AND (
+                        member.email_confirmed_at IS NOT NULL
+                        OR member.email_verified_at IS NOT NULL
+                        OR EXISTS (SELECT 1 FROM user_identities i WHERE i.user_id = member.id)
+                    )
+                )
              FROM sessions s
              INNER JOIN users u ON u.id = s.user_id
              INNER JOIN accounts a ON a.id = u.account_id
@@ -920,6 +962,7 @@ async fn load_session_user(
         plan,
         is_admin: row.get(6),
         projects: ProjectScope::from_ids(row.get(7)),
+        account_confirmed: crate::self_hosted::ENABLED || row.get::<_, bool>(9),
     };
     let session_expires_at = u32::try_from(row.get::<_, i64>(5)).unwrap_or(0);
     server_context
@@ -1207,7 +1250,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn a_reset_drops_the_users_grants_held_in_memory() {
+    async fn only_the_first_proving_reset_drops_grants_held_in_memory() {
         let (server_context, conn) = crate::test_utils::main_test_db("reset-grants").await;
         let account_id = crate::test_utils::insert_test_account(&conn, "reset_grants").await;
         let email = format!("g{}@example.com", account_id.replace('-', ""));
@@ -1220,8 +1263,8 @@ mod tests {
             .await
             .expect("insert user")
             .get(0);
-        let code_for = |user_id: &str| {
-            server_context
+        let grants_for = |user_id: &str| {
+            let code = server_context
                 .mcp_authorization_codes
                 .issue(
                     crate::mcp::authorize::AuthorizationGrant {
@@ -1235,10 +1278,8 @@ mod tests {
                     300,
                 )
                 .expect("issue code")
-                .secret
-        };
-        let download_for = |user_id: &str| {
-            server_context
+                .secret;
+            let download = server_context
                 .download_tokens
                 .issue(
                     crate::download_db::DownloadGrant {
@@ -1249,34 +1290,38 @@ mod tests {
                     300,
                 )
                 .expect("issue download token")
-                .secret
+                .secret;
+            (code, download)
         };
-        let (code, download) = (code_for(&user_id), download_for(&user_id));
-        let (other_code, other_download) = (code_for("someone-else"), download_for("someone-else"));
-        let token =
-            insert_password_reset_token(&conn, &user_id, 3600, ResetLinkDelivery::InboxOnly)
-                .await
-                .expect("insert reset token");
+        let held = |(code, download)| {
+            server_context.mcp_authorization_codes.get(code).is_some()
+                && server_context.download_tokens.get(download).is_some()
+        };
+        let reset = async || {
+            let token =
+                insert_password_reset_token(&conn, &user_id, 3600, ResetLinkDelivery::InboxOnly)
+                    .await
+                    .expect("insert reset token");
+            reset_password(
+                server_context.clone(),
+                ResetPasswordRequest {
+                    token: token.to_string(),
+                    password: "a-long-enough-password".to_string(),
+                },
+            )
+            .await
+            .expect("reset");
+        };
 
-        reset_password(
-            server_context.clone(),
-            ResetPasswordRequest {
-                token: token.to_string(),
-                password: "a-long-enough-password".to_string(),
-            },
-        )
-        .await
-        .expect("reset");
+        let (mine, someone_elses) = (grants_for(&user_id), grants_for("someone-else"));
+        reset().await;
+        assert!(!held(mine), "the first proof drops them");
+        assert!(held(someone_elses));
 
-        assert!(server_context.mcp_authorization_codes.get(code).is_none());
-        assert!(server_context.download_tokens.get(download).is_none());
-        assert!(
-            server_context
-                .mcp_authorization_codes
-                .get(other_code)
-                .is_some()
-        );
-        assert!(server_context.download_tokens.get(other_download).is_some());
+        let mine = grants_for(&user_id);
+        reset().await;
+        assert!(held(mine), "later resets leave them");
+
         conn.execute(
             "DELETE FROM accounts WHERE id = $1::text::uuid",
             &[&account_id],

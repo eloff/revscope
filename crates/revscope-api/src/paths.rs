@@ -7,6 +7,10 @@ pub const SIGNUP: &str = "/v2/public/auth/signup";
 pub const LOGIN: &str = "/v2/public/auth/login";
 pub const LOGOUT: &str = "/v2/public/auth/logout";
 pub const FORGOT_PASSWORD: &str = "/v2/public/auth/forgot-password";
+/// Spends the token from a verification email.
+pub const VERIFY_EMAIL: &str = "/v2/public/auth/verify-email";
+/// Sends the signed-in user another verification email.
+pub const RESEND_VERIFICATION: &str = "/v2/session/me/verify-email";
 pub const OAUTH_REGISTER: &str = "/v2/public/mcp/register";
 pub const OAUTH_TOKEN: &str = "/v2/public/mcp/token";
 pub const OAUTH_METADATA: &str = "/.well-known/oauth-authorization-server";
@@ -85,6 +89,8 @@ pub fn all_routes() -> Vec<(&'static str, String)> {
         ("POST", LOGIN.to_string()),
         ("POST", LOGOUT.to_string()),
         ("POST", FORGOT_PASSWORD.to_string()),
+        ("POST", VERIFY_EMAIL.to_string()),
+        ("POST", RESEND_VERIFICATION.to_string()),
         ("POST", OAUTH_REGISTER.to_string()),
         ("POST", OAUTH_TOKEN.to_string()),
         ("GET", ME.to_string()),

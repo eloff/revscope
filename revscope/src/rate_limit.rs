@@ -78,6 +78,8 @@ pub(crate) const CERTIFICATE_ORDERS_PER_DEPLOYMENT: Rate = Rate::new(100, 3 * 60
 /// Every invite can email a stranger text the inviter wrote, from our domain.
 /// The burst covers bringing a whole team on at once.
 const INVITES_PER_ACCOUNT: Rate = Rate::new(20, 30 * 60);
+/// Each one emails the user's own address; a few cover a slow or lost email.
+const VERIFICATION_EMAILS_PER_USER: Rate = Rate::new(3, 10 * 60);
 
 #[derive(Clone, Copy)]
 struct Bucket {
@@ -162,6 +164,7 @@ pub(crate) struct AuthRateLimits {
     pub(crate) forgot_password_ip: RateLimiter,
     pub(crate) forgot_password_email: RateLimiter,
     pub(crate) invite_account: RateLimiter,
+    pub(crate) verification_email_user: RateLimiter,
     #[cfg(feature = "billing")]
     pub(crate) promo_code_ip: RateLimiter,
 }
@@ -175,6 +178,7 @@ impl AuthRateLimits {
             forgot_password_ip: RateLimiter::new(FORGOT_PASSWORD_PER_IP),
             forgot_password_email: RateLimiter::new(FORGOT_PASSWORD_PER_EMAIL),
             invite_account: RateLimiter::new(INVITES_PER_ACCOUNT),
+            verification_email_user: RateLimiter::new(VERIFICATION_EMAILS_PER_USER),
             #[cfg(feature = "billing")]
             promo_code_ip: RateLimiter::new(PROMO_CODE_PER_IP),
         }

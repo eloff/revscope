@@ -397,6 +397,8 @@ async fn session_account(server: &TestServer, cookie: &str) -> io::Result<String
         projects.keys().collect::<Vec<_>>(),
         vec![FIRST_PROJECT_NAME]
     );
+    // An instance may have no outgoing email, so nothing waits for a confirmed one.
+    assert_eq!(me["account_confirmed"], json!(true));
     Ok(me["account_id"].as_str().expect("account id").to_string())
 }
 

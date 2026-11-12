@@ -59,6 +59,19 @@ pub(crate) fn save_settings(
     for integration in &request.integrations {
         validate_integration(integration)?;
     }
+    // Each entry is saved over the last, which the sync check doesn't model.
+    let mut types: Vec<&str> = request
+        .integrations
+        .iter()
+        .map(|integration| integration.integration_type.as_str())
+        .collect();
+    types.sort_unstable();
+    if types.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(AuthError::InvalidRequest(
+            "each integration may appear only once",
+        ));
+    }
+    let unconfirmed = crate::email_verification::require_verified(project.admin().user()).err();
 
     let timezone = timezone_to_save(request.timezone.as_deref());
     let payment_success_path = request
@@ -79,6 +92,11 @@ pub(crate) fn save_settings(
         let server_context = server_context.clone();
         block_on(async move {
             let conn = open_main_database_write(server_context.clone()).await?;
+            if let Some(unconfirmed) = unconfirmed
+                && starts_a_sync(&conn, project_key, &request.integrations).await?
+            {
+                return Err(unconfirmed);
+            }
             // Before any write, so that a domain the plan refuses doesn't save half the form.
             let custom_domain = match custom_domain {
                 Some(next) => {
@@ -414,6 +432,45 @@ fn normalize_optional(value: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+/// Whether saving `inputs` would start a sync against another service, decided
+/// as [`upsert_integration`] decides it: the integration still has a credential
+/// afterwards, and either a credential changed or it points at another
+/// account. The form sends every integration on each save, so one that keeps,
+/// resends or clears what's stored must not count.
+async fn starts_a_sync(
+    conn: &Connection,
+    project_id: i32,
+    inputs: &[IntegrationInput],
+) -> Result<bool, AuthError> {
+    for input in inputs {
+        let stored = conn
+            .query_opt(
+                "SELECT encrypted_api_key, encrypted_secret, external_account_id
+                 FROM integrations
+                 WHERE project_id = $1 AND integration_type = $2::text::integration_type",
+                &[&project_id, &input.integration_type],
+            )
+            .await
+            .map_err(AuthError::from)?;
+        let (api_key, secret, account): (Option<Vec<u8>>, Option<Vec<u8>>, Option<String>) =
+            match &stored {
+                Some(row) => (row.get(0), row.get(1), row.get(2)),
+                None => (None, None, None),
+            };
+        let moved =
+            stored.is_some() && account != normalize_optional(input.external_account_id.as_deref());
+        let changed = moved
+            || secret_changes(input.api_key.as_deref(), api_key.as_deref())
+            || secret_changes(input.secret.as_deref(), secret.as_deref());
+        let keeps_a_credential = resolve_secret(input.api_key.as_deref(), api_key).is_some()
+            || resolve_secret(input.secret.as_deref(), secret).is_some();
+        if changed && keeps_a_credential {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Runs before any write, because the integrations are saved one by one after

@@ -89,6 +89,42 @@ pub async fn mark_subscription_paid(server: &TestServer, account_name: &str) {
     assert_eq!(updated, 1, "{account_name} has one open period");
 }
 
+/// Confirms a user's email through the route its emailed link calls, for tests
+/// of the features that wait for it. The link itself is stored as the server
+/// stores one, since these tests send no mail.
+pub async fn mark_email_verified(server: &TestServer, email: &str) {
+    let conn = revscope::db::open_main_database_write(server.context.clone())
+        .await
+        .expect("open main database");
+    // gen_random_uuid() is a version 4 UUID, the form the server issues.
+    let token: String = conn
+        .query_one(
+            "WITH token AS (SELECT gen_random_uuid() AS value),
+             stored AS (
+                INSERT INTO email_verification_tokens (token_hash, user_id, expires_at)
+                SELECT sha256(uuid_send(token.value)), users.id, NOW() + INTERVAL '1 hour'
+                FROM token, users
+                WHERE users.email = $1
+                RETURNING 1
+             )
+             SELECT value::text FROM token WHERE EXISTS (SELECT 1 FROM stored)",
+            &[&email.to_ascii_lowercase()],
+        )
+        .await
+        .unwrap_or_else(|error| panic!("no user has {email}: {error}"))
+        .get(0);
+    drop(conn);
+    let response = server
+        .post_json(
+            revscope_api::paths::VERIFY_EMAIL,
+            &json!({ "token": token }).to_string(),
+            &[],
+        )
+        .await
+        .expect("verify email");
+    assert_eq!(response.status_code(), 200, "{}", response.body_str());
+}
+
 pub fn unique_slug(tag: &str) -> String {
     static RUN_ID: OnceLock<u128> = OnceLock::new();
     static COUNTER: AtomicU32 = AtomicU32::new(0);

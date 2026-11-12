@@ -67,9 +67,11 @@ Run `revscope <command> --help` for every flag. Commands that work on a project 
 
 ## Accounts and signing in
 
-`signup` without a password gives the CLI a token and nothing else, which suits an agent acting for someone. To open the dashboard, the account's owner runs `revscope password-reset --email ...` and follows the link. Setting a password signs out every session, including the CLI's, so run `revscope login` afterwards. MCP and query tokens made earlier keep working until revoked, so whoever claims an account made by someone else should review those, and its users.
+`signup` without a password gives the CLI a token and nothing else, which suits an agent acting for someone. To open the dashboard, the account's owner runs `revscope password-reset --email ...` and follows the link. Setting a password signs out every session, including the CLI's, so run `revscope login` afterwards. The first password set this way also ends the MCP and query tokens made before it, since anyone could have made the account, and confirms the account's email. Whoever claims an account made by someone else should review its users.
 
 `login` with no flags uses a browser, which works for anyone who can sign in on the website, including accounts made with Google or Apple. The browser must be on the same machine, since it returns to a port there; `--no-browser` only skips opening it. On a machine with no browser, use `revscope login --email ... --password-stdin` if the account has a password, or set `REVSCOPE_TOKEN` to the token from a machine that is signed in.
+
+A new account's address is emailed a link to confirm it. Until someone on the account confirms their email, by that link, a password reset or a Google or Apple sign-in, Ask AI, Google Analytics imports and integrations fail with exit status 4 and the code `email_unverified`, and `whoami --json` shows `"account_confirmed": false`. The dashboard's banner emails a new link, and `revscope password-reset` confirms the email too. Self-hosted servers don't send it.
 
 `signup` and `login` refuse while a live credential is stored, or while `REVSCOPE_TOKEN` is set, since replacing a token can lose the only way into its account. Set `REVSCOPE_CONFIG_DIR` to keep accounts apart. `revscope logout` ends the token for good, so on an account with no password, the only way back is then a reset email.
 

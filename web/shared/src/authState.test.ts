@@ -93,6 +93,14 @@ describe("parseAuthSession", () => {
     ).toBeNull();
   });
 
+  it("reads an unconfirmed email, and treats its absence as confirmed", async () => {
+    const { parseAuthSession } = await loadAuthState();
+    const unconfirmed = testSession({ account_confirmed: false });
+    expect(parseAuthSession(unconfirmed)?.account_confirmed).toBe(false);
+    const { account_confirmed: _, ...older } = unconfirmed;
+    expect(parseAuthSession(older)?.account_confirmed).toBe(true);
+  });
+
   it.each([
     ["null", null],
     ["a string", "user"],

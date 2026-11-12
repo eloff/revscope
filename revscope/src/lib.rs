@@ -34,6 +34,7 @@ mod delete_project;
 mod download_db;
 mod download_snapshots;
 mod email;
+mod email_verification;
 mod events;
 mod exclude_users;
 mod funnels;

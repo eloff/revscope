@@ -224,6 +224,12 @@ impl Render for SignedIn {
             out.push_str("\n\n");
             out.push_str(&table(&["PROJECT", "ID"], &rows));
         }
+        if !me.account_confirmed {
+            out.push_str(&format!(
+                "\n\nAsk AI, Google Analytics imports and integrations stay off until someone on the account confirms their email address. New accounts are emailed a link, and `revscope password-reset --email {}` confirms it too.",
+                me.email
+            ));
+        }
         for note in &self.notes {
             out.push_str("\n\n");
             out.push_str(note);

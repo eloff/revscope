@@ -23,6 +23,16 @@ describe("APP_PATH_PREFIXES", () => {
     });
     expect(prefixes).toEqual(APP_PATH_PREFIXES);
   });
+
+  // A page left out of the routes is served the site's 404 in production.
+  it("covers every page the app builds", () => {
+    const pages = Object.keys(import.meta.glob("../../app/src/pages/**/*.astro"));
+    expect(pages.length).toBeGreaterThan(0);
+    for (const page of pages) {
+      const path = page.replace("../../app/src/pages", "").replace(/(\/index)?\.astro$/, "");
+      expect(isAppPath(path), path).toBe(true);
+    }
+  });
 });
 
 describe("isAppPath", () => {
