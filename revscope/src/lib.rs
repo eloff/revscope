@@ -77,6 +77,7 @@ mod robots;
 mod routes;
 mod schema;
 mod search_terms;
+mod security_headers;
 mod segment_filter;
 mod self_hosted;
 mod sentry_report;

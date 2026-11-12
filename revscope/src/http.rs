@@ -1022,7 +1022,7 @@ pub(crate) fn ui_cookie_domain<'a>(host: Option<&'a str>, origin: Option<&str>) 
 }
 
 /// Hostname from a `Host` header value such as `localhost:4320` or `[::1]:4320`.
-fn host_header_hostname(host: &str) -> Option<&str> {
+pub(crate) fn host_header_hostname(host: &str) -> Option<&str> {
     let host = host.trim();
     if host.is_empty() {
         return None;
@@ -1037,7 +1037,7 @@ fn host_header_hostname(host: &str) -> Option<&str> {
 
 /// Splits an origin into its scheme and host, e.g. `https://a.b:443` into
 /// `("https", "a.b")`. `None` for anything that is not a usable origin.
-fn split_origin(origin: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_origin(origin: &str) -> Option<(&str, &str)> {
     let origin = origin.trim();
     if origin.eq_ignore_ascii_case("null") {
         return None;

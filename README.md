@@ -163,6 +163,12 @@ and `REVSCOPE_TLS_DOMAINS` to your hostname, for example
 `analytics.example.com`. Binding ports below 1024 as an unprivileged user needs
 the `CAP_NET_BIND_SERVICE` capability.
 
+The backend sends `Strict-Transport-Security` for the hostnames in
+`REVSCOPE_WEB_BASE_URL` (or the older `APP_BASE_URL`) and
+`REVSCOPE_API_BASE_URL` when they start with `https://`, and for `REVSCOPE_TLS_DOMAINS` when it serves HTTPS itself. For a
+year after a visit, browsers then refuse plain HTTP to that hostname on every
+port, so don't serve anything else over plain HTTP on it.
+
 ## Configuration
 
 The backend reads its settings from environment variables, and also from a

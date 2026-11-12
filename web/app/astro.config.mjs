@@ -1,5 +1,7 @@
 // @ts-check
 
+import { rm } from "node:fs/promises";
+
 import cloudflare from "@astrojs/cloudflare";
 import solid from "@astrojs/solid-js";
 import { vanillaExtractPlugin } from "@vanilla-extract/vite-plugin";
@@ -19,6 +21,17 @@ const selfHostedPages = {
     /** @param {{ injectRoute: (route: { pattern: string; entrypoint: string }) => void }} options */
     "astro:config:setup": ({ injectRoute }) => {
       injectRoute({ pattern: "/signup", entrypoint: "./src/self-hosted/signup.astro" });
+    },
+  },
+};
+
+/** public/_headers is Cloudflare's; the self-hosted backend sends these headers itself. */
+const dropCloudflareHeaders = {
+  name: "revscope-drop-cloudflare-headers",
+  hooks: {
+    /** @param {{ dir: URL }} options */
+    "astro:build:done": async ({ dir }) => {
+      await rm(new URL("_headers", dir), { force: true });
     },
   },
 };
@@ -52,7 +65,7 @@ export default defineConfig({
     },
   },
 
-  integrations: bundle ? [solid(), selfHostedPages] : [solid()],
+  integrations: bundle ? [solid(), selfHostedPages, dropCloudflareHeaders] : [solid()],
 
   vite: {
     plugins: bundle ? [vanillaExtractPlugin()] : [vanillaExtractPlugin(), appDevRedirectPlugin()],

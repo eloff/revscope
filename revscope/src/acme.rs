@@ -191,7 +191,7 @@ fn required_platform_domains(value: &str) -> Result<Vec<String>, String> {
 
 /// Parses `REVSCOPE_TLS_DOMAINS`, falling back to `DEFAULT_PLATFORM_DOMAINS`
 /// when it lists none.
-fn platform_domains_from(value: &str) -> Vec<String> {
+pub(crate) fn platform_domains_from(value: &str) -> Vec<String> {
     let mut domains: Vec<String> = Vec::new();
     for domain in split_list(value) {
         let domain = normalize_sni(&domain);

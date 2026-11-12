@@ -23,6 +23,7 @@ use crate::mcp::transport::{McpHttpService, build_mcp_service};
 use crate::overview::{DEMO_OVERVIEW_CACHE_ENTRIES, DemoOverviewResponseCache};
 use crate::rate_limit::{AuthRateLimits, PublicWriteRateLimits};
 use crate::request_slots::{PER_SESSION_SLOTS, REQUEST_SLOT_WAIT, RequestSlot, RequestSlots};
+use crate::security_headers::HstsHosts;
 use crate::session_cache::SessionCache;
 use crate::tokens::{ExpiringTokens, SignedChallenges, TokenSecret};
 
@@ -129,6 +130,8 @@ pub struct ServerContext {
     /// a client reaching the server directly could forge it. Set from
     /// `REVSCOPE_TRUST_X_FORWARDED_FOR` (`1`/`true`/`yes`).
     pub(crate) trust_x_forwarded_for: bool,
+    /// Hosts that get `Strict-Transport-Security`. Set in [`Self::new`].
+    pub(crate) hsts_hosts: HstsHosts,
     /// Per-project queues of pageviews/events/engagements awaiting a flush.
     pub(crate) ingest_map: IngestMap,
     /// Per-IP limits on tracker error reports and MCP client registration.
@@ -162,6 +165,7 @@ impl ServerContext {
         }
         context.require_cloudflare = env_flag("REVSCOPE_REQUIRE_CLOUDFLARE");
         context.trust_x_forwarded_for = env_flag("REVSCOPE_TRUST_X_FORWARDED_FOR");
+        context.hsts_hosts = HstsHosts::from_env();
         context.connection_limit = ConnectionLimit::from_env();
         context.overview_cache_disabled = env_flag("REVSCOPE_DISABLE_OVERVIEW_CACHE");
         context.google_sign_in = sign_in_verifier_from_env(&GOOGLE, "REVSCOPE_GOOGLE_CLIENT_ID");
@@ -225,6 +229,7 @@ impl ServerContext {
             overview_cache_disabled: false,
             require_cloudflare: false,
             trust_x_forwarded_for: false,
+            hsts_hosts: HstsHosts::default(),
             ingest_map: IngestMap::new(),
             public_write_rate_limits: PublicWriteRateLimits::new(),
             acme: Arc::new(AcmeState::new()),

@@ -1,0 +1,25 @@
+# Cloudflare applies these to the app's pages and assets on revscope.co (the
+# self-hosted bundle gets them from the backend instead). Framing is refused
+# by default, as on the backend. Rules matching one path are merged and a
+# repeated header is comma-joined, so the embed rules detach the default with
+# `!` before setting their own.
+# HSTS covers every path on revscope.co, all of which is served over HTTPS.
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Strict-Transport-Security: max-age=31536000
+  Content-Security-Policy: frame-ancestors 'none'
+  X-Frame-Options: DENY
+
+# The marketing site frames the demo embeds from the same origin.
+/embed
+  ! Content-Security-Policy
+  ! X-Frame-Options
+  Content-Security-Policy: frame-ancestors 'self'
+  X-Frame-Options: SAMEORIGIN
+
+/embed/*
+  ! Content-Security-Policy
+  ! X-Frame-Options
+  Content-Security-Policy: frame-ancestors 'self'
+  X-Frame-Options: SAMEORIGIN

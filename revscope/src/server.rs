@@ -29,6 +29,7 @@ use crate::routes::{
     ApiRoute, IngestRoute, handle_api_route, request_session_key, resolve_api_route,
     resolve_ingest_route,
 };
+use crate::security_headers::with_security_headers;
 use crate::server_context::ServerContext;
 
 const MAX_REQUEST_SIZE: usize = 128 * 1024;
@@ -500,6 +501,7 @@ async fn serve_requests<S: AsyncRead + AsyncWrite + Unpin>(
         let method_owned = parsed.method.to_string();
         let target_owned = redact_sensitive_query(parsed.target);
         let client_close = parsed.connection_close;
+        let host_owned = parsed.host.map(str::to_string);
         let is_ingest = ingest_route.is_some();
         // Dashboard API keeps a credentialed allowlist; public ingest uses `*`.
         let cors_headers = if is_ingest {
@@ -532,7 +534,7 @@ async fn serve_requests<S: AsyncRead + AsyncWrite + Unpin>(
 
         // Every arm but the last answers without `/v2/` or ingest routing.
         let mut log_as_ingest = is_ingest;
-        let response = if parsed.method == "GET"
+        let mut response = if parsed.method == "GET"
             // The ACME server validates domain control over plain HTTP, before
             // any certificate exists.
             && let Some(response) = crate::acme::challenge_response(&server_context, parsed.target)
@@ -688,6 +690,14 @@ async fn serve_requests<S: AsyncRead + AsyncWrite + Unpin>(
             response
         };
 
+        if !log_as_ingest {
+            with_security_headers(
+                &mut response,
+                &target_owned,
+                host_owned.as_deref(),
+                &server_context.hsts_hosts,
+            );
+        }
         let close_after = client_close || response.closes_connection();
         write_response_with_context(
             stream,
@@ -1446,6 +1456,48 @@ mod tests {
         )
         .await;
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    }
+
+    #[tokio::test]
+    async fn security_headers_go_on_api_responses_but_not_ingest() {
+        let mut context = ServerContext::new_in_memory("security-headers");
+        context.hsts_hosts = crate::security_headers::HstsHosts::from_parts(
+            &[Some("https://api.example.com".to_string())],
+            Vec::new(),
+        );
+        let context = Arc::new(context);
+        let api = exchange_on_context(
+            context.clone(),
+            "GET /v2/public/chat/status HTTP/1.1\r\nHost: api.example.com\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(api.starts_with("HTTP/1.1 200 OK"), "{api}");
+        for header in [
+            "X-Content-Type-Options: nosniff",
+            "Content-Security-Policy: frame-ancestors 'none'",
+            "Referrer-Policy: strict-origin-when-cross-origin",
+            "Strict-Transport-Security: max-age=31536000",
+        ] {
+            assert!(
+                api.contains(&format!("\r\n{header}\r\n")),
+                "{header}: {api}"
+            );
+        }
+        // A customer's path proxy may pass these on, setting them on their site.
+        let ingest = exchange_on_context(
+            context,
+            "GET /demo.js HTTP/1.1\r\nHost: api.example.com\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(ingest.starts_with("HTTP/1.1 200 OK"), "{ingest}");
+        for header in [
+            "nosniff",
+            "frame-ancestors",
+            "Referrer-Policy",
+            "Strict-Transport",
+        ] {
+            assert!(!ingest.contains(header), "{header}: {ingest}");
+        }
     }
 
     #[tokio::test]

@@ -44,11 +44,8 @@ pub(crate) use revscope_api::oauth::MCP_SCOPE;
 /// names another. `REVSCOPE_API_BASE_URL` overrides it for deployments where
 /// the public origin is not the `Host` we see.
 pub(crate) fn api_base_url(host: Option<&str>) -> String {
-    if let Ok(configured) = std::env::var("REVSCOPE_API_BASE_URL") {
-        let configured = configured.trim().trim_end_matches('/');
-        if !configured.is_empty() {
-            return configured.to_string();
-        }
+    if let Some(configured) = configured_api_base_url() {
+        return configured;
     }
     let Some(host) = host.map(str::trim).filter(|host| !host.is_empty()) else {
         return "https://api.revscope.co".to_string();
@@ -60,6 +57,13 @@ pub(crate) fn api_base_url(host: Option<&str>) -> String {
         "http"
     };
     format!("{scheme}://{host}")
+}
+
+/// `REVSCOPE_API_BASE_URL` without a trailing slash, when set and not empty.
+pub(crate) fn configured_api_base_url() -> Option<String> {
+    let configured = std::env::var("REVSCOPE_API_BASE_URL").ok()?;
+    let configured = configured.trim().trim_end_matches('/');
+    (!configured.is_empty()).then(|| configured.to_string())
 }
 
 /// The document a client fetches after a 401 to learn which authorization
