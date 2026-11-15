@@ -11,9 +11,11 @@ export const summaryContent = style({
   position: "relative",
 });
 
+// Equal columns and rows keep every card the same size, including on a wrapped last row.
 export const summaryBar = style({
-  display: "flex",
-  flexWrap: "wrap",
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+  gridAutoRows: "1fr",
   gap: "12px",
 });
 
@@ -21,8 +23,6 @@ export const summaryCard = style({
   display: "flex",
   flexDirection: "column",
   gap: "4px",
-  flex: "1 1 140px",
-  minWidth: "140px",
   padding: "12px 14px",
   border: "2px solid transparent",
   borderRadius: "10px",

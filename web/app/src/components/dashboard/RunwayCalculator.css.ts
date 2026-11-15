@@ -185,6 +185,7 @@ export const resetButton = style({
 export const summaryBar = style({
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+  gridAutoRows: "1fr",
   gap: "12px",
 });
 

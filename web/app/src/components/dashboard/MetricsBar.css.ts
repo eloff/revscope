@@ -3,22 +3,22 @@ import { style } from "@vanilla-extract/css";
 export const metricsBar = style({
   marginBottom: "20px",
   width: "100%",
-});
-
-export const metricsBarScroll = style({
-  display: "flex",
-  flexWrap: "nowrap",
-  justifyContent: "flex-start",
-  alignItems: "stretch",
-  gap: "12px",
-  width: "100%",
   overflowX: "auto",
   paddingBottom: "20px",
 });
 
+// At max-content width every 1fr column grows to the widest tile, so the tiles share one
+// size without a fixed width that a long value could overflow.
+export const metricsBarTiles = style({
+  display: "grid",
+  gridAutoFlow: "column",
+  gridAutoColumns: "1fr",
+  gap: "12px",
+  width: "max-content",
+});
+
 export const metricTileToggle = style({
   display: "block",
-  flexShrink: 0,
   padding: 0,
   margin: 0,
   border: "none",

@@ -15,7 +15,7 @@ import {
   toggleChartMetric,
 } from "./chartMetrics";
 import MetricHoverCard from "./MetricHoverCard";
-import { metricsBar, metricsBarScroll, metricTileToggle } from "./MetricsBar.css";
+import { metricsBar, metricsBarTiles, metricTileToggle } from "./MetricsBar.css";
 import MetricTile from "./MetricTile";
 import { buildMetricHoverContent } from "./metricHoverDetails";
 
@@ -117,7 +117,7 @@ export default function MetricsBar(props: MetricsBarProps) {
   return (
     <Show when={props.loading || props.data}>
       <div class={metricsBar}>
-        <div class={metricsBarScroll}>
+        <div class={metricsBarTiles}>
           <For each={METRIC_DEFINITIONS}>
             {(definition) => {
               const metricValue = (period: "current" | "previous") => {

@@ -5,6 +5,7 @@ export const metricTile = style({
   flexDirection: "column",
   gap: "4px",
   minWidth: "132px",
+  height: "100%",
   padding: "12px 14px",
   border: "2px solid transparent",
   borderRadius: "10px",
