@@ -162,7 +162,6 @@ export default function AudienceGeoBreakdown(props: AudienceGeoBreakdownProps) {
         topGroupColor={
           dimension() === "country" ? SOURCE_GROUP_COLORS.social : SOURCE_GROUP_COLORS.referrers
         }
-        otherTooltipNoun={dimension() === "country" ? "countries" : "cities"}
         loading={
           props.initialLoading ||
           (dimension() === "cities" && props.treemapLoading && !props.treemapData)

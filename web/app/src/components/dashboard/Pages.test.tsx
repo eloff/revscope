@@ -307,9 +307,7 @@ describe("PagesGrid", () => {
   it("returns to the treemap's ranking for a tile not on this page", () => {
     setPagesSort({ column: "visitors", direction: "asc" });
     const props = renderPanel({ data: { pages: [page(5)], offset: 200, limit: 200 } });
-    const treemap = charts.find(
-      (chart) => chart.options.chart?.type === "treemap" && chart.history.length > 1,
-    );
+    const treemap = charts.find((chart) => chart.options.chart?.type === "treemap");
     treemap?.fire("dataPointSelection", { seriesIndex: 0, dataPointIndex: 0 });
     expect(pagesSort()).toEqual(DEFAULT_PAGES_SORT);
     expect(props.onSortChange).toHaveBeenCalled();

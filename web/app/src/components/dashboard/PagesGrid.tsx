@@ -204,14 +204,7 @@ export default function PagesGrid(props: PagesGridProps) {
               ? SOURCE_GROUP_COLORS.referrers
               : SOURCE_GROUP_COLORS.social
           }
-          labels={
-            variant() === "landingPages"
-              ? {
-                  loading: "Loading landing pages treemap…",
-                  otherTooltipNoun: "landing pages",
-                }
-              : undefined
-          }
+          loadingLabel={variant() === "landingPages" ? "Loading landing pages treemap…" : undefined}
         />
         <table class={gridTable}>
           <thead>

@@ -24,7 +24,6 @@ describe("AudienceBreakdownTreemap", () => {
       <AudienceBreakdownTreemap
         rows={[row("chrome", 500), row("safari", 300), row("lynx", 0)]}
         topGroupColor="#123456"
-        otherTooltipNoun="browsers"
         loading={false}
       />
     ));
@@ -32,7 +31,7 @@ describe("AudienceBreakdownTreemap", () => {
     expect(chart.rendered).toBe(true);
     expect(seriesData(chart)).toEqual([
       {
-        name: "Top by revenue",
+        name: "Top",
         data: [
           ["chrome", 500],
           ["safari", 300],
@@ -52,14 +51,13 @@ describe("AudienceBreakdownTreemap", () => {
       <AudienceBreakdownTreemap
         rows={rows}
         topGroupColor="#000"
-        otherTooltipNoun="cities"
         loading={false}
         onLeafSelect={onLeafSelect}
         onLeafHover={onLeafHover}
       />
     ));
     const chart = lastChart();
-    expect(seriesData(chart).map((series) => series.name)).toEqual(["Top by revenue", "Other"]);
+    expect(seriesData(chart).map((series) => series.name)).toEqual(["Top", "Other"]);
 
     chart.fire("dataPointSelection", { seriesIndex: 0, dataPointIndex: 1 });
     chart.fire("dataPointSelection", { seriesIndex: 1, dataPointIndex: 0 });
@@ -77,36 +75,24 @@ describe("AudienceBreakdownTreemap", () => {
     ]);
   });
 
-  it("waits for data and hides itself when there is none", () => {
+  it("waits for data and takes no space when there is none", () => {
     const [loading, setLoading] = createSignal(true);
     const [rows, setRows] = createSignal<AudienceBreakdownRow[]>([]);
     const { container } = render(() => (
-      <AudienceBreakdownTreemap
-        rows={rows()}
-        topGroupColor="#000"
-        otherTooltipNoun="x"
-        loading={loading()}
-      />
+      <AudienceBreakdownTreemap rows={rows()} topGroupColor="#000" loading={loading()} />
     ));
     expect(screen.getByText("Loading breakdown treemap…")).toBeInTheDocument();
-    expect(lastChart().history).toHaveLength(1);
 
     setLoading(false);
-    expect(lastChart().history).toHaveLength(1);
-    expect(container.firstElementChild?.className).toMatch(/Hidden/);
+    expect(container).toBeEmptyDOMElement();
 
     setRows([row("a", 1)]);
-    expect(lastChart().history).toHaveLength(2);
+    expect(lastChart().rendered).toBe(true);
   });
 
   it("destroys the chart on unmount", () => {
     const { unmount } = render(() => (
-      <AudienceBreakdownTreemap
-        rows={[]}
-        topGroupColor="#000"
-        otherTooltipNoun="x"
-        loading={false}
-      />
+      <AudienceBreakdownTreemap rows={[row("a", 1)]} topGroupColor="#000" loading={false} />
     ));
     const chart = lastChart();
     unmount();

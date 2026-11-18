@@ -49,6 +49,7 @@ import {
   type HighlightMetric,
   type HoverHighlight,
 } from "./metricHoverDetails";
+import { compareByMetric, type TreemapMetric, type TreemapTile } from "./treemapLogic";
 
 /** Number of choropleth buckets the map is shaded into. */
 const REVENUE_BUCKET_COUNT = 5;
@@ -440,60 +441,41 @@ function compareAudienceBreakdownValues(a: number | string, b: number | string):
   return 0;
 }
 
-export type AudienceBreakdownTreemapLeaf = {
-  label: string;
-  tooltip: string;
-  datumKey: string;
-  revenue: number;
-  visitors: number;
-  isOther: boolean;
-};
+/** A row's tile, or the Other tile (`isOther`) for the rows outside the top. */
+export type AudienceBreakdownTreemapLeaf = TreemapTile & { isOther: boolean };
 
 export const AUDIENCE_BREAKDOWN_TREEMAP_TOP = 50;
 const AUDIENCE_BREAKDOWN_TREEMAP_OTHER_KEY = "__audience_breakdown_other__";
 
-function compareAudienceBreakdownRowsByRevenue(
-  left: AudienceBreakdownRow,
-  right: AudienceBreakdownRow,
-): number {
-  if (right.revenue !== left.revenue) {
-    return right.revenue - left.revenue;
-  }
-  if (right.visitors !== left.visitors) {
-    return right.visitors - left.visitors;
-  }
-  return left.name.localeCompare(right.name);
+function audienceBreakdownValue(row: AudienceBreakdownRow, metric: TreemapMetric): number {
+  return metric === "revenue" ? row.revenue : row.visitors;
 }
 
 /** Ranked treemap leaves for a breakdown dimension, with long tails rolled into Other. */
 export function buildAudienceBreakdownTreemapLeaves(
   rows: AudienceBreakdownRow[],
-  otherTooltipNoun: string,
+  metric: TreemapMetric,
 ): AudienceBreakdownTreemapLeaf[] {
-  const ranked = rows.filter((row) => row.revenue > 0).sort(compareAudienceBreakdownRowsByRevenue);
-  const topRows = ranked.slice(0, AUDIENCE_BREAKDOWN_TREEMAP_TOP);
+  const ranked = [...rows].sort(
+    compareByMetric(metric, audienceBreakdownValue, (left, right) =>
+      left.name.localeCompare(right.name),
+    ),
+  );
   const otherRows = ranked.slice(AUDIENCE_BREAKDOWN_TREEMAP_TOP);
-  // Zero-revenue tiles have no area; omitting them lets the chart collapse
-  // when a dimension has visitors but no revenue.
-  const leaves: AudienceBreakdownTreemapLeaf[] = topRows.map((row) => ({
-    label: row.name,
-    tooltip: row.name,
-    datumKey: row.key,
-    revenue: row.revenue,
-    visitors: row.visitors,
-    isOther: false,
-  }));
-  const otherRevenue = otherRows.reduce((total, row) => total + row.revenue, 0);
-  if (otherRevenue > 0) {
-    leaves.push({
-      label: "Other",
-      tooltip: `Revenue from ${otherRows.length.toLocaleString()} ${otherTooltipNoun} outside the top ${AUDIENCE_BREAKDOWN_TREEMAP_TOP}`,
-      datumKey: AUDIENCE_BREAKDOWN_TREEMAP_OTHER_KEY,
-      revenue: otherRevenue,
-      visitors: otherRows.reduce((total, row) => total + row.visitors, 0),
-      isOther: true,
-    });
-  }
+  const leaves: AudienceBreakdownTreemapLeaf[] = ranked
+    .slice(0, AUDIENCE_BREAKDOWN_TREEMAP_TOP)
+    .map((row) => ({
+      datumKey: row.key,
+      label: row.name,
+      value: audienceBreakdownValue(row, metric),
+      isOther: false,
+    }));
+  leaves.push({
+    datumKey: AUDIENCE_BREAKDOWN_TREEMAP_OTHER_KEY,
+    label: "Other",
+    value: otherRows.reduce((total, row) => total + audienceBreakdownValue(row, metric), 0),
+    isOther: true,
+  });
   return leaves;
 }
 

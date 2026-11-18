@@ -1,10 +1,18 @@
 import { SegmentGroup } from "@ark-ui/solid/segment-group";
 import { For } from "solid-js";
-import { indicator, item, itemControl, itemText, root } from "./SegmentedControl.css";
+import {
+  indicator,
+  item,
+  itemControl,
+  itemText,
+  itemTextSmall,
+  root,
+} from "./SegmentedControl.css";
 
 export interface SegmentedControlOption<T extends string> {
   value: T;
   label: string;
+  disabled?: boolean;
 }
 
 interface SegmentedControlProps<T extends string> {
@@ -12,6 +20,7 @@ interface SegmentedControlProps<T extends string> {
   options: readonly SegmentedControlOption<T>[];
   onChange: (value: T) => void;
   ariaLabel?: string;
+  size?: "small";
 }
 
 /** Pill-shaped single-choice toggle between a few options. */
@@ -31,8 +40,12 @@ export default function SegmentedControl<T extends string>(props: SegmentedContr
       <SegmentGroup.Indicator class={indicator} />
       <For each={props.options}>
         {(option) => (
-          <SegmentGroup.Item class={item} value={option.value}>
-            <SegmentGroup.ItemText class={itemText}>{option.label}</SegmentGroup.ItemText>
+          <SegmentGroup.Item class={item} value={option.value} disabled={option.disabled}>
+            <SegmentGroup.ItemText
+              class={props.size === "small" ? `${itemText} ${itemTextSmall}` : itemText}
+            >
+              {option.label}
+            </SegmentGroup.ItemText>
             <SegmentGroup.ItemControl class={itemControl} />
             <SegmentGroup.ItemHiddenInput />
           </SegmentGroup.Item>

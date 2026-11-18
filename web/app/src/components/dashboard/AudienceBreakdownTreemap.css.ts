@@ -5,7 +5,3 @@ export const audienceBreakdownTreemap = style({
   borderBottom: "1px solid #e5e7eb",
   boxSizing: "border-box",
 });
-
-export const audienceBreakdownTreemapHidden = style({
-  display: "none",
-});

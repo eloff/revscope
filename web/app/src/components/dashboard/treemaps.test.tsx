@@ -1,4 +1,5 @@
 import { render, screen } from "@solidjs/testing-library";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { lastChart, seriesData } from "../../../test/apexchartsMock";
 import type { PageRow, PageTransitionRow } from "../../lib/pagesApi";
@@ -9,7 +10,7 @@ import FunnelDropoffTreemap from "./FunnelDropoffTreemap";
 import PagesTreemap, { pageRowKey, pageUrl } from "./PagesTreemap";
 import PageTransitionsTreemap from "./PageTransitionsTreemap";
 import RevenueSourcesTreemap from "./RevenueSourcesTreemap";
-import type { TreemapLeaf } from "./revenueSourcesLogic";
+import type { RevenueSourceRecord, SourceGroup, TreemapLeaf } from "./revenueSourcesLogic";
 import SearchTermsTreemap from "./SearchTermsTreemap";
 
 vi.mock("./apexcharts", () => import("../../../test/apexchartsMock"));
@@ -32,22 +33,46 @@ function page(id: number, attributed_revenue: number, visitors = 10): PageRow {
 }
 
 describe("PagesTreemap", () => {
-  it("ranks pages by attributed revenue with an Other tile", () => {
+  it("ranks pages by attributed revenue, with Other for pages past the top 50", () => {
+    const pages = [page(1, 100), page(2, 300), page(3, 300, 50)];
+    const tail = Array.from({ length: 50 }, (_, index) => page(10 + index, 1));
     render(() => (
-      <PagesTreemap
-        data={{ pages: [page(1, 100), page(2, 300), page(3, 300, 50)], offset: 0, limit: 200 }}
-        loading={false}
-      />
+      <PagesTreemap data={{ pages: [...pages, ...tail], offset: 0, limit: 200 }} loading={false} />
     ));
     const [top, other] = seriesData();
-    expect(top?.data).toEqual([
+    expect(top?.data.slice(0, 3)).toEqual([
       ["page:3", 300],
       ["page:2", 300],
       ["page:1", 100],
     ]);
-    expect(other?.name).toBe("Other");
+    expect(other).toEqual({ name: "Other", data: [["__pages_other__", 3]] });
     const formatter = lastChart().options.dataLabels?.formatter as (text: string) => string;
     expect(formatter("page:2")).toBe("/p2");
+  });
+
+  it("sizes pages by visitors when none earned revenue", () => {
+    render(() => (
+      <PagesTreemap
+        data={{ pages: [page(1, 0, 5), page(2, 0, 40)], offset: 0, limit: 200 }}
+        loading={false}
+      />
+    ));
+    expect(seriesData()).toEqual([
+      {
+        name: "Top pages",
+        data: [
+          ["page:2", 40],
+          ["page:1", 5],
+        ],
+      },
+    ]);
+  });
+
+  it("takes no space when there are no pages", () => {
+    const { container } = render(() => (
+      <PagesTreemap data={{ pages: [], offset: 0, limit: 200 }} loading={false} />
+    ));
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("selects a page and shows its hover card", async () => {
@@ -61,7 +86,6 @@ describe("PagesTreemap", () => {
     ));
     const chart = lastChart();
     chart.fire("dataPointSelection", { seriesIndex: 0, dataPointIndex: 0 });
-    chart.fire("dataPointSelection", { seriesIndex: 1, dataPointIndex: 0 });
     expect(onLeafSelect.mock.calls).toEqual([["page:1"]]);
 
     chart.fire("dataPointMouseEnter", { seriesIndex: 0, dataPointIndex: 0 });
@@ -70,13 +94,7 @@ describe("PagesTreemap", () => {
   });
 
   it("uses its own loading label", () => {
-    render(() => (
-      <PagesTreemap
-        data={undefined}
-        loading
-        labels={{ loading: "Loading landing pages…", otherTooltipNoun: "landing pages" }}
-      />
-    ));
+    render(() => <PagesTreemap data={undefined} loading loadingLabel="Loading landing pages…" />);
     expect(screen.getByText("Loading landing pages…")).toBeInTheDocument();
   });
 
@@ -169,6 +187,15 @@ describe("FunnelDropoffTreemap", () => {
     expect(all).toHaveLength(25);
     expect(all.at(-1)).toEqual(["__funnel_dropoff_other__", 76 + 75]);
   });
+
+  it("says so when no destination had any visitors", () => {
+    render(() => (
+      <FunnelDropoffTreemap
+        transitions={[{ path_id: 1, path: "/a", hostname: "x.io", visitors: 0, share: 0 }]}
+      />
+    ));
+    expect(screen.getByText("No next-page transitions for this step.")).toBeInTheDocument();
+  });
 });
 
 describe("CrawlersTreemap", () => {
@@ -202,28 +229,22 @@ describe("CrawlersTreemap", () => {
 });
 
 describe("RevenueSourcesTreemap", () => {
-  const leaf = (group: TreemapLeaf["group"], key: string, revenue: number): TreemapLeaf => ({
-    group,
-    label: key,
-    tooltip: key,
-    datumKey: key,
-    revenue,
-    visitors: 1,
+  const record = (group: SourceGroup, key: string, revenue: number) =>
+    ({ key, group, label: key, revenue, visitors: 1 }) as RevenueSourceRecord;
+  const leaf = (record: RevenueSourceRecord): TreemapLeaf => ({
+    datumKey: record.key,
+    label: record.label,
+    value: record.revenue,
+    record,
   });
 
   it("draws a series per source group in group order", () => {
-    const leaves = new Map<TreemapLeaf["group"], TreemapLeaf[]>([
-      ["direct", [leaf("direct", "d", 50)]],
-      ["search", [leaf("search", "google", 200)]],
+    const leaves = new Map<SourceGroup, TreemapLeaf[]>([
+      ["direct", [leaf(record("direct", "d", 50))]],
+      ["search", [leaf(record("search", "google", 200))]],
     ]);
     render(() => (
-      <RevenueSourcesTreemap
-        leaves={leaves}
-        recordByKey={new Map()}
-        bestHighlights={{} as never}
-        loading={false}
-        error=""
-      />
+      <RevenueSourcesTreemap leaves={() => leaves} bestHighlights={{} as never} loading={false} />
     ));
     expect(seriesData()).toEqual([
       { name: "Search", data: [["google", 200]] },
@@ -231,17 +252,23 @@ describe("RevenueSourcesTreemap", () => {
     ]);
   });
 
-  it("shows a load error", () => {
+  it("only selects tiles the caller can go to", () => {
+    const onLeafSelect = vi.fn();
+    const leaves = new Map<SourceGroup, TreemapLeaf[]>([
+      ["search", [leaf(record("search", "google", 200)), leaf(record("search", "other", 100))]],
+    ]);
     render(() => (
       <RevenueSourcesTreemap
-        leaves={undefined}
-        recordByKey={new Map()}
+        leaves={() => leaves}
         bestHighlights={{} as never}
         loading={false}
-        error="Sources failed to load."
+        onLeafSelect={onLeafSelect}
+        selectable={(key) => key !== "other"}
       />
     ));
-    expect(screen.getByText("Sources failed to load.")).toBeInTheDocument();
+    lastChart().fire("dataPointSelection", { seriesIndex: 0, dataPointIndex: 1 });
+    lastChart().fire("dataPointSelection", { seriesIndex: 0, dataPointIndex: 0 });
+    expect(onLeafSelect.mock.calls).toEqual([["google"]]);
   });
 });
 
@@ -270,6 +297,25 @@ describe("SearchTermsTreemap", () => {
     expect(seriesData().flatMap((series) => series.data)).toEqual([
       ["term:crm", 600],
       ["__search_terms_other__", 400],
+    ]);
+  });
+
+  it("sizes terms by clicks, with Other the channel's remaining clicks", async () => {
+    const data = {
+      current: {
+        search_channel_revenue: 1000,
+        summary: { clicks: 5, impressions: 0 },
+        terms: [term("crm", 600), term("free crm", 0)],
+      },
+      offset: 0,
+      limit: 100,
+    } as unknown as SearchTermsResponse;
+    render(() => <SearchTermsTreemap data={data} loading={false} />);
+    await userEvent.click(screen.getByText("Clicks"));
+    expect(seriesData().flatMap((series) => series.data)).toEqual([
+      ["term:crm", 1],
+      ["term:free crm", 1],
+      ["__search_terms_other__", 3],
     ]);
   });
 });

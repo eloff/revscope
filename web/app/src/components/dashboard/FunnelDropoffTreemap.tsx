@@ -1,24 +1,21 @@
 /// <reference types="solid-js" />
-import { createEffect, createMemo, onCleanup, onMount, Show } from "solid-js";
 import { formatPercentRatio } from "../../lib/dashboardApi";
 import type { FunnelDropoffRow } from "../../lib/funnelsApi";
-import ApexCharts, { type ApexOptions } from "./apexcharts";
-import CursorHoverCard from "./CursorHoverCard";
-import { createCursorHover } from "./createCursorHover";
-import { funnelDropoffChartMount, funnelDropoffTreemapMount } from "./FunnelDropoffTreemap.css";
 import MetricHoverCardContent from "./MetricHoverCardContent";
 import type { MetricHoverContent } from "./metricHoverDetails";
 import { SOURCE_GROUP_COLORS } from "./revenueSourcesLogic";
-import { type TreemapHoverHandlers, treemapLeafEvents } from "./treemapLeafEvents";
+import Treemap from "./Treemap";
+import type { TreemapGroup, TreemapTile } from "./treemapLogic";
 
 const TOP_DESTINATIONS = 24;
 const EXIT_KEY = "__funnel_dropoff_exit__";
 const OTHER_KEY = "__funnel_dropoff_other__";
 const OUTBOUND_KEY_PREFIX = "outbound:";
 
-type DropoffLeaf = {
-  datumKey: string;
-  label: string;
+/** Drop-offs carry no revenue, so visitors are the only metric. */
+const METRICS = [{ value: "traffic", label: "Visitors" }] as const;
+
+type DropoffLeaf = TreemapTile & {
   title: string;
   visitors: number;
   share: number;
@@ -70,6 +67,7 @@ function buildLeaves(transitions: FunnelDropoffRow[]): DropoffLeaf[] {
     datumKey: destinationKey(destination),
     label: destinationLabel(destination),
     title: destinationTitle(destination),
+    value: destination.visitors,
     visitors: destination.visitors,
     share: destination.share,
     isExit: destination.path_id === undefined && destination.outbound_to === undefined,
@@ -83,6 +81,7 @@ function buildLeaves(transitions: FunnelDropoffRow[]): DropoffLeaf[] {
       datumKey: OTHER_KEY,
       label: "Other",
       title: `Other ${rest.length.toLocaleString()} destinations`,
+      value: visitors,
       visitors,
       share,
       isExit: false,
@@ -93,48 +92,26 @@ function buildLeaves(transitions: FunnelDropoffRow[]): DropoffLeaf[] {
   return leaves;
 }
 
-function buildLabelByDatumKey(leaves: DropoffLeaf[]): Map<string, string> {
-  const labelByDatumKey = new Map<string, string>();
-  for (const leaf of leaves) {
-    labelByDatumKey.set(leaf.datumKey, leaf.label);
-  }
-  return labelByDatumKey;
-}
-
-function buildLeafByDatumKey(leaves: DropoffLeaf[]): Map<string, DropoffLeaf> {
-  const leafByDatumKey = new Map<string, DropoffLeaf>();
-  for (const leaf of leaves) {
-    leafByDatumKey.set(leaf.datumKey, leaf);
-  }
-  return leafByDatumKey;
-}
-
-type SeriesGroup = {
-  name: string;
-  color: string;
-  leaves: DropoffLeaf[];
-};
-
-function buildGroups(leaves: DropoffLeaf[]): SeriesGroup[] {
+function buildGroups(leaves: DropoffLeaf[]): TreemapGroup<DropoffLeaf>[] {
   return [
     {
       name: "Destinations",
       color: SOURCE_GROUP_COLORS.campaigns,
-      leaves: leaves.filter((leaf) => !leaf.isExit && !leaf.isOutbound && !leaf.isOther),
+      tiles: leaves.filter((leaf) => !leaf.isExit && !leaf.isOutbound && !leaf.isOther),
     },
     {
       name: "Exit",
       color: SOURCE_GROUP_COLORS.direct,
       // Outbound destinations are exits that left via a tracked link, so they
       // share the Exit group.
-      leaves: leaves.filter((leaf) => leaf.isExit || leaf.isOutbound),
+      tiles: leaves.filter((leaf) => leaf.isExit || leaf.isOutbound),
     },
     {
       name: "Other",
       color: SOURCE_GROUP_COLORS.referrers,
-      leaves: leaves.filter((leaf) => leaf.isOther),
+      tiles: leaves.filter((leaf) => leaf.isOther),
     },
-  ].filter((group) => group.leaves.length > 0);
+  ];
 }
 
 function buildHoverContent(leaf: DropoffLeaf): MetricHoverContent {
@@ -152,114 +129,26 @@ function buildHoverContent(leaf: DropoffLeaf): MetricHoverContent {
   };
 }
 
-function buildOptions(
-  leaves: DropoffLeaf[],
-  labelByDatumKey: Map<string, string>,
-  handlers?: TreemapHoverHandlers,
-): ApexOptions {
-  const groups = buildGroups(leaves);
-  const seriesLeaves = groups.map((group) => group.leaves);
-  return {
-    chart: {
-      type: "treemap",
-      height: 220,
-      toolbar: { show: false },
-      animations: { enabled: false },
-      fontFamily: "Inter, Roboto, 'Helvetica Neue', Arial, sans-serif",
-      events: treemapLeafEvents({
-        seriesLeaves: seriesLeaves,
-        hover: handlers,
-      }),
-    },
-    series: groups.map((group) => ({
-      name: group.name,
-      data: group.leaves.map((leaf) => ({
-        x: leaf.datumKey,
-        y: Math.max(0, leaf.visitors),
-      })),
-    })) as ApexOptions["series"],
-    colors: groups.map((group) => group.color),
-    legend: { show: false },
-    dataLabels: {
-      enabled: true,
-      style: { fontSize: "11px" },
-      formatter: (text) => labelByDatumKey.get(String(text)) ?? String(text),
-    },
-    plotOptions: {
-      treemap: {
-        distributed: false,
-        enableShades: true,
-        dataLabels: { format: "truncate" },
-      },
-    },
-    tooltip: { enabled: false },
-  };
-}
-
 export default function FunnelDropoffTreemap(props: FunnelDropoffTreemapProps) {
-  let chartElement: HTMLDivElement | undefined;
-  let chart: ApexCharts | undefined;
-  const hover = createCursorHover();
-
-  const leaves = createMemo(() => buildLeaves(props.transitions));
-  const leafByKey = createMemo(() => buildLeafByDatumKey(leaves()));
-  const hoveredLeaf = createMemo(() => {
-    const key = hover.key();
-    return key ? leafByKey().get(key) : undefined;
-  });
-  const hoverContent = createMemo(() => {
-    const leaf = hoveredLeaf();
-    return leaf ? buildHoverContent(leaf) : undefined;
-  });
-
-  onMount(() => {
-    if (!chartElement) {
-      return;
-    }
-    chart = new ApexCharts(chartElement, {
-      chart: { type: "treemap", height: 220 },
-      series: [],
-    });
-    chart.render();
-  });
-
-  createEffect(() => {
-    if (!chart) {
-      return;
-    }
-    const currentLeaves = leaves();
-    chart.updateOptions(
-      buildOptions(currentLeaves, buildLabelByDatumKey(currentLeaves), {
-        onLeafHover: hover.show,
-        onChartMouseMove: hover.move,
-      }),
-      true,
-      true,
-    );
-  });
-
-  onCleanup(() => {
-    chart?.destroy();
-    chart = undefined;
-  });
-
   return (
-    <>
-      <div class={funnelDropoffChartMount}>
-        <div ref={chartElement} class={funnelDropoffTreemapMount} />
-      </div>
-      <CursorHoverCard hover={hover} open={hoveredLeaf() !== undefined} wide>
-        <Show when={hoveredLeaf()}>
-          {(leaf) => (
-            <MetricHoverCardContent
-              title={leaf().title}
-              content={hoverContent()}
-              statLayout="twoColumn"
-              showPeriodComparisonNote={false}
-            />
-          )}
-        </Show>
-      </CursorHoverCard>
-    </>
+    <Treemap
+      groups={() => buildGroups(buildLeaves(props.transitions))}
+      metrics={METRICS}
+      loading={false}
+      loadingLabel=""
+      emptyLabel="No next-page transitions for this step."
+      height={220}
+      labelFontSize="11px"
+      animate={false}
+      wideHoverCard
+      hoverCard={(leaf) => (
+        <MetricHoverCardContent
+          title={leaf.title}
+          content={buildHoverContent(leaf)}
+          statLayout="twoColumn"
+          showPeriodComparisonNote={false}
+        />
+      )}
+    />
   );
 }

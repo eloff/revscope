@@ -20,6 +20,7 @@ import {
   type HighlightMetric,
   type HoverHighlight,
 } from "./metricHoverDetails";
+import { compareByMetric, type TreemapMetric, type TreemapTile } from "./treemapLogic";
 
 export type { SourceGroup };
 
@@ -516,17 +517,8 @@ function appendGroupOtherRecords(
   return [...records, ...buildGroupOtherRecords(records, groupTotals, disabledGroups)];
 }
 
-export type TreemapLeaf = {
-  group: SourceGroup;
-  /** Short label shown on the tile (hostname for referrers). */
-  label: string;
-  /** Full source label shown in the chart tooltip. */
-  tooltip: string;
-  /** Stable unique key for the ApexCharts datum (`x`). */
-  datumKey: string;
-  revenue: number;
-  visitors: number;
-};
+/** A source's treemap tile; `record` is what its hover card describes. */
+export type TreemapLeaf = TreemapTile & { record: RevenueSourceRecord };
 
 /** Host portion of a normalized referrer (`host/path` → `host`). */
 function referrerHostname(referrer: string): string {
@@ -534,63 +526,48 @@ function referrerHostname(referrer: string): string {
   return slash === -1 ? referrer : referrer.slice(0, slash);
 }
 
-/** Keep the highest-revenue sources (visitors break ties). */
-export function takeTopSourcesByRevenue(
-  records: RevenueSourceRecord[],
-  limit: number,
-): RevenueSourceRecord[] {
-  return [...records]
-    .sort((a, b) => {
-      if (b.revenue !== a.revenue) {
-        return b.revenue - a.revenue;
-      }
-      return b.visitors - a.visitors;
-    })
-    .slice(0, limit);
+function sourceValue(record: RevenueSourceRecord, metric: TreemapMetric): number {
+  return metric === "revenue" ? record.revenue : record.visitors;
 }
 
-function recordToTreemapLeaf(record: RevenueSourceRecord): TreemapLeaf {
-  return {
-    group: record.group,
-    label: treemapLabelForRecord(record),
-    tooltip: treemapTooltipForRecord(record),
-    datumKey: record.key,
-    revenue: record.revenue,
-    visitors: record.visitors,
-  };
+/** Keep the sources highest in `metric`. */
+export function takeTopSources(
+  records: RevenueSourceRecord[],
+  limit: number,
+  metric: TreemapMetric,
+): RevenueSourceRecord[] {
+  return [...records]
+    .sort(compareByMetric(metric, sourceValue, (a, b) => a.key.localeCompare(b.key)))
+    .slice(0, limit);
 }
 
 /**
  * Build treemap leaves grouped by `SourceGroup`, keeping at most `topSources`
- * leaves overall (by revenue), then optional per-group "Other" tiles.
- * Sources with no revenue are omitted so the chart can hide when empty.
+ * leaves overall (by `metric`), then optional per-group "Other" tiles.
  */
 export function buildTreemapLeaves(
   records: RevenueSourceRecord[],
   groupTotals: GroupTotals,
   topSources: number,
+  metric: TreemapMetric,
   disabledGroups: ReadonlySet<SourceGroup> = new Set(),
 ): Map<SourceGroup, TreemapLeaf[]> {
-  const top = takeTopSourcesByRevenue(records, topSources);
+  const top = takeTopSources(records, topSources, metric);
   const withOther = appendGroupOtherRecords(top, groupTotals, disabledGroups);
   const grouped = new Map<SourceGroup, TreemapLeaf[]>();
   for (const group of SOURCE_GROUP_ORDER) {
     grouped.set(group, []);
   }
   for (const record of withOther) {
-    // Zero-revenue tiles have no area; omitting them lets the chart collapse
-    // when a period has visitors but no attributed revenue.
-    if (record.revenue <= 0) {
-      continue;
-    }
-    const leaves = grouped.get(record.group);
-    if (leaves) {
-      leaves.push(recordToTreemapLeaf(record));
-    }
+    grouped.get(record.group)?.push({
+      datumKey: record.key,
+      label: treemapLabelForRecord(record),
+      value: sourceValue(record, metric),
+      record,
+    });
   }
-  for (const [group, leaves] of grouped) {
-    leaves.sort((a, b) => b.revenue - a.revenue);
-    grouped.set(group, leaves);
+  for (const leaves of grouped.values()) {
+    leaves.sort((a, b) => b.value - a.value);
   }
   return grouped;
 }
@@ -606,19 +583,6 @@ function treemapLabelForRecord(record: RevenueSourceRecord): string {
     return record.label;
   }
   return referrerHostname(record.referrer);
-}
-
-function treemapTooltipForRecord(record: RevenueSourceRecord): string {
-  if (record.isGroupOther) {
-    return `${SOURCE_GROUP_LABELS[record.group]} · ${GROUP_OTHER_LABEL}`;
-  }
-  if (record.isDirect) {
-    return DIRECT_REFERRER_LABEL;
-  }
-  if (record.isCampaign) {
-    return record.label;
-  }
-  return record.referrer;
 }
 
 /** Revenue per visitor (thousandths of a dollar per visit). */

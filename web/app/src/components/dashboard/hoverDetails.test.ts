@@ -18,7 +18,6 @@ import type { RevenueSourceRecord } from "./revenueSourcesLogic";
 import {
   buildSearchTermHoverContent,
   buildSearchTermOtherHoverContent,
-  indexSearchTermsByQuery,
 } from "./searchTermHoverDetails";
 
 function stat(content: MetricHoverContent, label: string) {
@@ -267,10 +266,6 @@ describe("search term hover content", () => {
     expect(content.landingPathsCountLabel).toBe("Clicks");
   });
 
-  it("indexes terms by row key", () => {
-    expect([...indexSearchTermsByQuery([term({ query: "a" })]).keys()]).toEqual(["term:a"]);
-  });
-
   describe("Other tile", () => {
     const period = (
       terms: SearchTermRow[],
@@ -304,7 +299,7 @@ describe("search term hover content", () => {
         new Set(["top"]),
         1,
       );
-      expect(content.description).toBe("Estimated search revenue outside the top 1 terms");
+      expect(content.description).toBe("Search terms outside the top 1");
       expect(stat(content, "Est. revenue")?.value).toBe("$4");
       expect(stat(content, "Impressions")?.value).toBe("100");
       expect(stat(content, "Position")?.value).toBe("6.0");

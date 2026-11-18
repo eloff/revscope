@@ -35,7 +35,7 @@ import {
   SOURCE_GROUP_ORDER,
   type SourceGroup,
   soloSourceGroup,
-  takeTopSourcesByRevenue,
+  takeTopSources,
   toggleDisabledSourceGroup,
 } from "./revenueSourcesLogic";
 import {
@@ -50,8 +50,9 @@ import {
   summaryContent,
   summaryPanel,
 } from "./summaryCards.css";
+import type { TreemapMetric } from "./treemapLogic";
 
-/** Treemap shows at most this many individual sources (by revenue), plus per-group Other. */
+/** Treemap shows at most this many individual sources (by its metric), plus per-group Other. */
 const TREEMAP_TOP_SOURCES = 50;
 
 function summaryChangeClass(ratio: number): string {
@@ -114,13 +115,19 @@ export default function RevenueSources(props: RevenueSourcesProps) {
     return filterRecordsByGroups(rowsFromResponse(response.current), disabledGroups());
   });
 
-  const treemapLeaves = createMemo(() => {
+  const treemapLeaves = (metric: TreemapMetric) => {
     const totals = groupTotals();
     if (!totals) {
       return undefined;
     }
-    return buildTreemapLeaves(treemapRecords(), totals, TREEMAP_TOP_SOURCES, disabledGroups());
-  });
+    return buildTreemapLeaves(
+      treemapRecords(),
+      totals,
+      TREEMAP_TOP_SOURCES,
+      metric,
+      disabledGroups(),
+    );
+  };
 
   const gridRecords = createMemo(() => {
     const response = props.data;
@@ -129,7 +136,7 @@ export default function RevenueSources(props: RevenueSourcesProps) {
       return [];
     }
     const filtered = filterRecordsByGroups(rowsFromResponse(response.current), disabledGroups());
-    const topDisplayed = takeTopSourcesByRevenue(treemapRecords(), TREEMAP_TOP_SOURCES);
+    const topDisplayed = takeTopSources(treemapRecords(), TREEMAP_TOP_SOURCES, "revenue");
     return [...filtered, ...buildGroupOtherRecords(topDisplayed, totals, disabledGroups())];
   });
 
@@ -254,12 +261,11 @@ export default function RevenueSources(props: RevenueSourcesProps) {
       <Show when={props.data && !props.error}>
         <div class={summaryContent}>
           <RevenueSourcesTreemap
-            leaves={treemapLeaves()}
-            recordByKey={recordByKey()}
+            leaves={treemapLeaves}
             bestHighlights={bestHighlights()}
             loading={showInitialLoading()}
-            error={props.error}
             onLeafSelect={handleTreemapSelect}
+            selectable={(key) => recordByKey().has(key)}
           />
 
           <RevenueSourcesGrid

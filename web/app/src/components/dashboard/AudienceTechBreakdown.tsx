@@ -54,8 +54,6 @@ type TechDimension = {
   countSingularLabel: string;
   countPluralLabel: string;
   emptyLabel: string;
-  /** Used in the treemap's "Other" tooltip, e.g. "outside the top 10 browsers". */
-  otherTooltipNoun: string;
   iconClass?: (key: string) => string;
   /** The segment filter a row's key selects; screen and viewport sizes have none. */
   filterAttribute?: LandingAttribute;
@@ -72,7 +70,6 @@ const TECH_DIMENSIONS: TechDimension[] = [
     countSingularLabel: "browser",
     countPluralLabel: "browsers",
     emptyLabel: "No browsers for this period",
-    otherTooltipNoun: "browsers",
     iconClass: browserFamilyIconClass,
     filterAttribute: "browser",
     buildRows: (data) => buildBrowserBreakdownRows(data.browsers),
@@ -86,7 +83,6 @@ const TECH_DIMENSIONS: TechDimension[] = [
     countSingularLabel: "OS",
     countPluralLabel: "operating systems",
     emptyLabel: "No operating systems for this period",
-    otherTooltipNoun: "operating systems",
     iconClass: osIconClass,
     filterAttribute: "os",
     buildRows: (data) => buildOsBreakdownRows(data.os),
@@ -100,7 +96,6 @@ const TECH_DIMENSIONS: TechDimension[] = [
     countSingularLabel: "device",
     countPluralLabel: "devices",
     emptyLabel: "No devices for this period",
-    otherTooltipNoun: "devices",
     iconClass: deviceIconClass,
     filterAttribute: "device",
     buildRows: (data) => buildDeviceBreakdownRows(data.devices),
@@ -114,7 +109,6 @@ const TECH_DIMENSIONS: TechDimension[] = [
     countSingularLabel: "screen size bin",
     countPluralLabel: "screen size bins",
     emptyLabel: "No screen sizes for this period",
-    otherTooltipNoun: "screen size bins",
     buildRows: (data) => buildScreenSizeBreakdownRows(data.screen_sizes),
     buildMetrics: (data) => buildScreenSizeMetrics(data.screen_sizes),
   },
@@ -126,7 +120,6 @@ const TECH_DIMENSIONS: TechDimension[] = [
     countSingularLabel: "viewport bin",
     countPluralLabel: "viewport bins",
     emptyLabel: "No viewports for this period",
-    otherTooltipNoun: "viewport bins",
     buildRows: (data) => buildViewportBreakdownRows(data.viewports),
     buildMetrics: (data) => buildViewportMetrics(data.viewports),
   },
@@ -223,7 +216,6 @@ export default function AudienceTechBreakdown(props: AudienceTechBreakdownProps)
       <AudienceBreakdownTreemap
         rows={rowsFor(dimension())}
         topGroupColor={SOURCE_GROUP_COLORS.campaigns}
-        otherTooltipNoun={dimension().otherTooltipNoun}
         loading={props.loading}
         onLeafHover={hover.show}
         onChartMouseMove={hover.move}

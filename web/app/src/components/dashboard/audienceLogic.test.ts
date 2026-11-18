@@ -206,25 +206,25 @@ describe("sorting and highlights", () => {
 });
 
 describe("buildAudienceBreakdownTreemapLeaves", () => {
-  it("drops zero-revenue rows and ranks by revenue", () => {
-    const leaves = buildAudienceBreakdownTreemapLeaves(
-      [breakdown("x", 5, 0), breakdown("y", 1, 50), breakdown("z", 1, 90)],
-      "browsers",
-    );
-    expect(leaves.map((leaf) => leaf.datumKey)).toEqual(["z", "y"]);
+  it("ranks by the metric, breaking ties with the other one", () => {
+    const rows = [breakdown("x", 5, 0), breakdown("y", 1, 50), breakdown("z", 1, 90)];
+    expect(
+      buildAudienceBreakdownTreemapLeaves(rows, "revenue").map((leaf) => leaf.datumKey),
+    ).toEqual(["z", "y", "x", "__audience_breakdown_other__"]);
+    expect(
+      buildAudienceBreakdownTreemapLeaves(rows, "traffic").map((leaf) => leaf.datumKey),
+    ).toEqual(["x", "z", "y", "__audience_breakdown_other__"]);
   });
 
   it("rolls the long tail into Other", () => {
     const rows = Array.from({ length: AUDIENCE_BREAKDOWN_TREEMAP_TOP + 2 }, (_, index) =>
       breakdown(`r${index}`, 1, 1000 - index),
     );
-    const other = buildAudienceBreakdownTreemapLeaves(rows, "cities").at(-1);
-    expect(other).toMatchObject({
+    expect(buildAudienceBreakdownTreemapLeaves(rows, "revenue").at(-1)).toMatchObject({
       isOther: true,
-      revenue: 1000 - 50 + 1000 - 51,
-      visitors: 2,
-      tooltip: "Revenue from 2 cities outside the top 50",
+      value: 1000 - 50 + 1000 - 51,
     });
+    expect(buildAudienceBreakdownTreemapLeaves(rows, "traffic").at(-1)?.value).toBe(2);
   });
 });
 

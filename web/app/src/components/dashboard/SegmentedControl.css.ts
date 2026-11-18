@@ -42,6 +42,9 @@ export const item = style({
     "&:focus-within": {
       outline: "none",
     },
+    "&[data-disabled]": {
+      cursor: "not-allowed",
+    },
     "&:has(:focus-visible)": {
       outline: "2px solid #2563eb",
       outlineOffset: "2px",
@@ -62,11 +65,24 @@ export const itemText = style({
     '&[data-state="checked"]': {
       color: "#111827",
     },
+    "&[data-disabled]": {
+      color: "#c4c8cf",
+    },
   },
+});
+
+export const itemTextSmall = style({
+  padding: "3px 9px",
+  fontSize: "12px",
 });
 
 export const itemControl = style({
   position: "absolute",
   inset: 0,
   cursor: "pointer",
+  selectors: {
+    "&[data-disabled]": {
+      cursor: "not-allowed",
+    },
+  },
 });

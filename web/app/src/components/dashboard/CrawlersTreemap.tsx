@@ -1,17 +1,12 @@
 /// <reference types="solid-js" />
-import { createEffect, createMemo, onCleanup, onMount, Show } from "solid-js";
 import { formatPercentRatio } from "../../lib/dashboardApi";
-import ApexCharts, { type ApexOptions } from "./apexcharts";
-import CursorHoverCard from "./CursorHoverCard";
-import { chartMount } from "./chart.css";
 import { CRAWLERS_TREEMAP_TOP_OPERATORS, type CrawlerOperatorLeaf } from "./crawlersLogic";
-import { createCursorHover } from "./createCursorHover";
 import MetricHoverCardContent from "./MetricHoverCardContent";
-import { message } from "./messages.css";
 import type { MetricHoverContent } from "./metricHoverDetails";
-import { type TreemapHoverHandlers, treemapLeafEvents } from "./treemapLeafEvents";
+import Treemap from "./Treemap";
 
-const TREEMAP_LABEL_FONT_SIZE = "12px";
+/** Crawlers earn no revenue, so views are the only metric. */
+const METRICS = [{ value: "traffic", label: "Views" }] as const;
 
 type CrawlersTreemapProps = {
   leaves: CrawlerOperatorLeaf[] | undefined;
@@ -39,145 +34,35 @@ function buildHoverContent(leaf: CrawlerOperatorLeaf): MetricHoverContent {
   };
 }
 
-function buildOptions(
-  leaves: CrawlerOperatorLeaf[],
-  handlers?: TreemapHoverHandlers & {
-    onLeafSelect?: (leaf: CrawlerOperatorLeaf) => void;
-  },
-): ApexOptions {
-  return {
-    chart: {
-      type: "treemap",
-      height: 420,
-      toolbar: { show: false },
-      fontFamily: "Inter, Roboto, 'Helvetica Neue', Arial, sans-serif",
-      events: treemapLeafEvents({
-        seriesLeaves: [leaves],
-        hover: handlers,
-        onSelect: handlers?.onLeafSelect,
-        selectable: (leaf) => !leaf.isOther,
-      }),
-    },
-    series: [
-      {
-        data: leaves.map((leaf) => ({
-          x: leaf.datumKey,
-          y: Math.max(0, leaf.views),
-        })),
-      },
-    ] as ApexOptions["series"],
-    colors: leaves.map((leaf) => leaf.color),
-    legend: {
-      show: false,
-    },
-    dataLabels: {
-      enabled: true,
-      style: { fontSize: TREEMAP_LABEL_FONT_SIZE },
-      formatter: (text) => {
-        const leaf = leaves.find((entry) => entry.datumKey === String(text));
-        return leaf?.label ?? String(text);
-      },
-    },
-    plotOptions: {
-      treemap: {
-        distributed: true,
-        enableShades: false,
-        dataLabels: {
-          format: "truncate",
-        },
-      },
-    },
-    tooltip: {
-      enabled: false,
-    },
-  };
-}
-
 export default function CrawlersTreemap(props: CrawlersTreemapProps) {
-  let chartElement: HTMLDivElement | undefined;
-  let chart: ApexCharts | undefined;
-  const hover = createCursorHover();
-
-  const leafByKey = createMemo(() => {
-    const map = new Map<string, CrawlerOperatorLeaf>();
-    for (const leaf of props.leaves ?? []) {
-      map.set(leaf.datumKey, leaf);
-    }
-    return map;
-  });
-  const hoveredLeaf = createMemo(() => {
-    const key = hover.key();
-    return key ? leafByKey().get(key) : undefined;
-  });
-  const hoverContent = createMemo(() => {
-    const leaf = hoveredLeaf();
-    return leaf ? buildHoverContent(leaf) : undefined;
-  });
-  const hasLeaves = () => (props.leaves?.length ?? 0) > 0;
-
-  onMount(() => {
-    if (!chartElement) {
-      return;
-    }
-    chart = new ApexCharts(chartElement, {
-      chart: { type: "treemap", height: 420 },
-      series: [],
-    });
-    chart.render();
-  });
-
-  createEffect(() => {
-    if (!chart || props.loading) {
-      return;
-    }
-    const leaves = props.leaves;
-    if (!leaves) {
-      return;
-    }
-    chart.updateOptions(
-      buildOptions(leaves, {
-        onLeafSelect: (leaf) => props.onLeafSelect?.(leaf.datumKey),
-        onLeafHover: hover.show,
-        onChartMouseMove: hover.move,
-      }),
-      true,
-      true,
-    );
-  });
-
-  onCleanup(() => {
-    chart?.destroy();
-    chart = undefined;
-  });
-
   return (
-    <>
-      <div class={chartMount}>
-        <Show when={props.loading}>
-          <p class={message}>Loading crawlers treemap…</p>
-        </Show>
-        <Show when={!props.loading && props.leaves && !hasLeaves()}>
-          <p class={message}>No crawler views for the selected categories.</p>
-        </Show>
-        <div
-          ref={chartElement}
-          style={{
-            display: props.loading || !props.leaves || !hasLeaves() ? "none" : "block",
-          }}
+    <Treemap
+      groups={() =>
+        props.leaves && [
+          {
+            name: "Operators",
+            color: "",
+            tiles: props.leaves.map((leaf) => ({ ...leaf, value: leaf.views })),
+          },
+        ]
+      }
+      metrics={METRICS}
+      loading={props.loading}
+      loadingLabel="Loading crawlers treemap…"
+      emptyLabel="No crawler views for the selected categories."
+      height={420}
+      tileColor={(leaf) => leaf.color}
+      selectable={(leaf) => !leaf.isOther}
+      onSelect={(leaf) => props.onLeafSelect?.(leaf.datumKey)}
+      wideHoverCard
+      hoverCard={(leaf) => (
+        <MetricHoverCardContent
+          title={leaf.label}
+          content={buildHoverContent(leaf)}
+          statLayout="twoColumn"
+          showPeriodComparisonNote={false}
         />
-      </div>
-      <CursorHoverCard hover={hover} open={hoveredLeaf() !== undefined} wide>
-        <Show when={hoveredLeaf()}>
-          {(leaf) => (
-            <MetricHoverCardContent
-              title={leaf().label}
-              content={hoverContent()}
-              statLayout="twoColumn"
-              showPeriodComparisonNote={false}
-            />
-          )}
-        </Show>
-      </CursorHoverCard>
-    </>
+      )}
+    />
   );
 }

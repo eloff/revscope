@@ -1,7 +1,6 @@
 import { formatPercentRatio, formatRevenueAmount } from "../../lib/dashboardApi";
 import type { MetricChange, SearchTermRow, SearchTermsPeriod } from "../../lib/searchTermsApi";
 import type { HoverHighlight, HoverStatLine, MetricHoverContent } from "./metricHoverDetails";
-import { searchTermRowKey } from "./searchTermsLogic";
 
 function plainStatLine(label: string, value: string): HoverStatLine {
   return { label, value };
@@ -19,14 +18,6 @@ function changeStatLine(
     changeRatio: change.ratio,
     higherIsBetter,
   };
-}
-
-export function indexSearchTermsByQuery(terms: SearchTermRow[]): Map<string, SearchTermRow> {
-  const index = new Map<string, SearchTermRow>();
-  for (const term of terms) {
-    index.set(searchTermRowKey(term), term);
-  }
-  return index;
 }
 
 export function buildSearchTermHoverContent(
@@ -150,6 +141,6 @@ export function buildSearchTermOtherHoverContent(
 
   return {
     stats,
-    description: `Estimated search revenue outside the top ${topTermCount} terms`,
+    description: `Search terms outside the top ${topTermCount}`,
   };
 }

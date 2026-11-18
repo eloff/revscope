@@ -201,14 +201,7 @@ export default function FunnelChart(props: {
                       <p class={message}>No next step drop-off destinations for this step.</p>
                     }
                   >
-                    {(dropoff) => (
-                      <Show
-                        when={dropoff().transitions.length > 0}
-                        fallback={<p class={message}>No next-page transitions for this step.</p>}
-                      >
-                        <FunnelDropoffTreemap transitions={dropoff().transitions} />
-                      </Show>
-                    )}
+                    {(dropoff) => <FunnelDropoffTreemap transitions={dropoff().transitions} />}
                   </Show>
                 </div>
               </div>

@@ -173,15 +173,27 @@ describe("group Other rows", () => {
     expect(buildGroupOtherRecords(rows, totals, new Set<SourceGroup>(["social"]))).toEqual([]);
   });
 
-  it("builds treemap tiles from the top sources plus Other, skipping zero revenue", () => {
-    const leaves = buildTreemapLeaves(rows, totals, 2);
+  it("builds treemap tiles from the top sources by revenue plus Other", () => {
+    const leaves = buildTreemapLeaves(rows, totals, 2, "revenue");
     expect(leaves.get("direct")?.map((leaf) => leaf.label)).toEqual(["Direct"]);
     expect(leaves.get("campaigns")?.map((leaf) => leaf.datumKey)).toEqual(["c:7"]);
     // The HN row fell outside the top two, so all of social is Other.
-    expect(leaves.get("social")?.map((leaf) => [leaf.label, leaf.revenue])).toEqual([
+    expect(leaves.get("social")?.map((leaf) => [leaf.label, leaf.value])).toEqual([
       ["Other", 70_000],
     ]);
-    expect(leaves.get("search")).toEqual([]);
+  });
+
+  it("ranks treemap tiles by visitors when sized by visitors", () => {
+    const leaves = buildTreemapLeaves(rows, totals, 2, "traffic");
+    const tiles = (group: SourceGroup) =>
+      leaves.get(group)?.map((leaf) => [leaf.label, leaf.value]);
+    expect(tiles("direct")).toEqual([["Direct", 400]]);
+    expect(tiles("social")).toEqual([
+      ["news.ycombinator.com", 100],
+      ["Other", 60],
+    ]);
+    // The campaign has the fewest visitors, so it's rolled into its group's Other.
+    expect(tiles("campaigns")).toEqual([["Other", 50]]);
   });
 });
 
