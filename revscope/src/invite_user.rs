@@ -16,8 +16,8 @@ use log::error;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{
-    AuthError, MIN_USER_NAME_LENGTH, ResetLinkDelivery, insert_password_reset_token, insert_user,
-    map_query_error, normalize_email, password_reset_url,
+    AuthError, ResetLinkDelivery, insert_password_reset_token, insert_user, map_query_error,
+    normalize_email, password_reset_url, validate_user_name,
 };
 use crate::authorize::AdminAccount;
 use crate::db::open_main_database_write;
@@ -53,12 +53,7 @@ pub(crate) fn invite_user(
     request: InviteUserRequest,
 ) -> Result<InviteUserResponse, AuthError> {
     let inviter = admin.user();
-    let name = request.name.trim();
-    if name.len() < MIN_USER_NAME_LENGTH {
-        return Err(AuthError::InvalidRequest(
-            "name must be at least 2 characters",
-        ));
-    }
+    let name = validate_user_name(&request.name)?;
     let email = normalize_email(request.email.as_str())?;
     let access = UserAccess::from_request(request.access)?;
 

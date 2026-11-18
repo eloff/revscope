@@ -550,6 +550,16 @@ async fn bad_tokens_and_signup_fields_are_refused_with_a_message() -> io::Result
             "Website must include a domain (e.g. mywebsite.com).",
         ),
         (
+            json!({
+                "provider": "apple",
+                "id_token": id_token(APPLE_ISSUER, &slug, Some(&email), json!(true)),
+                "name": "Win a prize at https://example.com",
+                "signup": signup_fields(&format!("{slug}.example")),
+            }),
+            400,
+            "name must not contain ://",
+        ),
+        (
             json!({ "id_token": google }),
             400,
             "invalid sign-in payload",

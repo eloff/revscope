@@ -7,7 +7,7 @@ use serde::Deserialize;
 use crate::auth::{
     AuthError, AuthSuccess, MIN_USER_NAME_LENGTH, NewAccountRequest, NewLogin, NewUser,
     create_account, issue_session, link_identity, map_query_error, normalize_email,
-    record_email_proof,
+    record_email_proof, validate_user_name,
 };
 use crate::db::{open_main_database_read, open_main_database_write};
 use crate::id_token::{Identity, MAX_TOKEN_LEN, SignInError, Verifier};
@@ -152,10 +152,11 @@ pub(crate) async fn sign_in(
         .map(str::trim)
         .filter(|name| !name.is_empty() && name.len() <= MAX_NAME_LEN);
     let name = user_name(identity.name.as_deref().or(browser_name), &email.normalized);
+    let name = validate_user_name(&name)?;
     #[cfg(not(feature = "self-hosted"))]
     crate::hosted_signup::validate_account(account)?;
     let user = NewUser {
-        name: name.as_str(),
+        name,
         email,
         login: NewLogin::Identity {
             provider,

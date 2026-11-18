@@ -624,6 +624,10 @@ async fn signup_rejects_invalid_fields_with_a_message_for_the_form() -> io::Resu
     short_name.user_name = "A".to_string();
     assert_rejected(&server, &short_name, "name must be at least 2 characters").await?;
 
+    let mut url_name = NewSignup::new("urlname");
+    url_name.user_name = "Win a prize at https://example.com".to_string();
+    assert_rejected(&server, &url_name, "name must not contain ://").await?;
+
     let mut short_website = NewSignup::new("badwebsite");
     short_website.account_name = "ab".to_string();
     assert_rejected(

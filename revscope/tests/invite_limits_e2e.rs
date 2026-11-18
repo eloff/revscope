@@ -69,11 +69,20 @@ async fn delete_account(server: &TestServer, account: &Account) {
 }
 
 async fn invite(server: &TestServer, account: &Account, email: &str) -> io::Result<HttpResponse> {
+    invite_named(server, account, "Grace Hopper", email).await
+}
+
+async fn invite_named(
+    server: &TestServer,
+    account: &Account,
+    name: &str,
+    email: &str,
+) -> io::Result<HttpResponse> {
     server
         .post_json(
             INVITE_PATH,
             &json!({
-                "name": "Grace Hopper",
+                "name": name,
                 "email": email,
                 "is_admin": false,
                 "project_ids": null,
@@ -127,6 +136,26 @@ async fn only_a_paid_plan_in_good_standing_can_invite() -> io::Result<()> {
     let listed = users(&server, &account).await?;
     assert_eq!(listed["invites_included"], json!(true));
     assert_eq!(listed["users"].as_array().expect("users").len(), 2);
+
+    delete_account(&server, &account).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_invite_naming_someone_with_a_url_is_refused() -> io::Result<()> {
+    let server = TestServer::spawn("invite-url-name").await?;
+    let account = signup(&server, "inviteurlname").await?;
+    set_plan(&server, &account, "starter", Some("active")).await;
+    let invitee = format!("invitee-{}", account.email);
+
+    let refused = invite_named(&server, &account, "Grace https://example.com", &invitee).await?;
+    assert_eq!(refused.status_code(), 400, "{}", refused.body_str());
+    assert_eq!(
+        refused.json::<Value>()["error"],
+        json!("name must not contain ://")
+    );
+    let listed = users(&server, &account).await?;
+    assert_eq!(listed["users"].as_array().expect("users").len(), 1);
 
     delete_account(&server, &account).await;
     Ok(())

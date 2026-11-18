@@ -172,12 +172,7 @@ pub(crate) async fn signup(
     server_context: Arc<ServerContext>,
     payload: SignupRequest,
 ) -> Result<AuthSuccess, AuthError> {
-    let name = payload.name.trim();
-    if name.len() < MIN_USER_NAME_LENGTH {
-        return Err(AuthError::InvalidRequest(
-            "name must be at least 2 characters",
-        ));
-    }
+    let name = validate_user_name(&payload.name)?;
     let password = payload.password.as_str();
     #[cfg(not(feature = "self-hosted"))]
     crate::hosted_signup::validate_account(&payload.account)?;
@@ -206,6 +201,21 @@ pub(crate) async fn signup(
     let success = create_account(server_context.clone(), &payload.account, user).await?;
     crate::email_verification::send_verification(server_context, normalized_email);
     Ok(success)
+}
+
+/// Trims a new user's name and checks it. An admin's name goes into the invite
+/// emails they send, so a name holding `://` is refused to keep a URL out of them.
+pub(crate) fn validate_user_name(name: &str) -> Result<&str, AuthError> {
+    let name = name.trim();
+    if name.len() < MIN_USER_NAME_LENGTH {
+        return Err(AuthError::InvalidRequest(
+            "name must be at least 2 characters",
+        ));
+    }
+    if name.contains("://") {
+        return Err(AuthError::InvalidRequest("name must not contain ://"));
+    }
+    Ok(name)
 }
 
 /// Creates the account a signup asked for, with `user` as its first user, and
@@ -1248,6 +1258,21 @@ pub(crate) fn db_constraint(error: &tokio_postgres::Error) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_names_are_trimmed_and_refused_with_a_url_or_too_short() {
+        assert_eq!(
+            validate_user_name("  Ada Lovelace ").ok(),
+            Some("Ada Lovelace")
+        );
+        assert!(validate_user_name("ftp:/ not a url").is_ok());
+        for name in ["A", "  ", "https://example.com", "Ada see ftp://x"] {
+            assert!(
+                matches!(validate_user_name(name), Err(AuthError::InvalidRequest(_))),
+                "{name:?} must be refused"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn only_the_first_proving_reset_drops_grants_held_in_memory() {
