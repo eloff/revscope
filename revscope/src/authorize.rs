@@ -57,6 +57,23 @@ impl Deref for AdminAccount {
     }
 }
 
+/// Proof that the signed-in user is an admin of the account named by
+/// `REVSCOPE_ADMIN_ACCOUNT_ID`, who runs this server: they see every account
+/// and may delete any other. Members of that account are not, since an
+/// invite with read access to one project shouldn't reach every customer.
+#[derive(Debug, Clone)]
+pub(crate) struct SiteAdmin {
+    admin: AdminAccount,
+}
+
+impl Deref for SiteAdmin {
+    type Target = AdminAccount;
+
+    fn deref(&self) -> &AdminAccount {
+        &self.admin
+    }
+}
+
 /// Proof that the current request may read this project. Constructed only by
 /// the helpers in this module.
 #[derive(Debug, Clone)]
@@ -203,6 +220,39 @@ pub(crate) fn authorize_admin(account: &Account) -> Result<AdminAccount, AuthErr
     Ok(AdminAccount {
         account: account.clone(),
     })
+}
+
+/// An admin of the site admin account; see [`SiteAdmin`]. Anyone else is told
+/// there is nothing here, so the route doesn't advertise itself, which the
+/// routes' own re-checks of the role in Postgres keep to with [`not_site_admin`].
+pub(crate) fn authorize_site_admin(
+    server_context: &ServerContext,
+    account: &Account,
+) -> Result<SiteAdmin, AuthError> {
+    if !is_site_admin(server_context, &account.user) {
+        return Err(NOT_SITE_ADMIN);
+    }
+    Ok(SiteAdmin {
+        admin: authorize_admin(account)?,
+    })
+}
+
+const NOT_SITE_ADMIN: AuthError = AuthError::NotFound("not found");
+
+/// Turns a refusal from re-reading a site admin's role into the answer
+/// [`authorize_site_admin`] gives everyone else.
+pub(crate) fn not_site_admin(error: AuthError) -> AuthError {
+    match error {
+        AuthError::Forbidden(_) => NOT_SITE_ADMIN,
+        error => error,
+    }
+}
+
+/// Whether `user` would pass [`authorize_site_admin`], for showing them the
+/// admin tab.
+pub(crate) fn is_site_admin(server_context: &ServerContext, user: &SessionUser) -> bool {
+    user.is_admin
+        && server_context.site_admin_account_id.as_deref() == Some(user.account_id.as_str())
 }
 
 /// An admin's own project, blocked for the public demo.
@@ -578,6 +628,36 @@ mod tests {
             projects: ProjectScope::All,
             account_confirmed: true,
         }
+    }
+
+    #[test]
+    fn only_admins_of_the_configured_account_are_site_admins() {
+        let mut context = ServerContext::new_in_memory("authorize-site-admin");
+        let account = |account_id: &str, is_admin: bool| Account {
+            user: SessionUser {
+                is_admin,
+                ..user_on(account_id)
+            },
+            session: SessionCookie {
+                session_id: String::new(),
+            },
+        };
+        let admin = account(OWN_ACCOUNT, true);
+        assert!(!is_site_admin(&context, admin.user()), "none is configured");
+
+        context.use_site_admin_account(&OWN_ACCOUNT.to_ascii_uppercase());
+        assert!(is_site_admin(&context, admin.user()));
+        assert!(authorize_site_admin(&context, &admin).is_ok());
+        for outsider in [account(OWN_ACCOUNT, false), account(OTHER_ACCOUNT, true)] {
+            assert!(!is_site_admin(&context, outsider.user()));
+            assert!(matches!(
+                authorize_site_admin(&context, &outsider),
+                Err(AuthError::NotFound(_))
+            ));
+        }
+
+        context.use_site_admin_account("not-a-uuid");
+        assert!(!is_site_admin(&context, admin.user()));
     }
 
     fn assert_rejected<T: std::fmt::Debug>(result: Result<T, AuthError>) {

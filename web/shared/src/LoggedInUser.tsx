@@ -7,18 +7,15 @@ import {
   avatar,
   chipProject,
   chipSeparator,
-  menuContent,
   menuIcon,
-  menuItem,
   menuItemIndicatorSlot,
   menuItemText,
-  menuPositioner,
-  menuSeparator,
   userChip,
   userName,
 } from "./AuthNav.css";
 import { logOut, useAuthState } from "./authState";
 import { appPath, docsUrl, SELF_HOSTED } from "./links";
+import { menuContent, menuItem, menuPositioner, menuSeparator } from "./Menu.css";
 import {
   type ProjectOption,
   projectOptions,

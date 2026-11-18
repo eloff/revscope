@@ -10,6 +10,7 @@ import {
 import { createEffect, createSignal, For, onMount, Show } from "solid-js";
 import { fetchChatAvailable } from "../../lib/chatApi";
 import { type DateRangeSeconds, periodInTimeZone } from "../../lib/dateRange";
+import SiteAdminAccounts from "./admin/SiteAdminAccounts";
 import Campaigns from "./Campaigns";
 import AiChat from "./chat/AiChat";
 import DashboardFilters from "./DashboardFilters";
@@ -95,10 +96,14 @@ export default function DashboardShellContent(props: DashboardShellProps) {
       (planAllowsMultipleProjects(user?.plan ?? "") || (props.projects?.length ?? 0) > 1)
     );
   };
+  // The server also refuses everyone else; this only keeps the tab out of their way.
+  const canShowAdmin = () => !props.publicAccess && Boolean(authUser()?.is_site_admin);
   const visibleTabItems = () =>
     DASHBOARD_TAB_ITEMS.filter(
       (item) =>
-        (item.value !== "ask" || canAsk()) && (item.value !== "projects" || canShowProjects()),
+        (item.value !== "ask" || canAsk()) &&
+        (item.value !== "projects" || canShowProjects()) &&
+        (item.value !== "admin" || canShowAdmin()),
     );
 
   onMount(() => {
@@ -106,7 +111,10 @@ export default function DashboardShellContent(props: DashboardShellProps) {
   });
 
   const nav = createDashboardNavigation({
-    allowedTab: (tab) => (tab === "projects" && !canShowProjects() ? "overview" : tab),
+    allowedTab: (tab) =>
+      (tab === "projects" && !canShowProjects()) || (tab === "admin" && !canShowAdmin())
+        ? "overview"
+        : tab,
   });
 
   const data = createDashboardData({
@@ -160,7 +168,7 @@ export default function DashboardShellContent(props: DashboardShellProps) {
             projects={props.projects}
             projectId={props.projectId}
             onProjectChange={(projectId) => props.onProjectChange?.(projectId)}
-            dateRangeDisabled={nav.activeTab() === "revenue"}
+            dateRangeDisabled={nav.activeTab() === "revenue" || nav.activeTab() === "admin"}
           />
 
           <Show when={nav.tabsReady()}>
@@ -249,6 +257,13 @@ export default function DashboardShellContent(props: DashboardShellProps) {
                     <AiChat projectId={props.projectId} session={authUser() ?? undefined} />
                   </Show>
                 </Tabs.Content>
+                <Show when={canShowAdmin() && authUser()}>
+                  {(user) => (
+                    <Tabs.Content value="admin" class={tabContent}>
+                      <SiteAdminAccounts session={user()} />
+                    </Tabs.Content>
+                  )}
+                </Show>
               </Tabs.Root>
             </ImportedCoverageProvider>
           </Show>

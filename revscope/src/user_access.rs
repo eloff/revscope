@@ -131,11 +131,22 @@ pub(crate) async fn lock_account_as_admin(
     .await
     .map_err(map_query_error)?
     .ok_or(AuthError::InvalidSession)?;
+    require_admin_role(conn, account_id, actor_user_id).await
+}
+
+/// Reads `user_id`'s role from Postgres, for an admin's session that another
+/// process may still serve after a demotion. A user who is gone has a dead
+/// session; one who is no longer an admin is refused.
+pub(crate) async fn require_admin_role(
+    conn: &Connection,
+    account_id: &str,
+    user_id: &str,
+) -> Result<(), AuthError> {
     let is_admin = conn
         .query_opt(
             "SELECT is_admin FROM users
              WHERE id = $1::text::uuid AND account_id = $2::text::uuid",
-            &[&actor_user_id, &account_id],
+            &[&user_id, &account_id],
         )
         .await
         .map_err(map_query_error)?

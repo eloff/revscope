@@ -85,6 +85,10 @@ pub struct ServerContext {
     /// `REVSCOPE_MCP_DEMO_TOKEN` in [`Self::new`]; `None` leaves the demo
     /// unreachable over MCP.
     pub(crate) mcp_demo_token: Option<TokenSecret>,
+    /// The account whose admins run this server and see every account: see
+    /// [`crate::authorize::SiteAdmin`]. Set from `REVSCOPE_ADMIN_ACCOUNT_ID`
+    /// in [`Self::new`]; `None` gives no one that view.
+    pub(crate) site_admin_account_id: Option<String>,
     /// OAuth authorization codes the consent page has minted but no client has
     /// redeemed yet. In memory only, and single use: they live for minutes, so a
     /// restart just sends the user through the consent page again.
@@ -176,6 +180,17 @@ impl ServerContext {
         context.apple_sign_in = sign_in_verifier_from_env(&APPLE, "REVSCOPE_APPLE_CLIENT_ID");
         context.google_oauth = GoogleOAuthClient::from_env();
         context.mcp_demo_token = mcp_demo_token_from_env(|name| std::env::var(name).ok());
+        context.site_admin_account_id = std::env::var("REVSCOPE_ADMIN_ACCOUNT_ID").ok().and_then(
+            |id| {
+                let parsed = site_admin_account_id(&id);
+                if parsed.is_none() && !id.trim().is_empty() {
+                    log::warn!(
+                        "REVSCOPE_ADMIN_ACCOUNT_ID is not a UUID, so no account is the site admin"
+                    );
+                }
+                parsed
+            },
+        );
         if context.overview_cache_disabled {
             log::warn!("overview cache disabled via REVSCOPE_DISABLE_OVERVIEW_CACHE");
         }
@@ -217,6 +232,7 @@ impl ServerContext {
             query_token_cache: ExpiringTokens::new(),
             mcp_token_cache: ExpiringTokens::new(),
             mcp_demo_token: None,
+            site_admin_account_id: None,
             mcp_authorization_codes: ExpiringTokens::new(),
             mcp_service: build_mcp_service(),
             project_name_cache: Arc::new(DashMap::new()),
@@ -300,6 +316,13 @@ impl ServerContext {
     /// hex characters; anything else leaves the demo unreachable.
     pub fn use_mcp_demo_token(&mut self, token: &str) {
         self.mcp_demo_token = parse_demo_token(token);
+    }
+
+    /// Makes the admins of `account_id` site admins, as `REVSCOPE_ADMIN_ACCOUNT_ID`
+    /// does. Public only so the integration tests can name one.
+    #[doc(hidden)]
+    pub fn use_site_admin_account(&mut self, account_id: &str) {
+        self.site_admin_account_id = site_admin_account_id(account_id);
     }
 
     /// Sends Google Analytics import traffic to `base_url` instead of Google, and
@@ -472,6 +495,11 @@ fn sign_in_verifier_from_env(provider: &'static Provider, name: &str) -> Option<
     let client_id = std::env::var(name).unwrap_or_default();
     let client_id = client_id.trim();
     (!client_id.is_empty()).then(|| Verifier::new(provider, client_id.to_owned()))
+}
+
+/// In the form Postgres prints the account ids it's compared with.
+fn site_admin_account_id(value: &str) -> Option<String> {
+    crate::uuid_text::parse_hyphenated_uuid(value.trim()).map(crate::uuid_text::format_uuid)
 }
 
 fn env_flag(name: &str) -> bool {

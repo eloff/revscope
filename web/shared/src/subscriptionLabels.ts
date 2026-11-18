@@ -46,12 +46,16 @@ export function formatDate(epochSeconds: number): string {
   }).format(new Date(epochSeconds * 1000));
 }
 
+/** A plan's event volume, e.g. "1,000,000 events / month". */
+export function eventsVolumeLabel(limit: number | null): string {
+  return limit === null
+    ? "unlimited events"
+    : `${new Intl.NumberFormat().format(limit)} events / month`;
+}
+
 /** The lapsed plan and its volume, e.g. "Growth (1,000,000 events / month)". */
 export function unpaidPlanLabel(unpaid: UnpaidSubscription): string {
-  const limit = unpaid.events_monthly_limit;
-  const events =
-    limit === null ? "unlimited events" : `${new Intl.NumberFormat().format(limit)} events / month`;
-  return `${planLabel(unpaid.plan)} (${events})`;
+  return `${planLabel(unpaid.plan)} (${eventsVolumeLabel(unpaid.events_monthly_limit)})`;
 }
 
 /** What restoring it costs, e.g. "$172.00 for a month". */

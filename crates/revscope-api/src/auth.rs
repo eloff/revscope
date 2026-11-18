@@ -105,6 +105,10 @@ pub struct MeResponse {
     pub projects: BTreeMap<String, MeProject>,
     pub plan: String,
     pub is_admin: bool,
+    /// An admin of the account that runs the server, who may list and delete
+    /// every account. Sent only when true.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_site_admin: bool,
     /// Whether someone on the account has confirmed their email address, by a
     /// link we emailed, a password reset, or signing in with Google or Apple. Until then Ask AI,
     /// GA imports and integrations answer `email_unverified`. Self-hosted

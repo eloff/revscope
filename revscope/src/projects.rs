@@ -331,7 +331,7 @@ pub(crate) fn is_project_name_taken(error: &tokio_postgres::Error) -> bool {
 /// committed, so the check then sees that delete's retirement. Inside a
 /// transaction a failure rolls the insert back; a caller outside one must
 /// remove the project itself (see hosted signup). The account that retired the
-/// name takes it back.
+/// name takes it back; a name retired by a deleted account stays retired.
 pub(crate) async fn claim_project_name(
     conn: &Connection,
     name: &str,
@@ -345,7 +345,7 @@ pub(crate) async fn claim_project_name(
         .await?;
     match retired_by {
         None => Ok(()),
-        Some(row) if row.get::<_, String>(0) == account_id => {
+        Some(row) if row.get::<_, Option<String>>(0).as_deref() == Some(account_id) => {
             conn.execute(
                 "DELETE FROM retired_project_names WHERE name = $1",
                 &[&name],

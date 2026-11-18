@@ -15,6 +15,7 @@
     "./LoggedInUser": "./src/LoggedInUser.tsx",
     "./LoginDialog": "./src/LoginDialog.tsx",
     "./loginDialogStyles": "./src/LoginDialog.css.ts",
+    "./menuStyles": "./src/Menu.css.ts",
     "./projectSelection": "./src/projectSelection.ts",
     "./idTokenSignIn": "./src/idTokenSignIn.ts",
     "./SocialSignIn": "./src/SocialSignIn.tsx",

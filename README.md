@@ -192,6 +192,7 @@ with a comment explaining it. The main groups are:
 | `REVSCOPE_LISTEN_TLS`, `REVSCOPE_TLS_DOMAINS`, `REVSCOPE_ACME_*`           | Built-in HTTPS with Let's Encrypt certificates          |
 | `REVSCOPE_REQUIRE_CLOUDFLARE`                                              | Settings for the hosted service's servers               |
 | `REVSCOPE_MCP_DEMO_TOKEN`                                                  | An `rsm_` MCP token that reads only the public demo     |
+| `REVSCOPE_ADMIN_ACCOUNT_ID`                                                | The account whose admins see and may delete every other |
 
 `INTEGRATION_ENCRYPTION_KEY` encrypts the API keys you enter for integrations
 such as Stripe before they are stored. If you lose it, those keys can't be

@@ -91,6 +91,7 @@ pub(crate) enum ApiRoute {
     McpAuthorize,
     McpToken,
     McpRevoke,
+    SiteAdminAccounts,
 }
 
 /// The `/v2/{prefix}/…` segment, which names the family of credentials the
@@ -272,6 +273,10 @@ fn resolve_session_route<'a>(
         "mcp" => match (segments.next(), segments.next()) {
             (Some("authorize"), None) => ApiRoute::McpAuthorize,
             (Some("revoke"), None) => ApiRoute::McpRevoke,
+            _ => return None,
+        },
+        "site-admin" => match (segments.next(), segments.next()) {
+            (Some("accounts"), None) => ApiRoute::SiteAdminAccounts,
             _ => return None,
         },
         "projects" => {

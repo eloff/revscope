@@ -460,6 +460,45 @@ describe("DashboardShell projects tab", () => {
   });
 });
 
+describe("DashboardShell admin tab", () => {
+  afterEach(async () => {
+    await signOut();
+  });
+
+  function renderSignedIn(isSiteAdmin: boolean) {
+    signIn(testSession({ is_site_admin: isSiteAdmin, projects: { acme_test: testProject("1") } }));
+    mockShell();
+    render(() => <DashboardShell projectId="1" />);
+  }
+
+  it("lists every account for the site admin", async () => {
+    window.history.replaceState(null, "", "/?tab=admin");
+    const accounts = mockApi("get", "/v2/session/site-admin/accounts", {
+      accounts: [],
+      total: 0,
+      offset: 0,
+      page_size: 100,
+    });
+    renderSignedIn(true);
+    expect(await screen.findByRole("tab", { name: "Admin" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(await screen.findByText("0 accounts")).toBeInTheDocument();
+    expect(accounts).toHaveLength(1);
+  });
+
+  it("is absent for everyone else, even when the URL names it", async () => {
+    window.history.replaceState(null, "", "/?tab=admin");
+    renderSignedIn(false);
+    expect(await screen.findByRole("tab", { name: "Overview" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.queryByRole("tab", { name: "Admin" })).toBeNull();
+  });
+});
+
 describe("DashboardShell imported data notice", () => {
   const NOTICE = "Imported Google Analytics data isn't included in this view.";
 

@@ -34,7 +34,10 @@ pub(crate) struct DeleteProjectResponse {
 
 /// The project is gone by now, so a failure here can only leave a Google grant
 /// standing, which its owner can still remove from their Google account.
-fn revoke_project_tokens(server_context: &Arc<ServerContext>, tokens: Vec<StrandedToken>) {
+pub(crate) fn revoke_project_tokens(
+    server_context: &Arc<ServerContext>,
+    tokens: Vec<StrandedToken>,
+) {
     block_on(async {
         let conn = match open_main_database_write(server_context.clone()).await {
             Ok(conn) => conn,

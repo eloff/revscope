@@ -20,6 +20,7 @@ mod resolve;
 mod responses;
 mod session;
 mod sign_in_providers;
+mod site_admin;
 mod table;
 
 use std::net::IpAddr;

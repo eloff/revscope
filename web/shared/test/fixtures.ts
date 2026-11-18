@@ -12,6 +12,7 @@ export function testSession(overrides: Partial<AuthSession> = {}): AuthSession {
     user_id: "user-1",
     plan: "pro",
     is_admin: true,
+    is_site_admin: false,
     account_confirmed: true,
     projects: { example_com: testProject("42", "America/New_York") },
     data_retention_months: null,

@@ -7,10 +7,11 @@ use crate::auth::{
     self, AuthError, AuthSuccess, ForgotPasswordRequest, LoginRequest, MeSuccess,
     ResetPasswordRequest, SignupRequest,
 };
-use crate::authorize::Account;
+use crate::authorize::{Account, is_site_admin};
 use crate::email_verification::{self, VerifyEmailRequest};
 use crate::http::Response;
 use crate::rate_limit::{AuthRateLimits, RateLimiter, ip_key};
+use crate::server_context::ServerContext;
 use crate::util::block_on;
 
 use super::request::{ApiRequest, RouteResult};
@@ -141,7 +142,10 @@ pub(super) fn resend_verification(request: &ApiRequest, account: &Account) -> Ro
 pub(super) fn me(request: &ApiRequest, account: &Account) -> RouteResult {
     let current_user = block_on(auth::me(request.context(), account.user().clone()))
         .map_err(|error| request.session_error(Some(account.session()), error, "me"))?;
-    Ok(Response::ok_json(me_response(&current_user)))
+    Ok(Response::ok_json(me_response(
+        &request.server_context,
+        &current_user,
+    )))
 }
 
 /// The address is checked before the body is parsed, so a client over its
@@ -205,7 +209,7 @@ pub(super) fn session_auth_response(
     });
     match answer {
         Ok((current_user, api_token)) => {
-            let mut body = me_response(&current_user);
+            let mut body = me_response(&request.server_context, &current_user);
             body.api_token = api_token;
             let body =
                 serde_json::to_string(&body).expect("a response of strings always serializes");
@@ -227,7 +231,7 @@ pub(super) fn session_auth_response(
     }
 }
 
-fn me_response(current_user: &MeSuccess) -> MeResponse {
+fn me_response(server_context: &ServerContext, current_user: &MeSuccess) -> MeResponse {
     let projects = current_user
         .projects
         .iter()
@@ -251,6 +255,7 @@ fn me_response(current_user: &MeSuccess) -> MeResponse {
         projects,
         plan: current_user.user.plan.clone(),
         is_admin: current_user.user.is_admin,
+        is_site_admin: is_site_admin(server_context, &current_user.user),
         account_confirmed: current_user.user.account_confirmed,
         gravatar_url: current_user.gravatar_url.clone(),
         data_retention_months: current_user.user.retention_months,

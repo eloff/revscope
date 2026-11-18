@@ -144,6 +144,16 @@ impl TestServer {
         Self::start_configured(label, false, |context| context.use_mcp_demo_token(token)).await
     }
 
+    /// Like [`Self::spawn_on_disk`], with the admins of `account_id` as site
+    /// admins, as `REVSCOPE_ADMIN_ACCOUNT_ID` makes them.
+    #[allow(dead_code)]
+    pub async fn spawn_with_site_admin(label: &str, account_id: &str) -> io::Result<Self> {
+        Self::start_configured(label, true, |context| {
+            context.use_site_admin_account(account_id)
+        })
+        .await
+    }
+
     async fn start(label: &str, on_disk: bool) -> io::Result<Self> {
         Self::start_configured(label, on_disk, |_| {}).await
     }

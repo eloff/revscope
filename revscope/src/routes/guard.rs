@@ -7,6 +7,7 @@ use crate::authorize::{
     Account, authorize_account, authorize_admin, authorize_admin_project, authorize_chat,
     authorize_download_token, authorize_query_project, authorize_read_project,
     authorize_session_project, authorize_session_project_mut, authorize_session_project_or_demo,
+    authorize_site_admin,
 };
 use crate::download_db;
 use crate::http::Response;
@@ -32,6 +33,12 @@ pub(super) fn run(request: &ApiRequest, policy: &AuthPolicy) -> RouteResult {
             let account = require_account(request)?;
             let admin = authorize_admin(&account).map_err(|error| project_error(request, error))?;
             handle(request, &admin)
+        }
+        AuthPolicy::SiteAdmin(handle) => {
+            let account = require_account(request)?;
+            let site_admin = authorize_site_admin(&context, &account)
+                .map_err(|error| project_error(request, error))?;
+            handle(request, &site_admin)
         }
         AuthPolicy::AdminProjectWrite(handle) => {
             let account = require_account(request)?;

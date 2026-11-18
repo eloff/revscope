@@ -101,6 +101,13 @@ describe("parseAuthSession", () => {
     expect(parseAuthSession(older)?.account_confirmed).toBe(true);
   });
 
+  it("reads the site admin flag, which the server sends only when true", async () => {
+    const { parseAuthSession } = await loadAuthState();
+    expect(parseAuthSession(testSession({ is_site_admin: true }))?.is_site_admin).toBe(true);
+    const { is_site_admin: _, ...plain } = testSession();
+    expect(parseAuthSession(plain)?.is_site_admin).toBe(false);
+  });
+
   it.each([
     ["null", null],
     ["a string", "user"],

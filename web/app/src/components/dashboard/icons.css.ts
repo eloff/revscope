@@ -48,6 +48,7 @@ const pageViewIcon = loadInlineSvgDataUrl("journey/page-view.svg");
 const purchaseIcon = loadInlineSvgDataUrl("journey/purchase.svg");
 const dashboardOverviewIcon = loadInlineSvgDataUrl("ui/dashboard-overview.svg");
 const dashboardProjectsIcon = loadInlineSvgDataUrl("ui/dashboard-projects.svg");
+const dashboardAdminIcon = loadInlineSvgDataUrl("ui/dashboard-admin.svg");
 const dashboardRevenueIcon = loadInlineSvgDataUrl("ui/dashboard-revenue.svg");
 const dashboardRevenueSourcesIcon = loadInlineSvgDataUrl("ui/dashboard-revenue-sources.svg");
 const dashboardCampaignsIcon = loadInlineSvgDataUrl("ui/dashboard-campaigns.svg");
@@ -165,6 +166,7 @@ export const dashboardTabCrawlersIcon = inlineIconStyle(dashboardCrawlersIcon, 2
 export const dashboardTabEventsIcon = inlineIconStyle(dashboardEventsIcon, 24);
 export const dashboardTabFunnelsIcon = inlineIconStyle(dashboardFunnelsIcon, 24);
 export const dashboardTabAskIcon = inlineIconStyle(dashboardAskIcon, 24);
+export const dashboardTabAdminIcon = inlineIconStyle(dashboardAdminIcon, 24);
 
 export const gridInlineActionIcon = inlineIconStyle(viewDetailsIcon, 14, {
   flex: "0 0 auto",

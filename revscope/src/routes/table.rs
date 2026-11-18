@@ -10,14 +10,14 @@
 
 use crate::authorize::{
     Account, AdminAccount, AdminProject, AuthorizedProject, ChatGrant, DownloadableProject,
-    OwnedProject, WritableProject,
+    OwnedProject, SiteAdmin, WritableProject,
 };
 
 use super::query::QueryCaller;
 use super::request::{ApiRequest, RouteResult};
 use super::{
     ApiRoute, PathPrefix, account, campaigns, chat, dashboard, download, funnels, ga_import,
-    id_token_sign_in, mcp, project_admin, query, sign_in_providers,
+    id_token_sign_in, mcp, project_admin, query, sign_in_providers, site_admin,
 };
 #[cfg(feature = "billing")]
 use crate::billing::{routes as billing, webhook_routes as webhooks};
@@ -31,6 +31,8 @@ pub(super) enum AuthPolicy {
     /// A live session of an admin of their account: billing, users, adding
     /// projects.
     Admin(fn(&ApiRequest, &AdminAccount) -> RouteResult),
+    /// An admin of the account that runs the server, acting on other accounts.
+    SiteAdmin(fn(&ApiRequest, &SiteAdmin) -> RouteResult),
     /// An admin changing their account's project, which the demo refuses.
     AdminProjectWrite(fn(&ApiRequest, &AdminProject) -> RouteResult),
     /// A live session on the account that owns the path's project.
@@ -57,6 +59,7 @@ impl AuthPolicy {
             Self::Public(_) => PathPrefix::Public,
             Self::Account(_)
             | Self::Admin(_)
+            | Self::SiteAdmin(_)
             | Self::AdminProjectWrite(_)
             | Self::OwnProject(_)
             | Self::OwnProjectOrDemo(_)
@@ -179,6 +182,10 @@ pub(super) fn methods(route: ApiRoute) -> Methods {
             ("POST", Account(mcp::authorize)),
         ],
         ApiRoute::McpRevoke => &[("POST", Admin(mcp::revoke))],
+        ApiRoute::SiteAdminAccounts => &[
+            ("GET", SiteAdmin(site_admin::accounts)),
+            ("DELETE", SiteAdmin(site_admin::delete_account)),
+        ],
         ApiRoute::Mcp => &[],
     }
 }
@@ -214,6 +221,7 @@ mod tests {
         "/v2/session/users/remove",
         "/v2/session/mcp/authorize",
         "/v2/session/mcp/revoke",
+        "/v2/session/site-admin/accounts",
         "/v2/session/projects",
         "/v2/session/projects/1",
         "/v2/session/projects/1/settings",

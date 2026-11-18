@@ -1,5 +1,6 @@
 import { appPath } from "@revscope/web-shared/links";
 import {
+  dashboardTabAdminIcon,
   dashboardTabAskIcon,
   dashboardTabAudienceIcon,
   dashboardTabCampaignsIcon,
@@ -28,7 +29,8 @@ export type DashboardTab =
   | "crawlers"
   | "events"
   | "funnels"
-  | "ask";
+  | "ask"
+  | "admin";
 
 export const DASHBOARD_TABS = new Set<DashboardTab>([
   "projects",
@@ -44,6 +46,7 @@ export const DASHBOARD_TABS = new Set<DashboardTab>([
   "events",
   "funnels",
   "ask",
+  "admin",
 ]);
 
 export const DASHBOARD_TAB_ITEMS: {
@@ -116,10 +119,18 @@ export const DASHBOARD_TAB_ITEMS: {
     label: "Ask AI",
     iconClass: dashboardTabAskIcon,
   },
+  {
+    value: "admin",
+    label: "Admin",
+    iconClass: dashboardTabAdminIcon,
+  },
 ];
 
-/** The demo is a single project, so it has no Projects tab. */
-export const DEMO_TAB_ITEMS = DASHBOARD_TAB_ITEMS.filter((item) => item.value !== "projects");
+/** Tabs about the signed-in account rather than one project. */
+const ACCOUNT_TABS = new Set<DashboardTab>(["projects", "admin"]);
+
+/** The demo is a single project with no account behind it, so it has neither account tab. */
+export const DEMO_TAB_ITEMS = DASHBOARD_TAB_ITEMS.filter((item) => !ACCOUNT_TABS.has(item.value));
 
 export function isDashboardTab(value: string | null): value is DashboardTab {
   return value !== null && DASHBOARD_TABS.has(value as DashboardTab);
