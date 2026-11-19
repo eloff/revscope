@@ -1304,3 +1304,79 @@ fn overview_churn_waits_for_a_scheduled_cancellation_to_take_effect() {
         build_overview_response(&conn, start, cancel_at + DAY).expect("overview response");
     assert_eq!(sum_bucket_churn(&in_effect.buckets), 1);
 }
+
+#[test]
+fn project_totals_match_the_overview_tiles_without_imports() {
+    let conn = open_migrated_db();
+    let path_id = insert_path(&conn, "/", "acme.test");
+    let start = 5_000_000_i64;
+    let end = start + 30 * DAY;
+
+    insert_session(&conn, path_id, 1, start - DAY, 5, &[]);
+    insert_session(&conn, path_id, 2, start + DAY, 30, &[]);
+    insert_session(&conn, path_id, 3, end - HOUR, 60, &[120]);
+    insert_session(&conn, path_id, 5, end, 60, &[]);
+
+    let sub_id = insert_subscription(&conn, "sub_totals", "month", start - DAY, None, None);
+    insert_payment(
+        &conn,
+        Some(sub_id),
+        None,
+        "pay_trial",
+        "subscription",
+        0,
+        start + DAY,
+    );
+    insert_payment(
+        &conn,
+        Some(sub_id),
+        None,
+        "pay_first",
+        "subscription",
+        DOLLARS_100,
+        start + 2 * DAY,
+    );
+    insert_payment(
+        &conn,
+        None,
+        None,
+        "pay_single",
+        "single",
+        DOLLARS_50,
+        start + 3 * DAY,
+    );
+    insert_payment(
+        &conn,
+        None,
+        None,
+        "pay_refund",
+        "refund",
+        -DOLLARS_25,
+        start + 4 * DAY,
+    );
+    insert_payment(
+        &conn,
+        None,
+        None,
+        "pay_before",
+        "single",
+        DOLLARS_200,
+        start - DAY,
+    );
+    insert_payment(&conn, None, None, "pay_after", "single", DOLLARS_200, end);
+
+    let overview = build_overview_response(&conn, start, end).expect("overview response");
+    let totals = project_totals(&conn, start, end).expect("project totals");
+    assert_eq!(
+        totals,
+        ProjectTotals {
+            visitors: 2,
+            revenue: DOLLARS_100 + DOLLARS_50,
+        }
+    );
+    assert_eq!(
+        totals.visitors,
+        i64::from(sum_bucket_sessions(&overview.buckets).0)
+    );
+    assert_eq!(totals.revenue, overview.current.total_revenue);
+}

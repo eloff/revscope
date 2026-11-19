@@ -43,7 +43,6 @@ pub struct ProjectCache {
 }
 
 impl ProjectCache {
-    #[cfg(test)]
     fn new_with_db(id: i32, name: String, account_id: u128, db: ProjectDbCache) -> Self {
         Self {
             id,
@@ -457,6 +456,43 @@ pub fn open_project_database_read_for(
     let cache_ref = cache_ref_for(server_context, project);
     let open_target = project_open_target(server_context, &project.id_string());
     checkout_read_connection(server_context, &cache_ref, &open_target)
+}
+
+/// Opens the project's database for one read outside the caches: a missing
+/// database is [`DbError::ProjectDatabaseNotFound`] rather than created, nothing
+/// is cached, and the connection closes when dropped. For a caller reading many
+/// projects, some perhaps deleted by another process since it listed them,
+/// where caching them would let this process accept ingest for them again.
+pub fn open_project_database_uncached_read(
+    server_context: &ServerContext,
+    project_id: i32,
+    name: String,
+    account_id: u128,
+) -> Result<Connection, DbError> {
+    if is_project_deleted(server_context, project_id) {
+        return Err(DbError::ProjectDatabaseNotFound(project_id.to_string()));
+    }
+    let open_target = project_open_target(server_context, &project_id.to_string());
+    let raw = open_database(server_context, &open_target, ConnectionKind::Read)?;
+    apply_connection_pragmas(&raw, false)?;
+    let project = Arc::new(ProjectCache::new_with_db(
+        project_id,
+        name,
+        account_id,
+        ProjectDbCache::new_expiring(),
+    ));
+    Ok(Connection {
+        connection: Some(raw),
+        is_write: false,
+        // In no map, so it's never active and dropping closes the connection.
+        cache_ref: CacheRef {
+            identity: CacheIdentity::Project {
+                project_key: project_id,
+                project_caches: new_project_caches(),
+            },
+            project,
+        },
+    })
 }
 
 /// Open a project SQLite database for writing. See [`open_project_database_read`].
@@ -1636,5 +1672,30 @@ mod tests {
         );
         assert!(create_project_database(&server_context, "1").is_err());
         assert!(!db_path.exists());
+    }
+
+    #[test]
+    fn uncached_read_neither_creates_nor_caches_the_project() {
+        let (server_context, test_dir) = make_test_server_context("uncached-read");
+        let read =
+            || open_project_database_uncached_read(&server_context, 1, "project_1".into(), 1);
+        assert!(matches!(read(), Err(DbError::ProjectDatabaseNotFound(_))));
+        assert!(!test_dir.path().join("1.db").exists());
+
+        seed_project(&server_context, "1");
+        create_project_database(&server_context, "1").expect("create");
+        evict_project(&server_context, 1);
+        let conn = read().expect("read");
+        conn.query_row("SELECT COUNT(*) FROM landings", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("query");
+        assert!(
+            conn.execute("DELETE FROM landings", []).is_err(),
+            "query only"
+        );
+        drop(conn);
+        assert!(get_project(&server_context, 1).is_none());
+        assert!(server_context.project_name_cache.get("project_1").is_none());
     }
 }

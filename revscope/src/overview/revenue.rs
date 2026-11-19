@@ -150,6 +150,26 @@ impl OverviewBucket {
     }
 }
 
+/// Revenue settled in `[start, end)`, the [`RevenuePeriodTotals::total_revenue`]
+/// that [`populate_revenue_metrics`] adds up with no segment filter: every payment
+/// but refunds and chargebacks.
+pub(super) fn total_revenue(
+    conn: &ProjectConnection,
+    start: i64,
+    end: i64,
+) -> Result<i64, AuthError> {
+    conn.query_row(
+        "SELECT COALESCE(SUM(amount), 0) FROM payments
+         WHERE status = 'ok'
+           AND payment_type NOT IN ('refund', 'chargeback')
+           AND paid_at >= ?1
+           AND paid_at < ?2",
+        [start, end],
+        |row| row.get(0),
+    )
+    .map_err(map_row_error)
+}
+
 /// Adds every settled payment from the start of the comparison window to
 /// `period_end` into `buckets`, and returns revenue totals for the selected
 /// period and the comparison window.

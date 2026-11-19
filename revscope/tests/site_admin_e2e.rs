@@ -76,6 +76,13 @@ async fn the_site_admin_deletes_an_account_with_its_users_projects_and_databases
     let mut expected: Vec<&str> = projects.iter().map(|(_, name)| name.as_str()).collect();
     expected.sort();
     assert_eq!(names, expected);
+    for project in listed["projects"].as_array().expect("projects") {
+        assert_eq!(
+            project["last_30_days"],
+            json!({ "visitors": 1, "revenue": 0 }),
+            "{project}"
+        );
+    }
     let user = &listed["users"][0];
     assert_eq!(user["email"], json!(customer.signup.email));
     assert_eq!(user["is_admin"], json!(true));
@@ -199,7 +206,23 @@ async fn an_account_a_provider_may_still_charge_is_kept() -> io::Result<()> {
     };
 
     set_open_status("active").await;
+    // Listing reports a missing database as unknown rather than creating it.
+    let project_id = me(&server, &customer.cookie).await?["projects"]
+        [&customer.signup.project_name]["id"]
+        .as_str()
+        .expect("project id")
+        .to_string();
+    let database = revscope::db::project_database_path(server.context.as_ref(), &project_id);
+    if database.exists() {
+        std::fs::remove_file(&database)?;
+    }
     let listed = find_account(&server, &admin.cookie, &customer.account_id).await?;
+    assert_eq!(
+        listed["projects"][0]["last_30_days"],
+        Value::Null,
+        "{listed}"
+    );
+    assert!(!database.exists(), "listing created {}", database.display());
     assert_eq!(listed["subscription"]["provider"], json!("polar"));
     assert_eq!(
         listed["subscription"]["subscription_id"],

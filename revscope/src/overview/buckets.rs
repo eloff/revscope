@@ -105,6 +105,22 @@ struct SessionBucketMetrics {
     bounced_sessions: u32,
 }
 
+/// Tracked sessions that landed in `[start, end)`, as [`populate_session_metrics`]
+/// counts visitors with no segment filter.
+pub(super) fn count_tracked_visitors(
+    conn: &ProjectConnection,
+    start: i64,
+    end: i64,
+) -> Result<i64, AuthError> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM landings
+         WHERE visitor_timestamp_id >= ?1 AND visitor_timestamp_id < ?2",
+        [start * NANOS_PER_SECOND, end * NANOS_PER_SECOND],
+        |row| row.get(0),
+    )
+    .map_err(map_row_error)
+}
+
 pub(super) fn populate_session_metrics(
     conn: &ProjectConnection,
     buckets: &mut BTreeMap<i64, OverviewBucket>,

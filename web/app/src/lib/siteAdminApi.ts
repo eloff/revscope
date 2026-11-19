@@ -55,7 +55,18 @@ export type SiteAdminAccount = {
   is_own: boolean;
   subscription: SiteAdminSubscription | null;
   users: SiteAdminUser[];
-  projects: { id: number; name: string }[];
+  /** By name. */
+  projects: SiteAdminProject[];
+};
+
+export type SiteAdminProject = {
+  id: number;
+  name: string;
+  /**
+   * Tracked visitors and revenue (thousandths of the project's currency) in the
+   * 30 days up to the request; null when the server couldn't read its database.
+   */
+  last_30_days: { visitors: number; revenue: number } | null;
 };
 
 export type SiteAdminAccountsPage = {

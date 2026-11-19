@@ -50,7 +50,7 @@ function account(overrides: Partial<SiteAdminAccount> = {}): SiteAdminAccount {
       current_period_end: MAY_3,
     },
     users: [user()],
-    projects: [{ id: 7, name: "acmetest" }],
+    projects: [{ id: 7, name: "acmetest", last_30_days: { visitors: 1204, revenue: 3_456_780 } }],
     ...overrides,
   };
 }
@@ -80,7 +80,17 @@ describe("SiteAdminAccounts", () => {
       is_admin: false,
       sign_in_providers: ["google"],
     });
-    mockApi("get", ACCOUNTS, page([account({ users: [user(), verified, google] })]));
+    const unreadable = { id: 8, name: "acmeblog", last_30_days: null };
+    mockApi(
+      "get",
+      ACCOUNTS,
+      page([
+        account({
+          users: [user(), verified, google],
+          projects: [account().projects[0], unreadable],
+        }),
+      ]),
+    );
     renderAccounts();
 
     const row = await screen.findByRole("row", { name: "acme.test" });
@@ -93,6 +103,8 @@ describe("SiteAdminAccounts", () => {
     expect(cells.getByText("Verified May 3, 2026")).toBeInTheDocument();
     expect(cells.getByText("Verified by Google sign-in")).toBeInTheDocument();
     expect(cells.getByText("acmetest")).toBeInTheDocument();
+    expect(cells.getByText("1,204 visitors · $3.5k revenue in 30 days")).toBeInTheDocument();
+    expect(cells.getByText("Last 30 days unavailable")).toBeInTheDocument();
     expect(cells.getByText("Growth")).toBeInTheDocument();
     expect(cells.getByText("$19.00 / month (list $29.00)")).toBeInTheDocument();
     expect(cells.getByText("1,000,000 events / month")).toBeInTheDocument();

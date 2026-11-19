@@ -203,8 +203,8 @@ pub use main::{
 pub use project::{
     Connection as ProjectConnection, ProjectCache, create_project_database, get_project,
     insert_project, open_project_database_read, open_project_database_read_for,
-    open_project_database_write, open_project_database_write_for, parse_project_id,
-    project_database_path, remove_project_database, require_project,
-    try_open_project_database_write,
+    open_project_database_uncached_read, open_project_database_write,
+    open_project_database_write_for, parse_project_id, project_database_path,
+    remove_project_database, require_project, try_open_project_database_write,
 };
 pub(crate) use types::{ClientPageId, SqlCompactStr};

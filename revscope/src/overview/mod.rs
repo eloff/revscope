@@ -30,7 +30,9 @@ use crate::timezone::{self, BucketGranularity, ProjectTimezone, parse_bucket_gra
 use crate::util::seconds_since_epoch;
 
 use breakdowns::{OverviewBreakdowns, build_overview_breakdowns};
-use buckets::{OverviewBucket, add_imported_session_metrics, populate_session_metrics};
+use buckets::{
+    OverviewBucket, add_imported_session_metrics, count_tracked_visitors, populate_session_metrics,
+};
 use changes::{
     MetricChanges, OverviewHoverChanges, OverviewTotals, OverviewTotalsChanges, PeriodMetrics,
 };
@@ -39,7 +41,7 @@ pub(crate) use demo_cache::{
     take_cached_demo_overview,
 };
 use mrr::{fetch_mrr, populate_churn_metrics};
-use revenue::{RevenuePeriodTotals, populate_revenue_metrics};
+use revenue::{RevenuePeriodTotals, populate_revenue_metrics, total_revenue};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct OverviewResponse {
@@ -99,6 +101,26 @@ pub(crate) fn parse_overview_query(target: &str) -> Result<OverviewQuery, &'stat
         end,
         bucket,
         segments: parse_segment_filters(target),
+    })
+}
+
+/// A project's tracked visitors and revenue over a period, as the overview's
+/// tiles count them before segments or imported sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) struct ProjectTotals {
+    pub(crate) visitors: i64,
+    /// Thousandths of the project's currency.
+    pub(crate) revenue: i64,
+}
+
+pub(crate) fn project_totals(
+    conn: &ProjectConnection,
+    start: i64,
+    end: i64,
+) -> Result<ProjectTotals, AuthError> {
+    Ok(ProjectTotals {
+        visitors: count_tracked_visitors(conn, start, end)?,
+        revenue: total_revenue(conn, start, end)?,
     })
 }
 

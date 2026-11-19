@@ -1,5 +1,6 @@
 //! Every account on the server, newest first, a page at a time, with its
-//! users, projects and current subscription. For the site admin only.
+//! users, projects with their last 30 days, and current subscription. For the
+//! site admin only.
 
 use std::sync::Arc;
 
@@ -8,14 +9,18 @@ use serde::Serialize;
 
 use crate::auth::{AuthError, map_query_error};
 use crate::authorize::{SiteAdmin, not_site_admin};
-use crate::db::open_main_database_read;
+use crate::comparison::DAY_SECONDS;
+use crate::db::project::parse_uuid_key;
+use crate::db::{DbError, open_main_database_read, open_project_database_uncached_read};
+use crate::overview::{ProjectTotals, project_totals};
 use crate::pending_users::pending_user_sql;
 use crate::query_params::{parse_offset, query_pairs};
 use crate::server_context::ServerContext;
 use crate::user_access::require_admin_role;
-use crate::util::block_on;
+use crate::util::{block_on, seconds_since_epoch};
 
 pub(crate) const PAGE_SIZE: i64 = 100;
+const RECENT_SECONDS: i64 = 30 * DAY_SECONDS;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct SiteAdminAccountsResponse {
@@ -97,6 +102,9 @@ struct User {
 struct Project {
     id: i32,
     name: String,
+    /// Tracked visitors and revenue in the 30 days up to now; `None` when its
+    /// database couldn't be read.
+    last_30_days: Option<ProjectTotals>,
 }
 
 /// The `offset` of the first account to list; absent means the first page.
@@ -117,8 +125,9 @@ pub(crate) fn list_accounts(
 ) -> Result<SiteAdminAccountsResponse, AuthError> {
     let own_account_id = admin.user().account_id.clone();
     let admin_user_id = admin.user().user_id.clone();
-    block_on(async move {
-        let conn = open_main_database_read(server_context).await?;
+    let main_context = server_context.clone();
+    let mut response = block_on(async move {
+        let conn = open_main_database_read(main_context).await?;
         // Another process may serve the session for a while after a demotion,
         // and this lists every customer, so the role is read again here.
         require_admin_role(&conn, &own_account_id, &admin_user_id)
@@ -225,6 +234,7 @@ pub(crate) fn list_accounts(
             projects.entry(row.get(0)).or_default().push(Project {
                 id: row.get(1),
                 name: row.get(2),
+                last_30_days: None,
             });
         }
 
@@ -243,13 +253,50 @@ pub(crate) fn list_accounts(
                 }
             })
             .collect();
-        Ok(SiteAdminAccountsResponse {
+        Ok::<_, AuthError>(SiteAdminAccountsResponse {
             accounts,
             total,
             offset,
             page_size: PAGE_SIZE,
         })
-    })
+    })?;
+
+    // Read after the Postgres work so no SQLite checkout blocks inside `block_on`.
+    // The end is exclusive and whole seconds, so this one counts what landed in
+    // the current second.
+    let end = i64::from(seconds_since_epoch()) + 1;
+    for account in &mut response.accounts {
+        for project in &mut account.projects {
+            project.last_30_days =
+                recent_totals(&server_context, &account.account_id, project, end)
+                    .inspect_err(|error| {
+                        log::warn!(
+                            "site admin: no totals for project {}: {error:?}",
+                            project.id
+                        );
+                    })
+                    .ok();
+        }
+    }
+    Ok(response)
+}
+
+fn recent_totals(
+    server_context: &ServerContext,
+    account_id: &str,
+    project: &Project,
+    end: i64,
+) -> Result<ProjectTotals, AuthError> {
+    let account_key = parse_uuid_key(account_id).ok_or_else(|| {
+        DbError::InvalidProjectId(format!("bad account_id for project {}", project.id))
+    })?;
+    let conn = open_project_database_uncached_read(
+        server_context,
+        project.id,
+        project.name.clone(),
+        account_key,
+    )?;
+    project_totals(&conn, end - RECENT_SECONDS, end)
 }
 
 /// The open period from a [`list_accounts`] row, starting at column 3.

@@ -10,8 +10,10 @@ import {
 } from "@revscope/web-shared/subscriptionLabels";
 import { createSignal, For, Show } from "solid-js";
 import { Portal } from "solid-js/web";
+import { formatRevenueAmount } from "../../../lib/dashboardApi";
 import type {
   SiteAdminAccount,
+  SiteAdminProject,
   SiteAdminSubscription,
   SiteAdminUser,
 } from "../../../lib/siteAdminApi";
@@ -68,6 +70,16 @@ export function verificationLabel(user: SiteAdminUser): string | null {
     return `Verified by ${providers.join(" and ")} sign-in`;
   }
   return null;
+}
+
+/** e.g. "1,204 visitors · $3.5k revenue in 30 days". */
+export function recentActivityLabel(project: SiteAdminProject): string {
+  const totals = project.last_30_days;
+  if (totals === null) {
+    return "Last 30 days unavailable";
+  }
+  const visitors = `${totals.visitors.toLocaleString()} ${totals.visitors === 1 ? "visitor" : "visitors"}`;
+  return `${visitors} · ${formatRevenueAmount(totals.revenue)} revenue in 30 days`;
 }
 
 function UserCell(props: { user: SiteAdminUser }) {
@@ -177,6 +189,7 @@ export default function SiteAdminAccountRow(props: SiteAdminAccountRowProps) {
               <li>
                 <span class={primaryText}>{project.name}</span>
                 <span class={secondaryText}>ID {project.id}</span>
+                <span class={secondaryText}>{recentActivityLabel(project)}</span>
               </li>
             )}
           </For>
