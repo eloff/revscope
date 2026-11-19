@@ -7,7 +7,7 @@ import { errorMessage, message } from "../messages.css";
 import PaginationBar from "../PaginationBar";
 import { visuallyHidden } from "../visuallyHidden.css";
 import SiteAdminAccountRow from "./SiteAdminAccountRow";
-import { accountsTable, heading, subheading, tableScroll } from "./SiteAdminAccounts.css";
+import { accountsTable, heading, tableScroll } from "./SiteAdminAccounts.css";
 
 /** The Admin tab: every account on the server, newest first, a page at a time. */
 export default function SiteAdminAccounts(props: { session: AuthSession }) {
@@ -56,7 +56,6 @@ export default function SiteAdminAccounts(props: { session: AuthSession }) {
   return (
     <section>
       <h2 class={heading}>Accounts</h2>
-      <p class={subheading}>Everyone who has signed up, newest first.</p>
       <Show when={page.error}>
         <p class={errorMessage}>{(page.error as Error).message}</p>
         <button type="button" class={secondaryButton} onClick={() => void refetch()}>

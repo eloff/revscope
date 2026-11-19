@@ -7,12 +7,6 @@ export const heading = style({
   color: "#111827",
 });
 
-export const subheading = style({
-  margin: "0 0 16px",
-  color: "#6b7280",
-  fontSize: "0.9rem",
-});
-
 /** Lets the wide table scroll sideways on narrow screens instead of the page. */
 export const tableScroll = style({
   width: "100%",
