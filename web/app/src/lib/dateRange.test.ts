@@ -9,7 +9,6 @@ import {
   oldestRetainedStart,
   periodInTimeZone,
   rangeDayCount,
-  rangeEndIncludesCurrentDay,
   rangeInTimeZone,
   shiftRange,
   shortcutForRange,
@@ -74,12 +73,6 @@ describe("shortcutToRange", () => {
 
   it("treats custom as the default range", () => {
     expect(shortcutToRange("custom", "UTC")).toEqual(shortcutToRange("last_30_days", "UTC"));
-  });
-
-  it("knows whether a range reaches into today", () => {
-    const today = shortcutToRange("today", "America/New_York");
-    expect(rangeEndIncludesCurrentDay("America/New_York", today.end)).toBe(true);
-    expect(rangeEndIncludesCurrentDay("America/New_York", today.start)).toBe(false);
   });
 });
 

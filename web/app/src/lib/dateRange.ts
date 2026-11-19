@@ -199,21 +199,6 @@ export function nowUnixSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-/** Unix second at the start of the current calendar day in `timeZone`. */
-export function currentDayStart(timeZone: string): number {
-  return startOfZonedDay(timeZone, nowUnixSeconds());
-}
-
-/** True when `unixSeconds` is the start of the current calendar day in `timeZone`. */
-export function isCurrentDay(timeZone: string, unixSeconds: number): boolean {
-  return unixSeconds === currentDayStart(timeZone);
-}
-
-/** True when the exclusive range end includes all or part of today in `timeZone`. */
-export function rangeEndIncludesCurrentDay(timeZone: string, endExclusive: number): boolean {
-  return endExclusive > currentDayStart(timeZone);
-}
-
 /**
  * The instants a shortcut selects, with every boundary on a calendar boundary in
  * `timeZone` so the range lines up with the buckets the server draws for it.

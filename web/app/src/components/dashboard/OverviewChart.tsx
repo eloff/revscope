@@ -8,7 +8,7 @@ import {
   visitorAttributedRevenue,
 } from "../../lib/dashboardApi";
 import { useDashboardPreferences } from "../../lib/dashboardPreferences";
-import { formatBucketLabel, isCurrentDay, rangeEndIncludesCurrentDay } from "../../lib/dateRange";
+import { formatBucketLabel, nowUnixSeconds } from "../../lib/dateRange";
 import type { ImportedRange } from "../../lib/importedCoverageApi";
 import ApexCharts, { type ApexOptions } from "./apexcharts";
 import { chartMount } from "./chart.css";
@@ -50,24 +50,32 @@ const LINE_METRIC_LABELS: Record<LineMetricKey, string> = {
   revenue_per_visitor: "Revenue / visitor",
 };
 
-/** Incomplete current day depresses the visitors line; revenue bars stay as-is. */
-function visitorsForBucket(
-  data: OverviewResponse,
-  rangeEnd: number | undefined,
-  timeZone: string,
-  bucketStart: number,
-  visitors: number,
-): number | null {
-  if (
-    data.granularity !== "day" ||
-    rangeEnd === undefined ||
-    !rangeEndIncludesCurrentDay(timeZone, rangeEnd) ||
-    !isCurrentDay(timeZone, bucketStart)
-  ) {
-    return visitors;
+/** Longest a bucket of each granularity runs, allowing for a DST change. */
+const MAX_BUCKET_SECONDS: Record<OverviewResponse["granularity"], number> = {
+  hour: 3_600,
+  day: 25 * 3_600,
+  week: 7 * 24 * 3_600 + 3_600,
+};
+
+/**
+ * Index of the bucket holding the present moment, whose totals are still growing,
+ * or -1 when there is none.
+ */
+function inProgressBucketIndex(data: OverviewResponse, rangeEnd: number | undefined): number {
+  const now = nowUnixSeconds();
+  if (rangeEnd === undefined || rangeEnd <= now) {
+    return -1;
   }
-  return null;
+  const index = data.buckets.findLastIndex((bucket) => bucket.start <= now);
+  const bucket = data.buckets[index];
+  // Data from an earlier range can still be on screen while the new range loads.
+  const end =
+    data.buckets[index + 1]?.start ?? (bucket?.start ?? 0) + MAX_BUCKET_SECONDS[data.granularity];
+  return bucket && now < end ? index : -1;
 }
+
+/** Suffix naming the dashed series that runs into the in-progress bucket. */
+const IN_PROGRESS_SUFFIX = " (so far)";
 
 const REVENUE_SCALE = 1000;
 
@@ -225,13 +233,14 @@ function bucketNegativeRevenue(bucket: OverviewBucket, visibility: ChartMetricVi
 }
 
 function bucketLineValue(bucket: OverviewBucket, lineMetric: LineMetricKey): number | null {
+  if (lineMetric === "visitors") {
+    return bucket.visitors;
+  }
   if (bucket.visitors === 0) {
     return null;
   }
   const trackedVisitors = bucket.visitors - bucket.imported_visitors;
   switch (lineMetric) {
-    case "visitors":
-      return bucket.visitors;
     case "conversion_rate":
       return trackedVisitors > 0 ? bucket.converting_visitors / trackedVisitors : null;
     case "bounce_rate":
@@ -248,19 +257,10 @@ function bucketLineValue(bucket: OverviewBucket, lineMetric: LineMetricKey): num
   }
 }
 
-function lineMetricMax(
-  data: OverviewResponse,
-  rangeEnd: number | undefined,
-  timeZone: string,
-  lineMetric: LineMetricKey,
-): number {
+function lineMetricMax(data: OverviewResponse, lineMetric: LineMetricKey): number {
   let max = 0;
   for (const bucket of data.buckets) {
-    const raw = bucketLineValue(bucket, lineMetric);
-    const value =
-      lineMetric === "visitors"
-        ? visitorsForBucket(data, rangeEnd, timeZone, bucket.start, raw ?? 0)
-        : raw;
+    const value = bucketLineValue(bucket, lineMetric);
     if (value != null && !Number.isNaN(value)) {
       max = Math.max(max, value);
     }
@@ -270,8 +270,6 @@ function lineMetricMax(
 
 function computeAxisBounds(
   data: OverviewResponse,
-  rangeEnd: number | undefined,
-  timeZone: string,
   visibility: ChartMetricVisibility,
 ): {
   lineMin: number;
@@ -287,7 +285,7 @@ function computeAxisBounds(
 
   let lineMax = 0;
   if (hasLine && visibility.lineMetric) {
-    lineMax = lineMetricMax(data, rangeEnd, timeZone, visibility.lineMetric);
+    lineMax = lineMetricMax(data, visibility.lineMetric);
   }
 
   let revenueMin = 0;
@@ -408,10 +406,13 @@ function buildOverviewTooltipHtml(
   },
   totals: number[],
   lineMetric: LineMetricKey | null,
+  lineValues: (number | null)[],
   showRevenueTotal: boolean,
   fontSize: number,
+  inProgress: boolean,
 ): string {
-  const title = bucketLabels[dataPointIndex] ?? "";
+  const label = bucketLabels[dataPointIndex] ?? "";
+  const title = inProgress ? `${label}${IN_PROGRESS_SUFFIX}` : label;
   const rows: string[] = [];
 
   if (lineMetric !== "visitors" && bucket) {
@@ -427,11 +428,18 @@ function buildOverviewTooltipHtml(
   }
 
   rows.push(
-    ...w.globals.seriesNames.map((name, seriesIndex) => {
+    ...w.globals.seriesNames.flatMap((name, seriesIndex) => {
+      // The line's row covers both its solid and dashed series.
+      if (
+        lineMetric !== null &&
+        name === `${LINE_METRIC_LABELS[lineMetric]}${IN_PROGRESS_SUFFIX}`
+      ) {
+        return [];
+      }
       const value = w.globals.series[seriesIndex]?.[dataPointIndex];
       const isLineSeries = lineMetric !== null && seriesIndex === 0;
       let formatted = isLineSeries
-        ? formatLineTooltipValue(lineMetric, value)
+        ? formatLineTooltipValue(lineMetric, lineValues[dataPointIndex])
         : formatRevenueAxis(typeof value === "number" ? value : 0);
       if (!isLineSeries && bucket) {
         const paymentCount = revenueSeriesPaymentCount(name, bucket);
@@ -485,7 +493,8 @@ function buildChartOptions(
     formatBucketLabel(bucket.start, data.granularity, timeZone),
   );
   const revenueTotals = data.buckets.map(bucketTotalRevenue);
-  const axisBounds = computeAxisBounds(data, rangeEnd, timeZone, visibility);
+  const axisBounds = computeAxisBounds(data, visibility);
+  const inProgressIndex = inProgressBucketIndex(data, rangeEnd);
   const lineMetric = visibility.lineMetric;
   const yAxisCount = (axisBounds.hasLine && lineMetric ? 1 : 0) + (axisBounds.hasBars ? 1 : 0);
   const visibleLabelIndices = sparseAxisLabelIndices(
@@ -529,22 +538,45 @@ function buildChartOptions(
   const series: OverviewSeries[] = [];
   const colors: string[] = [];
   const strokeWidths: number[] = [];
+  const lineSeriesNames: string[] = [];
+  let dashedSeriesName: string | undefined;
 
+  // Buckets yet to start have nothing to plot, not a zero.
+  const lineValues = lineMetric
+    ? data.buckets.map((bucket, index) =>
+        inProgressIndex >= 0 && index > inProgressIndex
+          ? null
+          : bucketLineValue(bucket, lineMetric),
+      )
+    : [];
   if (lineMetric) {
     const lineName = LINE_METRIC_LABELS[lineMetric];
+    // The in-progress bucket gets its own dashed series from the point before it;
+    // Apex's forecastDataPoints would dash it too, but clips the whole line to the
+    // plot area, halving its stroke along the axis floor and ceiling.
+    const inProgress = (index: number) =>
+      inProgressIndex >= 0 && (index === inProgressIndex || index === inProgressIndex - 1);
     series.push({
       name: lineName,
       type: "line",
-      data: data.buckets.map((bucket) => {
-        const value = bucketLineValue(bucket, lineMetric);
-        if (lineMetric === "visitors") {
-          return visitorsForBucket(data, rangeEnd, timeZone, bucket.start, value ?? 0);
-        }
-        return value;
-      }),
+      data: lineValues.map((value, index) =>
+        inProgressIndex >= 0 && index >= inProgressIndex ? null : value,
+      ),
     });
+    lineSeriesNames.push(lineName);
     colors.push(LINE_CHART_COLOR);
     strokeWidths.push(3);
+    if (inProgressIndex >= 0) {
+      dashedSeriesName = `${lineName}${IN_PROGRESS_SUFFIX}`;
+      series.push({
+        name: dashedSeriesName,
+        type: "line",
+        data: lineValues.map((value, index) => (inProgress(index) ? value : null)),
+      });
+      lineSeriesNames.push(dashedSeriesName);
+      colors.push(LINE_CHART_COLOR);
+      strokeWidths.push(3);
+    }
   }
 
   if (visibility.barEnabled) {
@@ -605,7 +637,7 @@ function buildChartOptions(
   const yaxis: ApexOptions["yaxis"] = [];
   if (axisBounds.hasLine && lineMetric) {
     yaxis.push({
-      seriesName: LINE_METRIC_LABELS[lineMetric],
+      seriesName: lineSeriesNames,
       min: axisBounds.lineMin,
       max: axisBounds.lineMax,
       title: {
@@ -645,6 +677,7 @@ function buildChartOptions(
     },
     stroke: {
       width: strokeWidths,
+      dashArray: series.map((entry) => (entry.name === dashedSeriesName ? 6 : 0)),
     },
     plotOptions: {
       bar: {
@@ -678,8 +711,10 @@ function buildChartOptions(
           w,
           revenueTotals,
           lineMetric,
+          lineValues,
           visibility.barEnabled,
           fontSize,
+          dataPointIndex === inProgressIndex,
         ),
     },
     series: series as ApexOptions["series"],
