@@ -49,7 +49,12 @@ import {
   type HighlightMetric,
   type HoverHighlight,
 } from "./metricHoverDetails";
-import { compareByMetric, type TreemapMetric, type TreemapTile } from "./treemapLogic";
+import {
+  compareByMetric,
+  type RankingColumns,
+  type TreemapMetric,
+  type TreemapTile,
+} from "./treemapLogic";
 
 /** Number of choropleth buckets the map is shaded into. */
 const REVENUE_BUCKET_COUNT = 5;
@@ -134,6 +139,12 @@ export const DEFAULT_AUDIENCE_BREAKDOWN_SORT: AudienceBreakdownSortState = {
   column: "revenue",
   direction: "desc",
 };
+
+/** The cities API orders by the same two names. */
+export const AUDIENCE_BREAKDOWN_RANKING_COLUMNS = {
+  revenue: "revenue",
+  traffic: "visitors",
+} as const satisfies RankingColumns<AudienceBreakdownColumn>;
 
 export type AudienceBreakdownRow = {
   key: string;

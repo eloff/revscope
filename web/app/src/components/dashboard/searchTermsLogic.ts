@@ -10,6 +10,7 @@ import {
   type HighlightMetric,
   type HoverHighlight,
 } from "./metricHoverDetails";
+import type { RankingColumns, TreemapMetric } from "./treemapLogic";
 
 export type {
   SearchTermsOrderBy,
@@ -44,12 +45,23 @@ export function hasSearchTermsPeriodData(period: SearchTermsPeriod): boolean {
   return period.terms.length > 0 || period.summary.clicks > 0 || period.summary.impressions > 0;
 }
 
+export const SEARCH_TERMS_RANKING_COLUMNS: RankingColumns<SearchTermsOrderBy> = {
+  revenue: "estimated_revenue",
+  traffic: "clicks",
+};
+
+/** The ranking the search-terms treemap loads: its metric's column, largest first. */
+export function searchTermsTreemapSort(metric: TreemapMetric): SearchTermsSortState {
+  return { orderBy: SEARCH_TERMS_RANKING_COLUMNS[metric], direction: "desc" };
+}
+
 /** True when the table sort matches the ranking the search-terms treemap uses. */
-export function isSearchTermsTreemapSort(sort: SearchTermsSortState): boolean {
-  return (
-    sort.orderBy === DEFAULT_SEARCH_TERMS_SORT.orderBy &&
-    sort.direction === DEFAULT_SEARCH_TERMS_SORT.direction
-  );
+export function isSearchTermsTreemapSort(
+  sort: SearchTermsSortState,
+  metric: TreemapMetric,
+): boolean {
+  const treemapSort = searchTermsTreemapSort(metric);
+  return sort.orderBy === treemapSort.orderBy && sort.direction === treemapSort.direction;
 }
 
 export function nextSearchTermsSortState(

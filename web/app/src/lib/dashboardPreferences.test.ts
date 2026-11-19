@@ -29,6 +29,7 @@ describe("dashboard preferences", () => {
 
   it("restores valid stored sorts", async () => {
     const prefs = await loadWith({
+      rankBy: JSON.stringify("traffic"),
       revenueSourceSort: { column: "visitors", direction: "asc" },
       conversionsSort: { column: "amount", direction: "asc" },
       pagesSort: { column: "visitors", direction: "asc" },
@@ -60,6 +61,57 @@ describe("dashboard preferences", () => {
     const read = (module: typeof prefs) =>
       (module as unknown as Record<string, () => unknown>)[key]?.();
     expect(read(prefs)).toEqual(read(fresh));
+  });
+
+  it("ranks a stored revenue or visitors sort by the stored ranking metric", async () => {
+    const prefs = await loadWith({
+      pagesSort: { column: "visitors", direction: "asc" },
+      landingPagesSort: { column: "bounce", direction: "asc" },
+      audienceBreakdownSorts: { device: { column: "visitors", direction: "asc" } },
+    });
+    expect(prefs.rankBy()).toBe("revenue");
+    expect(prefs.pagesSort()).toEqual({ column: "attributed_revenue", direction: "asc" });
+    expect(prefs.landingPagesSort()).toEqual({ column: "bounce", direction: "asc" });
+    expect(prefs.audienceBreakdownSorts().device).toEqual({ column: "revenue", direction: "asc" });
+  });
+
+  it("falls back to revenue for an unknown ranking metric", async () => {
+    const prefs = await loadWith({ rankBy: JSON.stringify("clicks") });
+    expect(prefs.rankBy()).toBe("revenue");
+  });
+
+  it("links every revenue or visitors sort to the ranking metric", async () => {
+    const prefs = await loadWith({ eventsSort: { column: "revenue", direction: "asc" } });
+    prefs.setPagesSort({ column: "visitors", direction: "asc" });
+    expect(prefs.rankBy()).toBe("traffic");
+    expect(prefs.revenueSourceSort()).toEqual({ column: "visitors", direction: "desc" });
+    expect(prefs.searchTermsSort()).toEqual({ orderBy: "clicks", direction: "desc" });
+    expect(prefs.landingPagesSort()).toEqual({ column: "visitors", direction: "desc" });
+    expect(prefs.audienceBreakdownSorts().cities).toEqual({
+      column: "visitors",
+      direction: "desc",
+    });
+    // Events has no treemap, so its sort stays its own.
+    expect(prefs.eventsSort()).toEqual({ column: "revenue", direction: "asc" });
+
+    prefs.setAudienceBreakdownSort("device", { column: "revenue", direction: "asc" });
+    expect(prefs.rankBy()).toBe("revenue");
+    expect(prefs.pagesSort()).toEqual({ column: "attributed_revenue", direction: "asc" });
+
+    prefs.setRankBy("traffic");
+    expect(prefs.audienceBreakdownSorts().device).toEqual({ column: "visitors", direction: "asc" });
+    expect(prefs.audienceBreakdownSorts().country).toEqual({
+      column: "visitors",
+      direction: "desc",
+    });
+  });
+
+  it("leaves the ranking metric alone for a sort by another column", async () => {
+    const prefs = await loadWith({ rankBy: JSON.stringify("traffic") });
+    prefs.setPagesSort({ column: "bounce", direction: "desc" });
+    prefs.setSearchTermsSort((previous) => ({ ...previous, orderBy: "ctr" }));
+    expect(prefs.rankBy()).toBe("traffic");
+    expect(prefs.searchTermsSort()).toEqual({ orderBy: "ctr", direction: "desc" });
   });
 
   it("accepts the legacy `column` key for search terms", async () => {

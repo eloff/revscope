@@ -25,6 +25,7 @@ import type { RevenueSourceLinkTarget } from "./revenueSourcesLogic";
 import SegmentedControl from "./SegmentedControl";
 import { segmentedControlRow } from "./SegmentedControl.css";
 import SlidePanels from "./SlidePanels";
+import type { TreemapMetric } from "./treemapLogic";
 
 export type PagesMode = "pages" | "landing";
 
@@ -35,6 +36,8 @@ export type PagesProps = {
   landingPagesEmpty: boolean;
   data: PagesResponse | undefined;
   treemapData: PagesResponse | undefined;
+  /** The metric `treemapData` is ranked by. */
+  treemapRankedBy?: TreemapMetric;
   loading: boolean;
   treemapLoading: boolean;
   error: string;
@@ -42,6 +45,7 @@ export type PagesProps = {
   onPathSelect?: (pathId: number | null) => void;
   landingData: PagesResponse | undefined;
   landingTreemapData: PagesResponse | undefined;
+  landingTreemapRankedBy?: TreemapMetric;
   landingLoading: boolean;
   landingTreemapLoading: boolean;
   landingError: string;
@@ -109,6 +113,7 @@ export default function Pages(props: PagesProps) {
             <PagesGrid
               data={props.data}
               treemapData={props.treemapData}
+              treemapRankedBy={props.treemapRankedBy}
               loading={props.loading}
               treemapLoading={props.treemapLoading}
               error={props.error}
@@ -136,6 +141,7 @@ export default function Pages(props: PagesProps) {
             <PagesGrid
               data={props.landingData}
               treemapData={props.landingTreemapData}
+              treemapRankedBy={props.landingTreemapRankedBy}
               loading={props.landingLoading}
               treemapLoading={props.landingTreemapLoading}
               error={props.landingError}

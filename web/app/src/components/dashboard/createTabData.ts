@@ -1,4 +1,4 @@
-import { type Accessor, createMemo, createSignal } from "solid-js";
+import { type Accessor, createComputed, createMemo, createSignal, on } from "solid-js";
 import { type CacheEntry, ensureCachedPage, isCacheEntryStale } from "../../lib/dashboardDataCache";
 import type { DateRangeSeconds } from "../../lib/dateRange";
 import {
@@ -10,6 +10,7 @@ import {
   type RequestTracker,
   STALE_RESPONSE,
 } from "./dashboardRequests";
+import type { TreemapMetric } from "./treemapLogic";
 
 /** One page of a tab's data: the cache key it lives under and how to fetch it. */
 export type PageQuery<T> = {
@@ -175,21 +176,40 @@ type OffsetTabOptions<T, S> = {
   clearOnFetch?: boolean;
 };
 
+/** A treemap of the first page ranked by `sort(metric())`. */
+type TreemapOptions<S> = {
+  metric: () => TreemapMetric;
+  sort: (metric: TreemapMetric) => S;
+};
+
+export type TreemapSlot<T> = PageSlot<T> & {
+  /** The metric the page on show is ranked by, which lags `metric` while a new ranking loads. */
+  rankedBy: Accessor<TreemapMetric | undefined>;
+};
+
+const TREEMAP_METRICS: readonly TreemapMetric[] = ["revenue", "traffic"];
+
 /**
  * Data for a tab with an offset-paged, sortable table and optionally a
- * treemap of the first page in `treemapSort`.
+ * treemap of its first page.
  */
 export function createOffsetTabData<T, S>(
-  options: OffsetTabOptions<T, S> & { treemapSort: S },
-): OffsetTabData<T> & { treemap: PageSlot<T> };
+  options: OffsetTabOptions<T, S> & { treemap: TreemapOptions<S> },
+): OffsetTabData<T> & { treemap: TreemapSlot<T> };
 export function createOffsetTabData<T, S>(options: OffsetTabOptions<T, S>): OffsetTabData<T>;
 export function createOffsetTabData<T, S>(
-  options: OffsetTabOptions<T, S> & { treemapSort?: S },
-): OffsetTabData<T> & { treemap?: PageSlot<T> } {
+  options: OffsetTabOptions<T, S> & { treemap?: TreemapOptions<S> },
+): OffsetTabData<T> & { treemap?: TreemapSlot<T> } {
   const { requests, name, errorFallback } = options;
   const clearOnFetch = options.clearOnFetch ?? true;
   const cache = createGenerationalCache<T>();
   const [offset, setOffset] = createSignal(0);
+  // An offset belongs to the sort it was paged under, so a sort changed from
+  // elsewhere (the ranking toggle) starts from the first page. The key is a
+  // memo so a recomputed but equal sort keeps the page, and the reset is a
+  // computation so the table never fetches the old offset under the new sort.
+  const sortKey = createMemo(() => options.cacheKey(0, options.sort()));
+  createComputed(on(sortKey, () => setOffset(0), { defer: true }));
   const queryAt = (pageOffset: number, sort: S): PageQuery<T> => ({
     key: options.cacheKey(pageOffset, sort),
     fetch: (range) => options.fetch(range, pageOffset, sort),
@@ -202,18 +222,26 @@ export function createOffsetTabData<T, S>(
     clearOnFetch,
     query: () => queryAt(offset(), options.sort()),
   });
-  const { treemapSort } = options;
-  const treemap =
-    treemapSort === undefined
-      ? undefined
-      : createPageSlot({
-          requests,
-          slot: `${name}Treemap`,
-          cache,
-          errorFallback,
-          clearOnFetch: false,
-          query: () => queryAt(0, treemapSort),
-        });
+  const treemapOptions = options.treemap;
+  let treemap: TreemapSlot<T> | undefined;
+  if (treemapOptions !== undefined) {
+    const { metric, sort } = treemapOptions;
+    const slot = createPageSlot({
+      requests,
+      slot: `${name}Treemap`,
+      cache,
+      errorFallback,
+      clearOnFetch: false,
+      query: () => queryAt(0, sort(metric())),
+    });
+    treemap = {
+      ...slot,
+      rankedBy: () => {
+        const key = slot.loadedKey();
+        return TREEMAP_METRICS.find((ranking) => key === options.cacheKey(0, sort(ranking)));
+      },
+    };
+  }
   return {
     table,
     treemap,

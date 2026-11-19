@@ -4,11 +4,14 @@ import { type AudienceBreakdownRow, buildAudienceBreakdownTreemapLeaves } from "
 import { SOURCE_GROUP_COLORS } from "./revenueSourcesLogic";
 import Treemap, { REVENUE_OR_VISITORS } from "./Treemap";
 import type { TreemapHoverHandlers } from "./treemapLeafEvents";
+import type { TreemapMetric } from "./treemapLogic";
 
 type AudienceBreakdownTreemapProps = TreemapHoverHandlers & {
   rows: AudienceBreakdownRow[];
   topGroupColor: string;
   loading: boolean;
+  /** Set when the rows are the top of a longer list ranked by this metric, as cities are. */
+  sliceRankedBy?: TreemapMetric;
   onLeafSelect?: (datumKey: string) => void;
 };
 
@@ -32,6 +35,7 @@ export default function AudienceBreakdownTreemap(props: AudienceBreakdownTreemap
         ];
       }}
       metrics={REVENUE_OR_VISITORS}
+      sliceRankedBy={props.sliceRankedBy}
       loading={props.loading}
       loadingLabel="Loading breakdown treemap…"
       height={420}

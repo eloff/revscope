@@ -33,6 +33,7 @@ import { createRowHighlight } from "./createRowHighlight";
 import { useDashboardState } from "./dashboardPeriodContext";
 import { gridIconLabelCell } from "./grid.css";
 import { SOURCE_GROUP_COLORS } from "./revenueSourcesLogic";
+import type { TreemapMetric } from "./treemapLogic";
 
 const GEO_DIMENSIONS = [
   { value: "country", label: "Country" },
@@ -43,8 +44,10 @@ type GeoDimension = (typeof GEO_DIMENSIONS)[number]["value"];
 
 interface AudienceGeoBreakdownProps {
   data: AudienceResponse | undefined;
-  /** Cities ranked by revenue (offset 0), used only for the cities treemap. */
+  /** Cities ranked by the ranking metric (offset 0), used only for the cities treemap. */
   treemapData: AudienceResponse | undefined;
+  /** The metric `treemapData`'s cities are ranked by. */
+  treemapRankedBy?: TreemapMetric;
   /** True while a request is in flight, including refreshes of data already shown. */
   loading: boolean;
   /** True until the first data arrives; the tables show a loading row meanwhile. */
@@ -159,6 +162,7 @@ export default function AudienceGeoBreakdown(props: AudienceGeoBreakdownProps) {
       </Tabs.List>
       <AudienceBreakdownTreemap
         rows={dimension() === "country" ? props.countryRows : treemapCityRows()}
+        sliceRankedBy={dimension() === "cities" ? props.treemapRankedBy : undefined}
         topGroupColor={
           dimension() === "country" ? SOURCE_GROUP_COLORS.social : SOURCE_GROUP_COLORS.referrers
         }

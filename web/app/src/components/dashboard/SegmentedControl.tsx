@@ -19,6 +19,11 @@ interface SegmentedControlProps<T extends string> {
   value: T;
   options: readonly SegmentedControlOption<T>[];
   onChange: (value: T) => void;
+  /**
+   * Called when the option already selected is picked again, for a control
+   * showing a stand-in for the value it sets.
+   */
+  onReselect?: (value: T) => void;
   ariaLabel?: string;
   size?: "small";
 }
@@ -40,7 +45,16 @@ export default function SegmentedControl<T extends string>(props: SegmentedContr
       <SegmentGroup.Indicator class={indicator} />
       <For each={props.options}>
         {(option) => (
-          <SegmentGroup.Item class={item} value={option.value} disabled={option.disabled}>
+          <SegmentGroup.Item
+            class={item}
+            value={option.value}
+            disabled={option.disabled}
+            onClick={() => {
+              if (option.value === props.value && !option.disabled) {
+                props.onReselect?.(option.value);
+              }
+            }}
+          >
             <SegmentGroup.ItemText
               class={props.size === "small" ? `${itemText} ${itemTextSmall}` : itemText}
             >

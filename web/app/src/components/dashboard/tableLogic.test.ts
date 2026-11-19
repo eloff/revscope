@@ -102,8 +102,10 @@ describe("pages logic", () => {
   });
 
   it("matches the treemap only on the default ranking", () => {
-    expect(isPagesTreemapSort(DEFAULT_PAGES_SORT)).toBe(true);
-    expect(isPagesTreemapSort({ ...DEFAULT_PAGES_SORT, direction: "asc" })).toBe(false);
+    expect(isPagesTreemapSort(DEFAULT_PAGES_SORT, "revenue")).toBe(true);
+    expect(isPagesTreemapSort({ ...DEFAULT_PAGES_SORT, direction: "asc" }, "revenue")).toBe(false);
+    expect(isPagesTreemapSort(DEFAULT_PAGES_SORT, "traffic")).toBe(false);
+    expect(isPagesTreemapSort({ column: "visitors", direction: "desc" }, "traffic")).toBe(true);
   });
 
   it("checks for conversions", () => {
@@ -160,7 +162,10 @@ describe("search terms logic", () => {
       orderBy: "clicks",
       direction: "desc",
     });
-    expect(isSearchTermsTreemapSort(DEFAULT_SEARCH_TERMS_SORT)).toBe(true);
+    expect(isSearchTermsTreemapSort(DEFAULT_SEARCH_TERMS_SORT, "revenue")).toBe(true);
+    expect(isSearchTermsTreemapSort({ orderBy: "clicks", direction: "desc" }, "traffic")).toBe(
+      true,
+    );
   });
 
   it("highlights cannibalization and lost clicks", () => {

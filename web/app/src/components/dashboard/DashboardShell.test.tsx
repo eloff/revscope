@@ -7,8 +7,9 @@ import { mockApi } from "../../../../shared/test/api";
 import { signIn, signOut } from "../../../../shared/test/auth";
 import { testProject, testSession } from "../../../../shared/test/fixtures";
 import { testBucket, testOverview, testPeriodMetrics } from "../../../test/dashboardFixtures";
-import { setEventsSort } from "../../lib/dashboardPreferences";
+import { setEventsSort, setPagesSort } from "../../lib/dashboardPreferences";
 import { DEFAULT_EVENTS_SORT, type EventRow } from "../../lib/eventsApi";
+import { DEFAULT_PAGES_SORT } from "../../lib/pagesApi";
 import DashboardShell from "./DashboardShell";
 
 vi.mock("./apexcharts", () => import("../../../test/apexchartsMock"));
@@ -16,6 +17,7 @@ vi.mock("./apexcharts", () => import("../../../test/apexchartsMock"));
 afterEach(() => {
   window.history.replaceState(null, "", "/");
   setEventsSort(DEFAULT_EVENTS_SORT);
+  setPagesSort(DEFAULT_PAGES_SORT);
 });
 
 const READ = "/v2/read/projects/1";
@@ -310,6 +312,58 @@ describe("DashboardShell", () => {
     expect((await screen.findAllByText("x.io/fresh")).length).toBeGreaterThan(0);
     expect(screen.queryByText("x.io/stale")).toBeNull();
   });
+  it("ranks the pages grid and treemap by the toggle, sharing one request from page one", async () => {
+    mockShell();
+    mockApi("get", `${READ}/landing-pages`, { pages: [], offset: 0, limit: 200 });
+    const paid = { ...pageRow(), id: 1, path: "/paid" };
+    const popular = { ...pageRow(), id: 2, path: "/popular", attributed_revenue: 0, visitors: 900 };
+    const calls = mockApi("get", `${READ}/pages`, ({ url }) =>
+      HttpResponse.json(
+        url.searchParams.get("order_by") === "visitors"
+          ? { pages: [popular, paid], offset: 0, limit: 200 }
+          : {
+              pages: [paid],
+              offset: Number(url.searchParams.get("offset")),
+              limit: 200,
+              next_offset: 200,
+            },
+      ),
+    );
+    const requested = () =>
+      calls.map(
+        ({ url }) => `${url.searchParams.get("order_by")}@${url.searchParams.get("offset")}`,
+      );
+    window.history.replaceState(null, "", "/dashboard?tab=pages");
+    renderShell();
+    const user = userEvent.setup();
+    // The grid has a pagination bar above and below it.
+    const [next] = await screen.findAllByRole("button", { name: "Next" });
+    await user.click(next as HTMLElement);
+    await vi.waitFor(() =>
+      expect(requested()).toEqual(["attributed_revenue@0", "attributed_revenue@200"]),
+    );
+
+    await user.click(within(screen.getByLabelText("Size tiles by")).getByText("Visitors"));
+    expect((await screen.findAllByText("x.io/popular")).length).toBeGreaterThan(0);
+    expect(requested()).toEqual(["attributed_revenue@0", "attributed_revenue@200", "visitors@0"]);
+    // The pages grid comes before the landing pages one.
+    expect(screen.getAllByRole("columnheader", { name: /^Visitors/ })[0]).toHaveAttribute(
+      "aria-sort",
+      "descending",
+    );
+
+    // Back on revenue the grid starts again from page one, not the page it left.
+    await user.click(within(screen.getByLabelText("Size tiles by")).getByText("Revenue"));
+    await vi.waitFor(() =>
+      expect(screen.getAllByRole("columnheader", { name: /^Revenue/ })[0]).toHaveAttribute(
+        "aria-sort",
+        "descending",
+      ),
+    );
+    expect(screen.getAllByRole("button", { name: "Previous" })[0]).toBeDisabled();
+    expect(requested()).toEqual(["attributed_revenue@0", "attributed_revenue@200", "visitors@0"]);
+  });
+
   it("ignores a cities sort the viewer moved off before it loaded", async () => {
     mockShell();
     const metrics = {

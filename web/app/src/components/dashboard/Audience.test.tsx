@@ -3,7 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { charts } from "../../../test/apexchartsMock";
 import type { AudienceResponse, RowMetrics } from "../../lib/audienceApi";
-import { audienceBreakdownSorts, setAudienceBreakdownSorts } from "../../lib/dashboardPreferences";
+import {
+  audienceBreakdownSorts,
+  setAudienceBreakdownSort,
+  setAudienceBreakdownSorts,
+  setRankBy,
+} from "../../lib/dashboardPreferences";
 import Audience, { type AudienceProps } from "./Audience";
 import { DEFAULT_AUDIENCE_BREAKDOWN_SORT } from "./audienceLogic";
 import { DashboardStateProvider, useDashboardState } from "./dashboardPeriodContext";
@@ -17,7 +22,10 @@ vi.mock("jsvectormap", () => ({
 vi.mock("jsvectormap/dist/maps/world.js", () => ({}));
 
 const defaultSorts = audienceBreakdownSorts();
-afterEach(() => setAudienceBreakdownSorts(defaultSorts));
+afterEach(() => {
+  setAudienceBreakdownSorts(defaultSorts);
+  setRankBy("revenue");
+});
 
 function metrics(visitors: number, revenue: number, converting = 1): RowMetrics {
   return {
@@ -213,10 +221,7 @@ describe("Audience", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Cities" }));
     const berlin = (await screen.findByText("Berlin, Germany")).closest("tr") as HTMLElement;
     expect(berlin.querySelector('[class*="gridBest"]')).not.toBeNull();
-    setAudienceBreakdownSorts({
-      ...defaultSorts,
-      cities: { column: "visitors", direction: "desc" },
-    });
+    setAudienceBreakdownSort("cities", { column: "visitors", direction: "desc" });
     expect(berlin.querySelector('[class*="gridBest"]')).toBeNull();
   });
 

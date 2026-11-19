@@ -12,17 +12,27 @@ import {
   type HoverHighlight,
 } from "./metricHoverDetails";
 import type { PagesVariant } from "./pageHoverDetails";
+import type { RankingColumns, TreemapMetric } from "./treemapLogic";
 
 export type { PagesOrderBy, PagesSortDirection, PagesSortState };
 export { DEFAULT_PAGES_SORT, PAGES_SORT_COLUMNS };
 
 export type PagesSortColumn = PagesOrderBy;
 
+export const PAGES_RANKING_COLUMNS: RankingColumns<PagesOrderBy> = {
+  revenue: "attributed_revenue",
+  traffic: "visitors",
+};
+
+/** The ranking the pages treemap loads: its metric's column, largest first. */
+export function pagesTreemapSort(metric: TreemapMetric): PagesSortState {
+  return { column: PAGES_RANKING_COLUMNS[metric], direction: "desc" };
+}
+
 /** True when the table sort matches the ranking the pages treemap uses. */
-export function isPagesTreemapSort(sort: PagesSortState): boolean {
-  return (
-    sort.column === DEFAULT_PAGES_SORT.column && sort.direction === DEFAULT_PAGES_SORT.direction
-  );
+export function isPagesTreemapSort(sort: PagesSortState, metric: TreemapMetric): boolean {
+  const treemapSort = pagesTreemapSort(metric);
+  return sort.column === treemapSort.column && sort.direction === treemapSort.direction;
 }
 
 export function pageRowHasConversions(row: Pick<PageRow, "converting_visitors">): boolean {

@@ -1,6 +1,7 @@
 /// <reference types="solid-js" />
 import { createEffect, createSignal, For, Show } from "solid-js";
 import { formatPercentRatio, formatRevenueAmount } from "../../lib/dashboardApi";
+import { rankBy } from "../../lib/dashboardPreferences";
 import type {
   SearchTermLandingPath,
   SearchTermRow as SearchTermRowData,
@@ -29,12 +30,12 @@ import SortableHeaderCell from "./SortableHeaderCell";
 import { buildSearchTermHoverContent } from "./searchTermHoverDetails";
 import {
   clickThroughRate,
-  DEFAULT_SEARCH_TERMS_SORT,
   isSearchTermsTreemapSort,
   mobileShare,
   nextSearchTermsSortState,
   searchTermRowHighlights,
   searchTermRowKey,
+  searchTermsTreemapSort,
 } from "./searchTermsLogic";
 import ViewDetailsButton from "./ViewDetailsButton";
 
@@ -207,8 +208,8 @@ export default function SearchTerms(props: SearchTermsProps) {
   const handleTreemapSelect = (key: string) => {
     const onCurrentPage = rows().some((row) => searchTermRowKey(row) === key);
     if (!onCurrentPage) {
-      if (!isSearchTermsTreemapSort(props.sort)) {
-        props.onSortChange(DEFAULT_SEARCH_TERMS_SORT);
+      if (!isSearchTermsTreemapSort(props.sort, rankBy())) {
+        props.onSortChange(searchTermsTreemapSort(rankBy()));
       } else if (offset() !== 0) {
         props.onPageChange(0);
       }

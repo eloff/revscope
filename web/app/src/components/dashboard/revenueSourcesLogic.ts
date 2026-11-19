@@ -20,7 +20,12 @@ import {
   type HighlightMetric,
   type HoverHighlight,
 } from "./metricHoverDetails";
-import { compareByMetric, type TreemapMetric, type TreemapTile } from "./treemapLogic";
+import {
+  compareByMetric,
+  type RankingColumns,
+  type TreemapMetric,
+  type TreemapTile,
+} from "./treemapLogic";
 
 export type { SourceGroup };
 
@@ -652,6 +657,11 @@ export type SortState = ColumnSort<SortColumn>;
 export const DEFAULT_SORT: SortState = {
   column: "revenue",
   direction: "desc",
+};
+
+export const REVENUE_SOURCE_RANKING_COLUMNS: RankingColumns<SortColumn> = {
+  revenue: "revenue",
+  traffic: "visitors",
 };
 
 function sortValue(record: RevenueSourceRecord, column: SortColumn): number | string {

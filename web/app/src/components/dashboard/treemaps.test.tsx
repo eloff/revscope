@@ -1,7 +1,8 @@
 import { render, screen } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { lastChart, seriesData } from "../../../test/apexchartsMock";
+import { setRankBy } from "../../lib/dashboardPreferences";
 import type { PageRow, PageTransitionRow } from "../../lib/pagesApi";
 import type { SearchTermRow, SearchTermsResponse } from "../../lib/searchTermsApi";
 import CrawlersTreemap from "./CrawlersTreemap";
@@ -14,6 +15,8 @@ import type { RevenueSourceRecord, SourceGroup, TreemapLeaf } from "./revenueSou
 import SearchTermsTreemap from "./SearchTermsTreemap";
 
 vi.mock("./apexcharts", () => import("../../../test/apexchartsMock"));
+
+afterEach(() => setRankBy("revenue"));
 
 function page(id: number, attributed_revenue: number, visitors = 10): PageRow {
   return {
@@ -317,5 +320,20 @@ describe("SearchTermsTreemap", () => {
       ["term:free crm", 1],
       ["__search_terms_other__", 3],
     ]);
+  });
+
+  it("offers no Revenue when the channel earned none, since Other counts the whole channel", () => {
+    setRankBy("traffic");
+    const data = {
+      current: {
+        search_channel_revenue: 0,
+        summary: { clicks: 5, impressions: 0 },
+        terms: [term("crm", 0)],
+      },
+      offset: 0,
+      limit: 100,
+    } as unknown as SearchTermsResponse;
+    render(() => <SearchTermsTreemap data={data} loading={false} />);
+    expect(screen.getByText("Revenue").closest("[data-disabled]")).not.toBeNull();
   });
 });

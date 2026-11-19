@@ -1,16 +1,22 @@
 import { render, screen } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
-import { createSignal } from "solid-js";
-import { describe, expect, it, vi } from "vitest";
+import { batch, createSignal } from "solid-js";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { charts, lastChart, seriesData } from "../../../test/apexchartsMock";
+import { rankBy, setRankBy } from "../../lib/dashboardPreferences";
 import Treemap, { REVENUE_OR_VISITORS } from "./Treemap";
 import type { TreemapMetric } from "./treemapLogic";
 
 vi.mock("./apexcharts", () => import("../../../test/apexchartsMock"));
 
+afterEach(() => setRankBy("revenue"));
+
 type Row = { key: string; revenue: number; visitors: number };
 
-function renderTreemap(rows: () => Row[] | undefined, options: { emptyLabel?: string } = {}) {
+function renderTreemap(
+  rows: () => Row[] | undefined,
+  options: { emptyLabel?: string; sliceRankedBy?: () => TreemapMetric | undefined } = {},
+) {
   return render(() => (
     <Treemap
       groups={(metric: TreemapMetric) => {
@@ -33,6 +39,7 @@ function renderTreemap(rows: () => Row[] | undefined, options: { emptyLabel?: st
       loading={rows() === undefined}
       loadingLabel="Loading…"
       emptyLabel={options.emptyLabel}
+      sliceRankedBy={options.sliceRankedBy?.()}
       height={420}
     />
   ));
@@ -65,6 +72,59 @@ describe("Treemap", () => {
     renderTreemap(() => [{ key: "a", revenue: 0, visitors: 4 }]);
     expect(seriesData()[0]?.data).toEqual([["a", 4]]);
     expect(screen.getByText("Revenue").closest("[data-disabled]")).not.toBeNull();
+  });
+
+  it("switches every toggling treemap together", async () => {
+    const rows = () => [
+      { key: "a", revenue: 500, visitors: 1 },
+      { key: "b", revenue: 0, visitors: 9 },
+    ];
+    renderTreemap(rows);
+    renderTreemap(rows);
+    await userEvent.click(screen.getAllByText("Visitors")[0] as HTMLElement);
+    const visitors = [
+      {
+        name: "Top",
+        data: [
+          ["a", 1],
+          ["b", 9],
+        ],
+      },
+    ];
+    expect(charts.map((chart) => seriesData(chart))).toEqual([visitors, visitors]);
+    expect(rankBy()).toBe("traffic");
+  });
+
+  it("ranks everything by the fallback when it's picked", async () => {
+    renderTreemap(() => [{ key: "a", revenue: 0, visitors: 4 }]);
+    expect(rankBy()).toBe("revenue");
+    await userEvent.click(screen.getByText("Visitors"));
+    expect(rankBy()).toBe("traffic");
+  });
+
+  it("keeps the other metric on offer for a ranked slice that lacks it", async () => {
+    setRankBy("traffic");
+    const [rows, setRows] = createSignal<Row[]>([{ key: "a", revenue: 0, visitors: 4 }]);
+    const [rankedBy, setRankedBy] = createSignal<TreemapMetric>("traffic");
+    renderTreemap(rows, { sliceRankedBy: rankedBy });
+    const revenueDisabled = () => screen.getByText("Revenue").closest("[data-disabled]") !== null;
+    expect(revenueDisabled()).toBe(false);
+    await userEvent.click(screen.getByText("Revenue"));
+    // Still on offer while its slice loads, then judged by the slice ranked by it.
+    expect(revenueDisabled()).toBe(false);
+    batch(() => {
+      setRows([{ key: "b", revenue: 0, visitors: 2 }]);
+      setRankedBy("revenue");
+    });
+    expect(revenueDisabled()).toBe(true);
+  });
+
+  it("judges a slice by its own ranking when it mounts after the ranking changed", () => {
+    renderTreemap(() => [{ key: "a", revenue: 0, visitors: 4 }], {
+      sliceRankedBy: () => "traffic",
+    });
+    expect(rankBy()).toBe("revenue");
+    expect(screen.getByText("Revenue").closest("[data-disabled]")).toBeNull();
   });
 
   it("takes no space when no tile has any area", () => {

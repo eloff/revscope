@@ -13,17 +13,20 @@ import PageTableRow from "./PageTableRow";
 import PaginationBar from "./PaginationBar";
 import { createPageDrilldown, type PageDrilldownFetchers } from "./pageDrilldownState";
 import {
-  DEFAULT_PAGES_SORT,
   isPagesTreemapSort,
   type PagesSortColumn,
   pagesColumnsForVariant,
+  pagesTreemapSort,
 } from "./pagesLogic";
 import { type RevenueSourceLinkTarget, SOURCE_GROUP_COLORS } from "./revenueSourcesLogic";
 import SortableHeaderCell from "./SortableHeaderCell";
+import type { TreemapMetric } from "./treemapLogic";
 
 export type PagesGridProps = PageDrilldownFetchers & {
   data: PagesResponse | undefined;
   treemapData: PagesResponse | undefined;
+  /** The metric `treemapData` is ranked by. */
+  treemapRankedBy?: TreemapMetric;
   loading: boolean;
   treemapLoading: boolean;
   error: string;
@@ -46,7 +49,7 @@ export type PagesGridProps = PageDrilldownFetchers & {
 /** One pages mode: a treemap over a sortable, paginated grid with per-row drilldowns. */
 export default function PagesGrid(props: PagesGridProps) {
   let tbodyElement: HTMLTableSectionElement | undefined;
-  const { pagesSort, setPagesSort, landingPagesSort, setLandingPagesSort } =
+  const { pagesSort, setPagesSort, landingPagesSort, setLandingPagesSort, rankBy } =
     useDashboardPreferences();
   const { highlightKey, scrollToRow } = createRowHighlight();
   const variant = () => props.variant ?? "pages";
@@ -111,11 +114,11 @@ export default function PagesGrid(props: PagesGridProps) {
     }
     const onCurrentPage = props.data?.pages.some((page) => pageRowKey(page) === key) ?? false;
     if (!onCurrentPage) {
-      if (!isPagesTreemapSort(currentSort())) {
+      if (!isPagesTreemapSort(currentSort(), rankBy())) {
         if (variant() === "landingPages") {
-          setLandingPagesSort(DEFAULT_PAGES_SORT);
+          setLandingPagesSort(pagesTreemapSort(rankBy()));
         } else {
-          setPagesSort(DEFAULT_PAGES_SORT);
+          setPagesSort(pagesTreemapSort(rankBy()));
         }
         props.onSortChange();
       } else if ((props.data?.offset ?? 0) !== 0) {
@@ -196,6 +199,7 @@ export default function PagesGrid(props: PagesGridProps) {
       <div class={gridShell}>
         <PagesTreemap
           data={props.treemapData}
+          rankedBy={props.treemapRankedBy}
           variant={variant()}
           loading={props.treemapLoading && !props.treemapData}
           onLeafSelect={handleTreemapSelect}

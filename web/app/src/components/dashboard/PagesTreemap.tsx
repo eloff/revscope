@@ -23,6 +23,8 @@ type PagesTreemapProps = {
   data: PagesResponse | undefined;
   variant?: PagesVariant;
   loading: boolean;
+  /** The metric `data` is ranked by. */
+  rankedBy?: TreemapMetric;
   onLeafSelect?: (datumKey: string) => void;
   topGroupColor?: string;
   loadingLabel?: string;
@@ -48,9 +50,9 @@ function pageValue(page: PageRow, metric: TreemapMetric): number {
 }
 
 /**
- * The treemap's data is the first page of pages ranked by revenue, then
- * visitors, so with no revenue it holds the most visited pages too. Other sums
- * only the rest of that page.
+ * The treemap's data is the first page of pages ranked by the ranking metric,
+ * then the other one, so with no revenue it holds the most visited pages too.
+ * Other sums only the rest of that page.
  */
 function buildPageGroups(
   pages: PageRow[],
@@ -104,6 +106,7 @@ export default function PagesTreemap(props: PagesTreemapProps) {
           : undefined
       }
       metrics={REVENUE_OR_VISITORS}
+      sliceRankedBy={props.rankedBy}
       loading={props.loading}
       loadingLabel={props.loadingLabel ?? "Loading pages treemap…"}
       height={420}

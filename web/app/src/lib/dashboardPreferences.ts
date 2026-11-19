@@ -1,7 +1,8 @@
 import { makePersisted } from "@solid-primitives/storage";
-import { createSignal } from "solid-js";
+import { type Accessor, batch, createSignal, type Setter } from "solid-js";
 import { isServer } from "solid-js/web";
 import {
+  AUDIENCE_BREAKDOWN_RANKING_COLUMNS,
   type AudienceBreakdownColumn,
   type AudienceBreakdownSortState,
   DEFAULT_AUDIENCE_BREAKDOWN_SORT,
@@ -13,6 +14,7 @@ import {
   LINE_METRIC_KEYS,
   type LineMetricKey,
 } from "../components/dashboard/chartMetrics";
+import type { ColumnSort } from "../components/dashboard/columnSort";
 import {
   CONVERSIONS_SORT_COLUMNS,
   type ConversionsSortColumn,
@@ -25,17 +27,26 @@ import {
 } from "../components/dashboard/crawlersLogic";
 import {
   DEFAULT_PAGES_SORT,
+  PAGES_RANKING_COLUMNS,
   PAGES_SORT_COLUMNS,
   type PagesSortColumn,
   type PagesSortState,
 } from "../components/dashboard/pagesLogic";
 import {
   DEFAULT_SORT,
+  REVENUE_SOURCE_RANKING_COLUMNS,
   type SortColumn as RevenueSourceSortColumn,
   SOURCE_GROUP_ORDER,
   type SortState,
   type SourceGroup,
 } from "../components/dashboard/revenueSourcesLogic";
+import { SEARCH_TERMS_RANKING_COLUMNS } from "../components/dashboard/searchTermsLogic";
+import {
+  followRanking,
+  type RankingColumns,
+  rankingMetricOf,
+  type TreemapMetric,
+} from "../components/dashboard/treemapLogic";
 import {
   CRAWLERS_SORT_COLUMNS,
   type CrawlersOrderBy,
@@ -393,22 +404,87 @@ export const [disabledSourceGroups, setDisabledSourceGroups] = makePersisted(
   },
 );
 
-export const [revenueSourceSort, setRevenueSourceSort] = makePersisted(
-  createSignal<SortState>(DEFAULT_SORT),
-  {
+function parseRankBy(raw: unknown): TreemapMetric {
+  return raw === "traffic" ? "traffic" : "revenue";
+}
+
+/**
+ * What every treemap with a Revenue/Visitors toggle sizes its tiles by, and
+ * what the tables beside them rank by.
+ */
+export const [rankBy, setRankBy] = makePersisted(createSignal<TreemapMetric>("revenue"), {
+  name: `${STORAGE_PREFIX}.rankBy`,
+  storage: clientStorage(),
+  deserialize: (raw) => parseRankBy(parseStoredJson(raw)),
+});
+
+/**
+ * Stores a table's new sort and, for a sort by a ranking column, its metric,
+ * together so the table never refetches under the stale metric in between.
+ */
+function storeRankedSort(store: () => void, metric: TreemapMetric | undefined): void {
+  batch(() => {
+    store();
+    if (metric !== undefined) {
+      setRankBy(metric);
+    }
+  });
+}
+
+type SortUpdate<S> = S | ((previous: S) => S);
+
+/** A persisted signal: its getter and setter, then what `makePersisted` adds. */
+type StoredSignal<S> = readonly [Accessor<S>, Setter<S>, ...unknown[]];
+
+/**
+ * A table's sort as `rankBy` applies it: a sort by either ranking column
+ * follows the ranking metric, and sorting by one sets that metric.
+ */
+function rankedSort<S extends object, C>(
+  [stored, setStored]: StoredSignal<S>,
+  columns: RankingColumns<C>,
+  columnOf: (sort: S) => C,
+  withColumn: (sort: S, column: C) => S,
+): [() => S, (next: SortUpdate<S>) => void] {
+  const sort = () => {
+    const current = stored();
+    const column = followRanking(columnOf(current), columns, rankBy());
+    return column === columnOf(current) ? current : withColumn(current, column);
+  };
+  const setSort = (next: SortUpdate<S>) => {
+    const value = typeof next === "function" ? next(sort()) : next;
+    storeRankedSort(() => setStored(() => value), rankingMetricOf(columnOf(value), columns));
+  };
+  return [sort, setSort];
+}
+
+function rankedColumnSort<C>(signal: StoredSignal<ColumnSort<C>>, columns: RankingColumns<C>) {
+  return rankedSort(
+    signal,
+    columns,
+    (sort) => sort.column,
+    (sort, column) => ({ ...sort, column }),
+  );
+}
+
+export const [revenueSourceSort, setRevenueSourceSort] = rankedColumnSort(
+  makePersisted(createSignal<SortState>(DEFAULT_SORT), {
     name: `${STORAGE_PREFIX}.revenueSourceSort`,
     storage: clientStorage(),
     deserialize: (raw) => parseRevenueSourceSortState(parseStoredJson(raw)),
-  },
+  }),
+  REVENUE_SOURCE_RANKING_COLUMNS,
 );
 
-export const [searchTermsSort, setSearchTermsSort] = makePersisted(
-  createSignal<SearchTermsSortState>(DEFAULT_SEARCH_TERMS_SORT),
-  {
+export const [searchTermsSort, setSearchTermsSort] = rankedSort(
+  makePersisted(createSignal<SearchTermsSortState>(DEFAULT_SEARCH_TERMS_SORT), {
     name: `${STORAGE_PREFIX}.searchTermsSort`,
     storage: clientStorage(),
     deserialize: (raw) => parseSearchTermsSortState(parseStoredJson(raw)),
-  },
+  }),
+  SEARCH_TERMS_RANKING_COLUMNS,
+  (sort) => sort.orderBy,
+  (sort, orderBy) => ({ ...sort, orderBy }),
 );
 
 export const [conversionsSort, setConversionsSort] = makePersisted(
@@ -420,22 +496,22 @@ export const [conversionsSort, setConversionsSort] = makePersisted(
   },
 );
 
-export const [pagesSort, setPagesSort] = makePersisted(
-  createSignal<PagesSortState>(DEFAULT_PAGES_SORT),
-  {
+export const [pagesSort, setPagesSort] = rankedColumnSort(
+  makePersisted(createSignal<PagesSortState>(DEFAULT_PAGES_SORT), {
     name: `${STORAGE_PREFIX}.pagesSort`,
     storage: clientStorage(),
     deserialize: (raw) => parsePagesSortState(parseStoredJson(raw)),
-  },
+  }),
+  PAGES_RANKING_COLUMNS,
 );
 
-export const [landingPagesSort, setLandingPagesSort] = makePersisted(
-  createSignal<PagesSortState>(DEFAULT_PAGES_SORT),
-  {
+export const [landingPagesSort, setLandingPagesSort] = rankedColumnSort(
+  makePersisted(createSignal<PagesSortState>(DEFAULT_PAGES_SORT), {
     name: `${STORAGE_PREFIX}.landingPagesSort`,
     storage: clientStorage(),
     deserialize: (raw) => parsePagesSortState(parseStoredJson(raw)),
-  },
+  }),
+  PAGES_RANKING_COLUMNS,
 );
 
 export const [eventsSort, setEventsSort] = makePersisted(
@@ -474,7 +550,7 @@ export const [visitorsSort, setVisitorsSort] = makePersisted(
   },
 );
 
-export const [audienceBreakdownSorts, setAudienceBreakdownSorts] = makePersisted(
+const [storedAudienceBreakdownSorts, setStoredAudienceBreakdownSorts] = makePersisted(
   createSignal<AudienceBreakdownSortPreferences>(createDefaultAudienceBreakdownSorts()),
   {
     name: `${STORAGE_PREFIX}.audienceBreakdownSorts`,
@@ -482,6 +558,26 @@ export const [audienceBreakdownSorts, setAudienceBreakdownSorts] = makePersisted
     deserialize: (raw) => parseAudienceBreakdownSorts(parseStoredJson(raw)),
   },
 );
+
+/** Each breakdown table's sort, with sorts by revenue or visitors following `rankBy`. */
+export function audienceBreakdownSorts(): AudienceBreakdownSortPreferences {
+  const metric = rankBy();
+  const stored = storedAudienceBreakdownSorts();
+  const sorts = { ...stored };
+  for (const key of Object.keys(stored) as AudienceBreakdownPreferenceKey[]) {
+    const sort = stored[key];
+    sorts[key] = {
+      ...sort,
+      column: followRanking(sort.column, AUDIENCE_BREAKDOWN_RANKING_COLUMNS, metric),
+    };
+  }
+  return sorts;
+}
+
+/** Replaces every breakdown sort as stored, leaving `rankBy` alone. */
+export function setAudienceBreakdownSorts(sorts: AudienceBreakdownSortPreferences): void {
+  setStoredAudienceBreakdownSorts(sorts);
+}
 
 export function disabledSourceGroupsSet(): Set<SourceGroup> {
   return new Set(disabledSourceGroups());
@@ -507,14 +603,16 @@ export function setAudienceBreakdownSort(
   key: AudienceBreakdownPreferenceKey,
   sort: AudienceBreakdownSortState,
 ): void {
-  setAudienceBreakdownSorts((previous) => ({
-    ...previous,
-    [key]: sort,
-  }));
+  storeRankedSort(
+    () => setStoredAudienceBreakdownSorts((previous) => ({ ...previous, [key]: sort })),
+    rankingMetricOf(sort.column, AUDIENCE_BREAKDOWN_RANKING_COLUMNS),
+  );
 }
 
 export function useDashboardPreferences() {
   return {
+    rankBy,
+    setRankBy,
     chartVisibility,
     setChartVisibility,
     disabledSourceGroups,

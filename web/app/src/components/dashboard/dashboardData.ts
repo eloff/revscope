@@ -1,9 +1,5 @@
 import { type Accessor, createEffect } from "solid-js";
-import {
-  type AudienceCitiesSortState,
-  type AudienceResponse,
-  DEFAULT_AUDIENCE_CITIES_SORT,
-} from "../../lib/audienceApi";
+import type { AudienceCitiesSortState, AudienceResponse } from "../../lib/audienceApi";
 import type {
   CrawlerCategory,
   CrawlerDetailResponse,
@@ -20,16 +16,16 @@ import {
   eventsSort,
   landingPagesSort,
   pagesSort,
+  rankBy,
   searchTermsSort,
   visitorsSort,
 } from "../../lib/dashboardPreferences";
 import type { DateRangeSeconds } from "../../lib/dateRange";
 import type { EventsResponse } from "../../lib/eventsApi";
-import {
-  DEFAULT_PAGES_SORT,
-  type PagesResponse,
-  type PageTransitionsResponse,
-  type PageTransitionsVariant,
+import type {
+  PagesResponse,
+  PageTransitionsResponse,
+  PageTransitionsVariant,
 } from "../../lib/pagesApi";
 import type { PaymentActivityResponse } from "../../lib/paymentActivityApi";
 import {
@@ -39,7 +35,7 @@ import {
   type PaymentsFilter,
 } from "../../lib/paymentsApi";
 import type { RevenueSourceResponse } from "../../lib/revenueSourcesApi";
-import { DEFAULT_SEARCH_TERMS_SORT, type SearchTermsResponse } from "../../lib/searchTermsApi";
+import type { SearchTermsResponse, SearchTermsSortState } from "../../lib/searchTermsApi";
 import { type SegmentFilters, segmentFiltersKey } from "../../lib/segmentFilters";
 import {
   type VisitorJourneyResponse,
@@ -48,6 +44,7 @@ import {
   type VisitorsResponse,
   visitorSessionFilterKey,
 } from "../../lib/visitorsApi";
+import { AUDIENCE_BREAKDOWN_RANKING_COLUMNS } from "./audienceLogic";
 import { createCursorTabData, createOffsetTabData, createSnapshotData } from "./createTabData";
 import type { DashboardProjectApi } from "./dashboardProjectApi";
 import {
@@ -57,6 +54,8 @@ import {
 } from "./dashboardRequests";
 import type { DashboardRoute } from "./dashboardRoute";
 import type { DashboardTab } from "./dashboardTabs";
+import { pagesTreemapSort } from "./pagesLogic";
+import { searchTermsTreemapSort } from "./searchTermsLogic";
 
 function sortedPageKey(offset: number, sort: { column: string; direction: string }): string {
   return `offset:${offset}:order:${sort.column}:${sort.direction}`;
@@ -146,7 +145,7 @@ export function createDashboardData(options: {
     fetch: () => api.paymentActivity(segments()),
   });
 
-  const searchTerms = createOffsetTabData<SearchTermsResponse, typeof DEFAULT_SEARCH_TERMS_SORT>({
+  const searchTerms = createOffsetTabData<SearchTermsResponse, SearchTermsSortState>({
     requests,
     name: "searchTerms",
     errorFallback: "Unable to load search terms data.",
@@ -154,7 +153,7 @@ export function createDashboardData(options: {
     cacheKey: (offset, sort) =>
       sortedPageKey(offset, { column: sort.orderBy, direction: sort.direction }),
     fetch: (r, offset, sort) => api.searchTerms(r.start, r.end, offset, sort, segments()),
-    treemapSort: DEFAULT_SEARCH_TERMS_SORT,
+    treemap: { metric: rankBy, sort: searchTermsTreemapSort },
   });
   const audience = createOffsetTabData<AudienceResponse, AudienceCitiesSortState>({
     requests,
@@ -163,7 +162,10 @@ export function createDashboardData(options: {
     sort: audienceCitiesSort,
     cacheKey: sortedPageKey,
     fetch: (r, offset, sort) => api.audience(r.start, r.end, offset, sort, segments()),
-    treemapSort: DEFAULT_AUDIENCE_CITIES_SORT,
+    treemap: {
+      metric: rankBy,
+      sort: (metric) => ({ column: AUDIENCE_BREAKDOWN_RANKING_COLUMNS[metric], direction: "desc" }),
+    },
     // The countries and treemap stay up while only the cities table pages.
     clearOnFetch: false,
   });
@@ -175,7 +177,7 @@ export function createDashboardData(options: {
     cacheKey: sortedPageKey,
     fetch: (r, offset, sort): Promise<PagesResponse> =>
       api.pages(r.start, r.end, offset, sort, segments()),
-    treemapSort: DEFAULT_PAGES_SORT,
+    treemap: { metric: rankBy, sort: pagesTreemapSort },
   });
   const landingPages = createOffsetTabData({
     requests,
@@ -185,7 +187,7 @@ export function createDashboardData(options: {
     cacheKey: sortedPageKey,
     fetch: (r, offset, sort): Promise<PagesResponse> =>
       api.landingPages(r.start, r.end, offset, sort, segments()),
-    treemapSort: DEFAULT_PAGES_SORT,
+    treemap: { metric: rankBy, sort: pagesTreemapSort },
   });
   const events = createOffsetTabData({
     requests,

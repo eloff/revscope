@@ -1,14 +1,6 @@
 /// <reference types="solid-js" />
-import {
-  createEffect,
-  createMemo,
-  createSignal,
-  type JSX,
-  on,
-  onCleanup,
-  onMount,
-  Show,
-} from "solid-js";
+import { createEffect, createMemo, type JSX, on, onCleanup, onMount, Show } from "solid-js";
+import { rankBy, setRankBy } from "../../lib/dashboardPreferences";
 import ApexCharts, { type ApexOptions } from "./apexcharts";
 import CursorHoverCard from "./CursorHoverCard";
 import { createCursorHover } from "./createCursorHover";
@@ -26,8 +18,16 @@ export const REVENUE_OR_VISITORS: readonly SegmentedControlOption<TreemapMetric>
 type TreemapProps<T extends TreemapTile> = {
   /** Tile groups sized by `metric`, or undefined until data arrives. */
   groups: (metric: TreemapMetric) => TreemapGroup<T>[] | undefined;
-  /** Metrics on offer, preferred first. More than one adds a toggle. */
+  /**
+   * Metrics on offer, preferred first. More than one adds a toggle, which is
+   * the dashboard-wide `rankBy` preference, so every such treemap switches together.
+   */
   metrics: readonly SegmentedControlOption<TreemapMetric>[];
+  /**
+   * Set when the tiles come from a top slice of rows ranked by this metric.
+   * Finding no value for another metric in it doesn't mean there is none.
+   */
+  sliceRankedBy?: TreemapMetric;
   loading: boolean;
   loadingLabel: string;
   /**
@@ -58,7 +58,7 @@ type TreemapProps<T extends TreemapTile> = {
  * never draws an empty chart.
  */
 export default function Treemap<T extends TreemapTile>(props: TreemapProps<T>) {
-  const [chosenMetric, setChosenMetric] = createSignal<TreemapMetric>();
+  const chosenMetric = () => (props.metrics.length > 1 ? rankBy() : undefined);
   const ownHover = createCursorHover();
 
   const groupsByMetric = createMemo(() => {
@@ -69,6 +69,8 @@ export default function Treemap<T extends TreemapTile>(props: TreemapProps<T>) {
     return byMetric;
   });
   const isDrawable = (metric: TreemapMetric) => (groupsByMetric().get(metric)?.length ?? 0) > 0;
+  const canChoose = (metric: TreemapMetric) =>
+    isDrawable(metric) || (props.sliceRankedBy !== undefined && metric !== props.sliceRankedBy);
   const metric = createMemo(() => {
     const chosen = chosenMetric();
     if (chosen !== undefined && isDrawable(chosen)) {
@@ -79,7 +81,7 @@ export default function Treemap<T extends TreemapTile>(props: TreemapProps<T>) {
   // Rebuilt only when a metric gains or loses data, so a data refresh doesn't
   // recreate the toggle's items and drop its keyboard focus.
   const toggleOptions = createMemo(
-    () => props.metrics.map((option) => ({ ...option, disabled: !isDrawable(option.value) })),
+    () => props.metrics.map((option) => ({ ...option, disabled: !canChoose(option.value) })),
     undefined,
     {
       equals: (previous, next) =>
@@ -135,7 +137,10 @@ export default function Treemap<T extends TreemapTile>(props: TreemapProps<T>) {
                       ariaLabel="Size tiles by"
                       value={metric() ?? "traffic"}
                       options={toggleOptions()}
-                      onChange={setChosenMetric}
+                      onChange={setRankBy}
+                      // A fallback shows a metric `rankBy` isn't set to, and
+                      // picking it should still rank everything by it.
+                      onReselect={setRankBy}
                     />
                   </div>
                 </Show>

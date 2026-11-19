@@ -185,6 +185,7 @@ export function AudiencePanel(props: TabPanelProps) {
       <Audience
         data={audience().table.data()}
         treemapData={audience().treemap.data()}
+        treemapRankedBy={audience().treemap.rankedBy()}
         loading={audience().table.loading()}
         treemapLoading={audience().treemap.loading()}
         citiesLoading={citiesLoading()}
@@ -220,6 +221,7 @@ export function PagesPanel(props: TabPanelProps) {
       landingPagesEmpty={showsNoData(landing().table, hasPagesData)}
       data={pages().table.data()}
       treemapData={pages().treemap.data()}
+      treemapRankedBy={pages().treemap.rankedBy()}
       loading={pages().table.loading()}
       treemapLoading={pages().treemap.loading()}
       error={pages().table.error()}
@@ -227,6 +229,7 @@ export function PagesPanel(props: TabPanelProps) {
       onPathSelect={props.nav.toPagePath}
       landingData={landing().table.data()}
       landingTreemapData={landing().treemap.data()}
+      landingTreemapRankedBy={landing().treemap.rankedBy()}
       landingLoading={landing().table.loading()}
       landingTreemapLoading={landing().treemap.loading()}
       landingError={landing().table.error()}

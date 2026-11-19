@@ -32,3 +32,25 @@ export function compareByMetric<R>(
     value(right, other) - value(left, other) ||
     tiebreak(left, right);
 }
+
+/**
+ * A table's column for each metric. Sorting a table by either one follows the
+ * dashboard's ranking metric, so its rows stay ranked like its treemap.
+ */
+export type RankingColumns<C> = Readonly<Record<TreemapMetric, C>>;
+
+/** The metric a column ranks by, or undefined for a column that isn't one of `columns`. */
+export function rankingMetricOf<C>(
+  column: C,
+  columns: RankingColumns<C>,
+): TreemapMetric | undefined {
+  if (column === columns.revenue) {
+    return "revenue";
+  }
+  return column === columns.traffic ? "traffic" : undefined;
+}
+
+/** `column`, or the column for `metric` when `column` is one of the ranking columns. */
+export function followRanking<C>(column: C, columns: RankingColumns<C>, metric: TreemapMetric): C {
+  return rankingMetricOf(column, columns) === undefined ? column : columns[metric];
+}

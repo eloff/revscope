@@ -32,11 +32,14 @@ import CountryFlag from "./CountryFlag";
 import CursorHoverCard from "./CursorHoverCard";
 import { createCursorHover } from "./createCursorHover";
 import { gridIconLabelCell } from "./grid.css";
+import type { TreemapMetric } from "./treemapLogic";
 
 export type AudienceProps = {
   data: AudienceResponse | undefined;
-  /** Cities ranked by revenue (offset 0), used only for the cities treemap. */
+  /** Cities ranked by the ranking metric (offset 0), used only for the cities treemap. */
   treemapData: AudienceResponse | undefined;
+  /** The metric `treemapData`'s cities are ranked by. */
+  treemapRankedBy?: TreemapMetric;
   loading: boolean;
   treemapLoading: boolean;
   error: string;
@@ -137,6 +140,7 @@ export default function Audience(props: AudienceProps) {
         <AudienceGeoBreakdown
           data={props.data}
           treemapData={props.treemapData}
+          treemapRankedBy={props.treemapRankedBy}
           loading={props.loading}
           initialLoading={showInitialLoading()}
           treemapLoading={props.treemapLoading}
